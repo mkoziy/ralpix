@@ -20,7 +20,10 @@ pi install git:github.com/mkoziy/ralpix
 # 1. Initialize ralpix (creates ~/.ralpix/ with default prompts, agents, and config)
 /ralpix init
 
-# 2. Write a plan (or use the built-in plan.md as an example)
+# 2a. Create a plan interactively (recommended)
+/ralpix plan "add health check endpoint"
+
+# 2b. Or write a plan manually (see Plan Format below)
 # 3. Execute it
 /ralpix docs/plans/my-feature.md
 ```
@@ -32,6 +35,23 @@ What happens:
 4. Progress is logged to `~/.ralpix/progress/<plan-name>.txt`
 5. After all tasks: review pipeline runs (first pass → second pass)
 6. Plan checkboxes are updated automatically
+
+## Plan Creation
+
+Don't want to write plans manually? Use interactive plan creation:
+
+```bash
+/ralpix plan "add JWT authentication to the API"
+```
+
+The model will:
+1. **Explore** your codebase to understand project structure and conventions
+2. **Ask clarifying questions** (pick from options in the UI)
+3. **Generate a plan draft** in ralpix format
+4. **Show it for review** — you can Accept, Revise (with feedback), or Reject
+5. **Save** to `docs/plans/` and offer to execute immediately
+
+**Requirements:** Your project should have a `README.md` and source files for the model to explore.
 
 ## Plan Format
 
@@ -128,6 +148,7 @@ ralpix ships with default prompts you can customize:
 │   ├── task-default.md      # Used for each task execution
 │   ├── review-first.md      # First review pass (5 agents)
 │   ├── review-second.md     # Second review pass (2 agents)
+│   ├── plan-creation.md     # Interactive plan creation
 │   ├── external-review.md   # External review (different model finds issues)
 │   ├── external-eval.md     # External review eval (main model fixes issues)
 │   └── finalize.md          # Final summary
