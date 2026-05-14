@@ -19,11 +19,22 @@ import { loadPrompt, expandPrompt } from "./prompt.js";
 
 /** Convert a description into a filesystem-safe plan filename. */
 function slugify(text: string): string {
-  return text
+  const slug = text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
+
+  // When the description contains no ASCII alphanumerics (e.g. Cyrillic,
+  // CJK), the regex strips everything and we get an empty slug.  Fall back
+  // to a short hash so the filename stays non-empty and unique.
+  if (slug) return slug;
+
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  }
+  return "plan-" + Math.abs(hash).toString(36).slice(0, 12);
 }
 
 // ---------------------------------------------------------------------------

@@ -43,6 +43,18 @@ async function writeTempFile(prefix: string, content: string): Promise<{ dir: st
 
 function detectDefaultBranch(cwd: string): string {
   try {
+    // Ask the remote origin for its HEAD — the canonical default branch.
+    const remoteHead = execSync(
+      "git symbolic-ref refs/remotes/origin/HEAD --short",
+      { cwd, encoding: "utf-8" },
+    ).trim();
+    // Output looks like "origin/main"; strip the remote prefix.
+    if (remoteHead.startsWith("origin/")) return remoteHead.slice(7);
+  } catch {
+    // No remote or origin/HEAD not set — try local heuristics.
+  }
+
+  try {
     const output = execSync("git branch", { cwd, encoding: "utf-8" });
     if (output.includes("main")) return "main";
     if (output.includes("master")) return "master";
