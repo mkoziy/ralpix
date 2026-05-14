@@ -61,6 +61,13 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const trimmed = (args ?? "").trim();
 
+      // ── Existing path? Execute it directly (handles files named
+      //     "plan something.md" or any path starting with "plan ").
+      if (trimmed && existsSync(resolve(ctx.cwd, trimmed))) {
+        await runPlan(trimmed, ctx, pi);
+        return;
+      }
+
       // ── /ralpix plan <description> ─────────────────────────────
       if (trimmed.startsWith("plan ") || trimmed === "plan") {
         const description = trimmed.slice(5).trim();

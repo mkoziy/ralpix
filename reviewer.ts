@@ -348,14 +348,20 @@ async function runExternalReviewLoop(
     `STARTED (reviewer: ${externalModel}, max ${maxIterations} iterations, patience: ${patience})`);
 
   let unchangedRounds = 0;
+  // HEAD before the last eval/fix pass — used to narrow subsequent diffs.
+  let lastReviewHead = "";
 
   for (let i = 0; i < maxIterations; i++) {
     // ---- Step 1: External reviewer finds issues ----
     const externalEffort = isValidEffort(config.externalReviewEffort) ? config.externalReviewEffort : null;
 
-    // Always review the full branch diff, including any fixes committed in
-    // previous iterations, so the reviewer sees the complete picture.
-    const diffInstruction = `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`;
+    // First round reviews the full branch.  After fixes are committed,
+    // narrow to only the changes introduced since the last review pass
+    // so the reviewer focuses on fresh issues and doesn't re-report
+    // already-dismissed findings.
+    const diffInstruction = lastReviewHead
+      ? `Run: \`git diff ${lastReviewHead}..HEAD\` to see only the latest fix changes.`
+      : `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`;
 
     // Load and expand the external review prompt with diff instruction
     const reviewTemplate = loadPrompt("external-review", cwd);
@@ -447,6 +453,10 @@ async function runExternalReviewLoop(
       logger.logExternalReview("review", msg);
       return msg;
     }
+
+    // Snapshot HEAD before eval so the next round can diff only
+    // the changes this fix pass introduces.
+    lastReviewHead = getHeadHash(cwd);
 
     // ---- Step 2: Main model evaluates and fixes ----
     const headBefore = getHeadHash(cwd);
