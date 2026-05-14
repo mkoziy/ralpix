@@ -1,0 +1,306 @@
+/**
+ * Review pipeline — first pass + iterative loop.
+ *
+ * Phase 1 (first): One-shot comprehensive review — all 5 agents, review-first.md.
+ * Phase 2 (loop):  Iterative critical/major review — 2 agents, review-second.md.
+ *                  Repeats while HEAD changes, up to reviewMaxIterations.
+ *                  Exits when no commits were made (nothing to fix).
+ *
+ * Pattern follows ralphex: runClaudeReview (one-shot) → runClaudeReviewLoop (iterative).
+ */
+
+import { spawn, execSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+import type { Plan, RalpixConfig, ThinkingLevel } from "./types.js";
+import { THINKING_LEVELS } from "./types.js";
+import { loadPrompt, expandPrompt } from "./prompt.js";
+import { ProgressLogger } from "./logger.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getPiExecutable(): { command: string; args: string[] } {
+  const currentScript = process.argv[1];
+  const isBunVirtual = currentScript?.startsWith("/$bunfs/root/");
+  if (currentScript && !isBunVirtual && fs.existsSync(currentScript)) {
+    return { command: process.execPath, args: [currentScript] };
+  }
+  return { command: "pi", args: [] };
+}
+
+async function writeTempFile(prefix: string, content: string): Promise<{ dir: string; filePath: string }> {
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ralpix-review-"));
+  const filePath = path.join(tmpDir, `${prefix}.md`);
+  await fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
+  return { dir: tmpDir, filePath };
+}
+
+function detectDefaultBranch(cwd: string): string {
+  try {
+    const output = execSync("git branch", { cwd, encoding: "utf-8" });
+    if (output.includes("main")) return "main";
+    if (output.includes("master")) return "master";
+  } catch {
+    // not a git repo
+  }
+  return "main";
+}
+
+/**
+ * Get the current HEAD commit hash. Returns empty string on failure.
+ */
+function getHeadHash(cwd: string): string {
+  try {
+    return execSync("git rev-parse HEAD", { cwd, encoding: "utf-8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Effort helpers
+// ---------------------------------------------------------------------------
+
+function isValidEffort(effort: unknown): effort is ThinkingLevel {
+  return typeof effort === "string" && (THINKING_LEVELS as readonly string[]).includes(effort);
+}
+
+function isUnsupportedEffortError(stderr: string): boolean {
+  return /unsupported.*(thinking|effort|reasoning)/i.test(stderr) ||
+    /thinking.*not.*(support|available)/i.test(stderr) ||
+    /invalid.*thinking/i.test(stderr);
+}
+
+// ---------------------------------------------------------------------------
+// Spawn a single review phase (one-shot)
+// ---------------------------------------------------------------------------
+
+interface ReviewPhaseResult {
+  exitCode: number;
+  output: string;
+  error: string;
+  effortRejected?: boolean;
+}
+
+async function runReviewProcess(
+  cwd: string,
+  promptName: "review-first" | "review-second",
+  config: RalpixConfig,
+  plan: Plan,
+  logger: ProgressLogger,
+  defaultBranch: string,
+  phase: "first" | "second",
+  iteration: number,
+  effort: ThinkingLevel | null,
+): Promise<ReviewPhaseResult> {
+  // Load and expand the review prompt
+  const template = loadPrompt(promptName, cwd);
+  const prompt = expandPrompt(template, {
+    GOAL: plan.title,
+    PROGRESS_FILE: logger.filePath,
+    DEFAULT_BRANCH: defaultBranch,
+  });
+
+  // Determine model
+  const model =
+    phase === "first" ? config.reviewFirstModel : config.reviewSecondModel
+    || config.defaultModel
+    || null;
+
+  // Build spawn args
+  const invocation = getPiExecutable();
+  const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
+
+  if (model) {
+    args.push("--model", model);
+  }
+
+  if (effort) {
+    args.push("--thinking", effort);
+  }
+
+  const { dir: tmpDir, filePath: promptFile } = await writeTempFile(
+    `review-${phase}-${iteration}`,
+    prompt,
+  );
+  args.push(`@${promptFile}`);
+
+  return new Promise((resolve) => {
+    const proc = spawn(invocation.command, args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
+      try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+
+      resolve({
+        exitCode: code ?? 1,
+        output: stdout,
+        error: stderr,
+        effortRejected: isUnsupportedEffortError(stderr),
+      });
+    });
+
+    proc.on("error", (err) => {
+      try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
+      try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+      resolve({
+        exitCode: 1,
+        output: "",
+        error: err.message,
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: First review (one-shot, all 5 agents)
+// ---------------------------------------------------------------------------
+
+async function runFirstReview(
+  cwd: string,
+  config: RalpixConfig,
+  plan: Plan,
+  logger: ProgressLogger,
+  defaultBranch: string,
+): Promise<string> {
+  const effort = isValidEffort(config.reviewFirstEffort) ? config.reviewFirstEffort : null;
+  logger.logReview("first", `STARTED (5 agents, comprehensive)${effort ? ` — effort: ${effort}` : ""}`);
+
+  let result = await runReviewProcess(
+    cwd, "review-first", config, plan, logger, defaultBranch, "first", 0, effort,
+  );
+
+  // Graceful fallback if effort was rejected
+  if (result.effortRejected && effort) {
+    logger.logReview("first", `effort "${effort}" rejected, retrying without effort`);
+    result = await runReviewProcess(
+      cwd, "review-first", config, plan, logger, defaultBranch, "first", 0, null,
+    );
+  }
+
+  if (result.exitCode === 0) {
+    const msg = "COMPLETE";
+    logger.logReview("first", msg);
+    return msg;
+  }
+
+  const msg = `ERROR: exit ${result.exitCode} — ${result.error.slice(0, 200)}`;
+  logger.logReview("first", msg);
+  return msg;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Review loop (iterative, 2 agents — critical/major only)
+// ---------------------------------------------------------------------------
+
+async function runReviewLoop(
+  cwd: string,
+  config: RalpixConfig,
+  plan: Plan,
+  logger: ProgressLogger,
+  defaultBranch: string,
+): Promise<string> {
+  const maxIterations = config.reviewMaxIterations || 5;
+
+  logger.logReview("loop", `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
+
+  for (let i = 0; i < maxIterations; i++) {
+    // Capture HEAD before review
+    const headBefore = getHeadHash(cwd);
+    if (!headBefore) {
+      const msg = "ERROR: cannot determine HEAD hash (not a git repo?)";
+      logger.logReview("loop", msg);
+      return msg;
+    }
+
+    const effort = isValidEffort(config.reviewSecondEffort) ? config.reviewSecondEffort : null;
+    logger.logReview("loop", `Iteration ${i + 1}/${maxIterations} — running review...${effort ? ` (effort: ${effort})` : ""}`);
+
+    let result = await runReviewProcess(
+      cwd, "review-second", config, plan, logger, defaultBranch, "second", i, effort,
+    );
+
+    // Graceful fallback if effort was rejected
+    if (result.effortRejected && effort) {
+      logger.logReview("loop", `effort "${effort}" rejected, retrying without effort`);
+      result = await runReviewProcess(
+        cwd, "review-second", config, plan, logger, defaultBranch, "second", i, null,
+      );
+    }
+
+    if (result.exitCode !== 0) {
+      const msg = `ERROR: exit ${result.exitCode} — ${result.error.slice(0, 200)}`;
+      logger.logReview("loop", msg);
+      return msg;
+    }
+
+    // Check if any changes were committed
+    const headAfter = getHeadHash(cwd);
+
+    if (headAfter === headBefore) {
+      const msg = `COMPLETE (iteration ${i + 1}) — no changes, review clean`;
+      logger.logReview("loop", msg);
+      return msg;
+    }
+
+    logger.logReview("loop", `Iteration ${i + 1}: fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}), continuing...`);
+  }
+
+  const msg = `MAX_ITERATIONS (${maxIterations}) — review loop exhausted`;
+  logger.logReview("loop", msg);
+  return msg;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the full review pipeline:
+ *   1. First review (one-shot, all 5 agents)
+ *   2. Review loop (iterative, 2 agents, critical/major only)
+ */
+export async function runReviewPipeline(
+  ctx: { cwd: string },
+  _pi: ExtensionAPI,
+  plan: Plan,
+  config: RalpixConfig,
+  logger: ProgressLogger,
+): Promise<{ firstResult: string; loopResult: string }> {
+  if (!config.reviewEnabled) {
+    const msg = "SKIPPED (review disabled)";
+    logger.logReview("first", msg);
+    logger.logReview("loop", msg);
+    return { firstResult: msg, loopResult: msg };
+  }
+
+  const defaultBranch = detectDefaultBranch(ctx.cwd);
+
+  // Phase 1: First review — one-shot comprehensive (all 5 agents)
+  const firstResult = await runFirstReview(ctx.cwd, config, plan, logger, defaultBranch);
+
+  // Phase 2: Review loop — iterative critical/major (2 agents)
+  const loopResult = await runReviewLoop(ctx.cwd, config, plan, logger, defaultBranch);
+
+  return { firstResult, loopResult };
+}

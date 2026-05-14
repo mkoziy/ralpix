@@ -1,0 +1,15 @@
+{
+  "defaultModel": null,
+  "defaultProvider": null,
+  "defaultEffort": null,
+  "commitEnabled": true,
+  "commitMessageTemplate": "ralpix: {{taskTitle}}",
+  "reviewEnabled": true,
+  "reviewFirstModel": null,
+  "reviewSecondModel": null,
+  "reviewFirstEffort": null,
+  "reviewSecondEffort": null,
+  "maxRetries": 2,
+  "reviewMaxIterations": 5,
+  "movePlanOnCompletion": false
+}

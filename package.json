@@ -1,0 +1,11 @@
+{
+  "name": "ralpix",
+  "version": "0.1.0",
+  "description": "Autonomous plan execution extension for pi — runs ralpix-format markdown plans hands-off, each task in a fresh pi session",
+  "keywords": ["pi-package", "pi-extension", "ralpix", "plan-execution", "autonomous"],
+  "license": "MIT",
+  "author": "",
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
