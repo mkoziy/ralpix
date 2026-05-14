@@ -30,7 +30,7 @@ const RE_EMPTY = /^\s*$/;
 // ---------------------------------------------------------------------------
 
 interface ParseState {
-  section: "overview" | "context" | "criteria" | "task";
+  section: "overview" | "context" | "criteria" | "task" | "ignore";
   overviewLines: string[];
   contextLines: string[];
   criteria: PlanItem[];
@@ -91,7 +91,7 @@ export function parsePlan(filePath: string): Plan {
         state.section = "criteria";
       } else if (heading.startsWith("open question") || heading.startsWith("v2") || heading.startsWith("validation")) {
         flushTask();
-        state.section = "overview"; // ignore v2 sections
+        state.section = "ignore";
       }
       continue;
     }

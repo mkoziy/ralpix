@@ -101,6 +101,7 @@ export function loadConfig(cwd: string): RalpixConfig {
   config.reviewFirstEffort = validateEffort(config.reviewFirstEffort, "reviewFirstEffort");
   config.reviewSecondEffort = validateEffort(config.reviewSecondEffort, "reviewSecondEffort");
   config.externalReviewEffort = validateEffort(config.externalReviewEffort, "externalReviewEffort");
+  config.planEffort = validateEffort(config.planEffort, "planEffort");
 
   return config;
 }

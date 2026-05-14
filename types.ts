@@ -27,6 +27,9 @@ export interface RalpixConfig {
   externalReviewEffort: ThinkingLevel | null;
   externalReviewMaxIterations: number;
   externalReviewPatience: number;
+  /** Plan creation model / effort (falls back to defaultModel / defaultEffort) */
+  planModel: string | null;
+  planEffort: ThinkingLevel | null;
   /** Directory for created/stored plan files */
   plansDir: string;
 }
