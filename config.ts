@@ -137,7 +137,7 @@ export function initRalpixHome(): void {
   // Copy prompts
   const bundledPromptsDir = join(__dirname, "bundled", "prompts");
   const promptsDir = join(RALPIX_HOME, "prompts");
-  for (const name of ["task-default", "review-first", "review-second", "finalize", "external-review", "external-eval"]) {
+  for (const name of ["task-default", "review-first", "review-second", "finalize", "external-review", "external-eval", "plan-creation"]) {
     const dest = join(promptsDir, `${name}.md`);
     if (!existsSync(dest)) {
       writeFileSync(dest, readFileSync(join(bundledPromptsDir, `${name}.md`), "utf-8"), "utf-8");
