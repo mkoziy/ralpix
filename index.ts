@@ -62,7 +62,7 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
       const trimmed = (args ?? "").trim();
 
       // ── /ralpix plan <description> ─────────────────────────────
-      if (trimmed.startsWith("plan ")) {
+      if (trimmed.startsWith("plan ") || trimmed === "plan") {
         const description = trimmed.slice(5).trim();
         if (!description) {
           ctx.ui.notify("Usage: /ralpix plan <description>", "error");

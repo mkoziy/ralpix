@@ -89,7 +89,7 @@ export function parsePlan(filePath: string): Plan {
         state.section = "context";
       } else if (heading.startsWith("success")) {
         state.section = "criteria";
-      } else if (heading.startsWith("open question") || heading.startsWith("v2")) {
+      } else if (heading.startsWith("open question") || heading.startsWith("v2") || heading.startsWith("validation")) {
         flushTask();
         state.section = "overview"; // ignore v2 sections
       }

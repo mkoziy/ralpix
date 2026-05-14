@@ -330,16 +330,14 @@ async function runExternalReviewLoop(
     `STARTED (reviewer: ${externalModel}, max ${maxIterations} iterations, patience: ${patience})`);
 
   let unchangedRounds = 0;
-  let isFirstIteration = true;
 
   for (let i = 0; i < maxIterations; i++) {
     // ---- Step 1: External reviewer finds issues ----
     const externalEffort = isValidEffort(config.externalReviewEffort) ? config.externalReviewEffort : null;
 
-    // Build diff instruction based on iteration
-    const diffInstruction = isFirstIteration
-      ? `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`
-      : `Run: \`git diff\` to see uncommitted changes from the previous fix round.`;
+    // Always review the full branch diff, including any fixes committed in
+    // previous iterations, so the reviewer sees the complete picture.
+    const diffInstruction = `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`;
 
     // Load and expand the external review prompt with diff instruction
     const reviewTemplate = loadPrompt("external-review", cwd);
@@ -441,7 +439,7 @@ async function runExternalReviewLoop(
     const evalResult = await runReviewProcess(
       cwd, "external-eval", config, plan, logger, defaultBranch,
       "eval", i, mainEffort, mainModel,
-      { FINDINGS: findings.slice(0, 8000) },
+      { FINDINGS: findings },
     );
 
     if (evalResult.exitCode !== 0) {
@@ -478,7 +476,6 @@ async function runExternalReviewLoop(
         `fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)})`);
     }
 
-    isFirstIteration = false;
   }
 
   const msg = `MAX_ITERATIONS (${maxIterations})`;
