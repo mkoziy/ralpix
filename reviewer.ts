@@ -99,6 +99,7 @@ async function runReviewProcess(
   iteration: number,
   effort: ThinkingLevel | null,
   modelOverride?: string | null,
+  extraVars?: Record<string, string>,
 ): Promise<ReviewPhaseResult> {
   // Load and expand the review prompt
   const template = loadPrompt(promptName, cwd);
@@ -106,6 +107,7 @@ async function runReviewProcess(
     GOAL: plan.title,
     PROGRESS_FILE: logger.filePath,
     DEFAULT_BRANCH: defaultBranch,
+    ...extraVars,
   });
 
   // Determine model — use override if provided, otherwise phase-based
@@ -313,9 +315,12 @@ async function runExternalReviewLoop(
   const patience = config.externalReviewPatience || 3;
 
   const externalModel = config.externalReviewModel || config.defaultModel;
-  const mainModel = config.defaultModel;
 
-  if (!externalModel || !mainModel) {
+  // mainModel is optional — when null, runReviewProcess omits --model and pi
+  // picks its own default, consistent with how the other review phases behave.
+  const mainModel = config.defaultModel || null;
+
+  if (!externalModel) {
     const msg = "SKIPPED — no model configured (externalReviewModel/defaultModel)";
     logger.logExternalReview("loop", msg);
     return msg;
@@ -383,7 +388,8 @@ async function runExternalReviewLoop(
     // Retry without effort if rejected
     if (reviewResult.effortRejected && externalEffort) {
       logger.logExternalReview("review", `effort "${externalEffort}" rejected, retrying without effort`);
-      const retryArgs = [...invocation.args];
+      // Copy fully built args, strip --thinking flag, and replace old prompt file
+      const retryArgs = args.filter(a => !a.startsWith("@") || !a.includes("external-review"));
       const thinkIdx = retryArgs.indexOf("--thinking");
       if (thinkIdx >= 0) retryArgs.splice(thinkIdx, 2);
 
@@ -430,18 +436,12 @@ async function runExternalReviewLoop(
     const headBefore = getHeadHash(cwd);
     const mainEffort = isValidEffort(config.defaultEffort) ? config.defaultEffort : null;
 
-    const evalTemplate = loadPrompt("external-eval", cwd);
-    const evalPrompt = expandPrompt(evalTemplate, {
-      GOAL: plan.title,
-      PROGRESS_FILE: logger.filePath,
-      FINDINGS: findings.slice(0, 8000),
-    });
-
     logger.logExternalReview("eval", `Iteration ${i + 1} — evaluating findings...`);
 
     const evalResult = await runReviewProcess(
       cwd, "external-eval", config, plan, logger, defaultBranch,
       "eval", i, mainEffort, mainModel,
+      { FINDINGS: findings.slice(0, 8000) },
     );
 
     if (evalResult.exitCode !== 0) {
