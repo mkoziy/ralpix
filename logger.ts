@@ -69,6 +69,10 @@ export class ProgressLogger {
     );
   }
 
+  logExternalReview(phase: string, result: string): void {
+    this.append(`REVIEW_XTRNL ${phase.padEnd(8)} ${result}`);
+  }
+
   logReview(phase: "first" | "second" | "loop", result: string): void {
     const labels: Record<string, string> = {
       first: "REVIEW_FIRST",

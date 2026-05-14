@@ -21,6 +21,12 @@ export interface RalpixConfig {
   maxRetries: number;
   reviewMaxIterations: number;
   movePlanOnCompletion: boolean;
+  /** External review phase — independent model reviews code */
+  externalReviewEnabled: boolean;
+  externalReviewModel: string | null;
+  externalReviewEffort: ThinkingLevel | null;
+  externalReviewMaxIterations: number;
+  externalReviewPatience: number;
 }
 
 /** A single checklist item within a task */
