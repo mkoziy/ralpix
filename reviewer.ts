@@ -1,12 +1,13 @@
 /**
- * Review pipeline — first pass + iterative loop.
+ * Review pipeline — first pass + external review + iterative loop.
  *
- * Phase 1 (first): One-shot comprehensive review — all 5 agents, review-first.md.
- * Phase 2 (loop):  Iterative critical/major review — 2 agents, review-second.md.
- *                  Repeats while HEAD changes, up to reviewMaxIterations.
- *                  Exits when no commits were made (nothing to fix).
+ * Phase 1 (first):      One-shot comprehensive review — all 5 agents, review-first.md.
+ * Phase 2.5 (external):  External review loop — different model reviews, main model fixes.
+ *                        Iterates until clean, stalemate, or max iterations.
+ * Phase 3 (loop):        Iterative critical/major review — 2 agents, review-second.md.
+ *                        Repeats while HEAD changes, up to reviewMaxIterations.
  *
- * Pattern follows ralphex: runClaudeReview (one-shot) → runClaudeReviewLoop (iterative).
+ * Pattern follows ralphex: runClaudeReview → runExternalReviewLoop → runClaudeReviewLoop.
  */
 
 import { spawn, execSync } from "node:child_process";
