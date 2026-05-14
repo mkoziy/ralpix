@@ -454,11 +454,21 @@ async function runExternalReviewLoop(
 
     logger.logExternalReview("eval", `Iteration ${i + 1} — evaluating findings...`);
 
-    const evalResult = await runReviewProcess(
+    let evalResult = await runReviewProcess(
       cwd, "external-eval", config, plan, logger, defaultBranch,
       "eval", i, mainEffort, mainModel,
       { FINDINGS: findings },
     );
+
+    // Retry without effort if rejected (same as other review phases)
+    if (evalResult.effortRejected && mainEffort) {
+      logger.logExternalReview("eval", `effort "${mainEffort}" rejected, retrying without effort`);
+      evalResult = await runReviewProcess(
+        cwd, "external-eval", config, plan, logger, defaultBranch,
+        "eval", i, null, mainModel,
+        { FINDINGS: findings },
+      );
+    }
 
     if (evalResult.exitCode !== 0) {
       const msg = `ERROR: eval exit ${evalResult.exitCode}`;

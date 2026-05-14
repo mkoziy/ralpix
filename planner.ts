@@ -75,39 +75,29 @@ export async function runPlanCreation(
   let planContent: string | null = null;
   let lastAction: "accept" | "reject" | null = null;
 
-  // ── Apply configured model / effort to the new session ───────────
-  // newSession inherits the runtime's current model, so we temporarily
-  // switch to the configured defaults, then restore afterward.
-  const savedModel = ctx.model;
-  const savedThinkingLevel = pi.getThinkingLevel();
-
-  // planModel → defaultModel → current session model
+  // planModel → defaultModel → (pi session default)
   const desiredModel = config.planModel || config.defaultModel;
-  // planEffort → defaultEffort → current session effort
+  // planEffort → defaultEffort → (pi session default)
   const desiredEffort = config.planEffort || config.defaultEffort;
 
-  // Only switch model when we have a current model to restore afterward.
-  const applyModel = savedModel && desiredModel
-    ? (() => {
-        const slash = desiredModel!.indexOf("/");
-        if (slash < 0) return undefined;
-        const provider = desiredModel!.slice(0, slash);
-        const modelId = desiredModel!.slice(slash + 1);
-        return ctx.modelRegistry.find(provider, modelId);
-      })()
-    : undefined;
-
-  const applyEffort = desiredEffort && desiredEffort !== savedThinkingLevel
-    ? desiredEffort
-    : null;
-
-  if (applyModel) await pi.setModel(applyModel);
-  if (applyEffort) pi.setThinkingLevel(applyEffort);
-
-  try {
-    // Run in a new session
-    await ctx.newSession({
-      withSession: async (planCtx) => {
+  // Run in a new session, seeding model/effort via setup entries so the
+  // plan session picks up the configuration without mutating global state.
+  await ctx.newSession({
+    setup: async (sm) => {
+      if (desiredModel) {
+        const slash = desiredModel.indexOf("/");
+        if (slash >= 0) {
+          sm.appendModelChange(
+            desiredModel.slice(0, slash),
+            desiredModel.slice(slash + 1),
+          );
+        }
+      }
+      if (desiredEffort) {
+        sm.appendThinkingLevelChange(desiredEffort);
+      }
+    },
+    withSession: async (planCtx) => {
       // ── ralpix_ask_question ──────────────────────────────────────
       planCtx.registerTool({
         name: "ralpix_ask_question",
@@ -226,11 +216,6 @@ export async function runPlanCreation(
       await planCtx.waitForIdle();
     },
   });
-  } finally {
-    // Restore original model / effort so the user's session is unchanged.
-    if (applyModel && savedModel) await pi.setModel(savedModel);
-    if (applyEffort) pi.setThinkingLevel(savedThinkingLevel);
-  }
 
   // ── After session: handle results ─────────────────────────────────
 
