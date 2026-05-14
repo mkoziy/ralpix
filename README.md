@@ -261,32 +261,199 @@ Started: 2026-05-12T14:30:00.000Z
     └── task-default.md
 ```
 
+## Real-World Examples
+
+### Example 1: From idea to merged feature
+
+```bash
+# 1. Generate a plan from a one-line description
+/ralpix plan "add rate limiting middleware for Express API"
+# → Model explores codebase, asks:
+#   Q: Which rate limit algorithm? → "Token bucket"
+#   Q: Store in memory or Redis? → "Redis"
+# → Plan generated, you review and accept
+# → Saved to docs/plans/add-rate-limiting-middleware.md
+# → Choose "Execute plan now"
+
+# ralpix takes over:
+# Task 1: Create Redis rate limiter module  ✓  commit a1b2c3d
+# Task 2: Wire middleware into Express app    ✓  commit d4e5f6a
+# Task 3: Add configuration and tests        ✓  commit g7h8i9j
+#
+# First review: 5 agents check everything
+# External review: GPT-5.2 double-checks Claude's work
+# Second review: critical issues only → clean
+#
+# Done. 3 tasks, 3 commits, multi-model review completed.
+```
+
+### Example 2: Review existing changes with a second opinion
+
+```bash
+# You already made changes manually or with Claude Code
+# Run external review on your branch
+
+# First, configure external review with GPT:
+cat > .ralpix/config.json << 'EOF'
+{
+  "externalReviewEnabled": true,
+  "externalReviewModel": "openai/gpt-5.2",
+  "reviewFirstModel": "anthropic/claude-sonnet-4-5",
+  "reviewSecondModel": "anthropic/claude-sonnet-4-5"
+}
+EOF
+
+# Create a minimal plan (needed for review context):
+cat > docs/plans/review-changes.md << 'EOF'
+# Plan: Review branch changes
+
+## Overview
+Review and fix issues in the current branch.
+
+### Task 1: Review changes
+- [x] Changes already made
+EOF
+
+# Execute — tasks are already done, so it jumps to review:
+/ralpix docs/plans/review-changes.md
+# → First review: Claude reviews (5 agents)
+# → External review: GPT-5.2 finds 3 issues Claude missed
+# → Main model fixes, GPT re-checks → clean
+# → Second review: final critical pass
+```
+
+### Example 3: Fast iteration with tasks-only mode
+
+```bash
+# Skip all reviews, just execute tasks — great for prototypes
+
+cat > .ralpix/config.json << 'EOF'
+{
+  "reviewEnabled": false,
+  "externalReviewEnabled": false
+}
+EOF
+
+/ralpix docs/plans/prototype-feature.md
+# → Tasks execute sequentially, commits after each
+# → No review phases — fast feedback loop
+```
+
+### Example 4: Different models for different phases
+
+```jsonc
+// .ralpix/config.json — full multi-model setup
+{
+  // Execution: powerful model for complex code generation
+  "defaultModel": "anthropic/claude-opus-4-5",
+  "defaultEffort": "high",
+
+  // First review: broad analysis with a different provider
+  "reviewFirstModel": "openai/gpt-5.2",
+
+  // External review: third model for independent audit
+  "externalReviewEnabled": true,
+  "externalReviewModel": "openai/gpt-5.2",
+  "externalReviewMaxIterations": 5,
+  "externalReviewPatience": 3,
+
+  // Second review: back to main provider, critical issues only
+  "reviewSecondModel": "anthropic/claude-sonnet-4-5",
+
+  // Execution control
+  "maxRetries": 2,
+  "commitEnabled": true,
+  "commitMessageTemplate": "ralpix: {{taskTitle}}"
+}
+```
+
+### Example 5: Per-project prompt customization
+
+```bash
+# Project-specific task prompt that knows your conventions
+mkdir -p .ralpix/prompts
+cat > .ralpix/prompts/task-default.md << 'EOF'
+# Task Execution — MyProject
+
+You are working on MyProject, a Go microservice.
+
+## Plan Context
+{{OVERVIEW}}
+
+## Current Task
+### {{TASK_TITLE}}
+{{TASK_DESCRIPTION}}
+
+## Project Conventions
+- Use Go 1.24+ with standard library where possible
+- Tests use testify/assert
+- Error handling: always wrap with fmt.Errorf("context: %w", err)
+- Logging: use slog, not log
+- Database: sqlc for queries, no ORM
+
+## Instructions
+- Complete all checklist items
+- Run `go test ./...` after changes
+- Run `golangci-lint run` before committing
+EOF
+
+# Now ralpix uses your custom prompt for every task in this project
+/ralpix docs/plans/add-grpc-endpoint.md
+```
+
 ## Architecture
+
+### Plan Creation (interactive)
+
+```
+┌─────────────────────────────────────────────┐
+│  /ralpix plan "description"                  │
+│    │                                        │
+│    ├─► ctx.newSession()                     │
+│    │   ├─► Model explores codebase          │
+│    │   ├─► Model calls ralpix_ask_question  │
+│    │   │   └─► User picks answer            │
+│    │   ├─► Model generates plan draft       │
+│    │   └─► Model calls ralpix_submit_plan   │
+│    │       └─► User accepts / revises       │
+│    │                                        │
+│    └─► Plan saved to docs/plans/            │
+│        └─► Option: execute immediately      │
+└─────────────────────────────────────────────┘
+```
+
+### Task Execution
 
 Each task runs as an isolated pi process:
 
 ```
-┌────────────────────────────────────────────┐
-│  Parent Session (user's pi)                │
-│                                            │
-│  /ralpix plan.md                           │
-│    │                                       │
-│    ├─► spawn pi --mode json -p --no-session│  Task 1
-│    │   └─► auto-commit                     │
-│    │                                       │
-│    ├─► spawn pi --mode json -p --no-session│  Task 2
-│    │   └─► auto-commit                     │
-│    │                                       │
-│    ├─► spawn pi (review-first)             │  First review (one-shot, 5 agents)
-│    │                                       │
-│    └─► review loop (iterative)             │  Review loop
-│        ├─► spawn pi (review-second)        │    Iteration 1 (2 agents)
-│        │   └─► check HEAD: changed → loop  │
-│        ├─► spawn pi (review-second)        │    Iteration 2
-│        │   └─► check HEAD: unchanged → done│
-│                                            │
-│  Progress: ~/.ralpix/progress/<plan>.txt   │
-└────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  /ralpix docs/plans/feature.md                       │
+│    │                                                 │
+│    ├─► spawn pi (task-default)          Task 1       │
+│    │   └─► auto-commit                               │
+│    │                                                 │
+│    ├─► spawn pi (task-default)          Task 2       │
+│    │   └─► auto-commit                               │
+│    │                                                 │
+│    ├─► spawn pi (review-first)          Review 1     │
+│    │   └─► 5 agents, one-shot                       │
+│    │                                                 │
+│    ├─► external review loop (if enabled)             │
+│    │   ├─► spawn pi (external-review)   Find issues  │
+│    │   │   └─► GPT reviews the diff                 │
+│    │   ├─► spawn pi (external-eval)     Fix issues   │
+│    │   │   └─► Claude evaluates & fixes             │
+│    │   └─► loop until clean / stalemate              │
+│    │                                                 │
+│    └─► review loop (iterative)          Review 2     │
+│        ├─► spawn pi (review-second)     Iteration 1  │
+│        │   └─► check HEAD: changed → loop            │
+│        └─► spawn pi (review-second)     Iteration 2  │
+│            └─► check HEAD: unchanged → done          │
+│                                                      │
+│  Progress: ~/.ralpix/progress/<plan>.txt              │
+└──────────────────────────────────────────────────────┘
 ```
 
 This ensures each task gets a clean context window — no contamination from previous tasks.
@@ -331,3 +498,4 @@ ls -la ~/.ralpix/progress/
 - **Validation commands**: `## Validation` section in plans with auto-run
 - **Web dashboard**: `--serve` flag for progress viewing
 - **Notifications**: Telegram/Slack hooks on completion/failure
+- **fzf plan selector**: Run `/ralpix` without args, pick a plan from the list
