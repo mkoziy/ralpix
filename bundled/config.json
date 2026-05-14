@@ -16,5 +16,6 @@
   "externalReviewModel": null,
   "externalReviewEffort": null,
   "externalReviewMaxIterations": 5,
-  "externalReviewPatience": 3
+  "externalReviewPatience": 3,
+  "plansDir": "docs/plans"
 }

@@ -27,6 +27,8 @@ export interface RalpixConfig {
   externalReviewEffort: ThinkingLevel | null;
   externalReviewMaxIterations: number;
   externalReviewPatience: number;
+  /** Directory for created/stored plan files */
+  plansDir: string;
 }
 
 /** A single checklist item within a task */
