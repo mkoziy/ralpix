@@ -48,8 +48,10 @@ function detectDefaultBranch(cwd: string): string {
       "git symbolic-ref refs/remotes/origin/HEAD --short",
       { cwd, encoding: "utf-8" },
     ).trim();
-    // Output looks like "origin/main"; strip the remote prefix.
-    if (remoteHead.startsWith("origin/")) return remoteHead.slice(7);
+    // Return the remote-qualified name (e.g. "origin/main") so that
+    // `git diff <ref>...HEAD` works even when no local tracking branch
+    // exists in the checkout.
+    if (remoteHead) return remoteHead;
   } catch {
     // No remote or origin/HEAD not set — try local heuristics.
   }
@@ -300,20 +302,24 @@ async function runReviewLoop(
  * Read last assistant text from JSON-line messages.
  */
 function extractLastAssistantText(lines: string[]): string {
-  const texts: string[] = [];
+  // Only return the _last_ assistant message.  When the reviewer session
+  // uses tools, earlier assistant turns contain tool-call text that would
+  // pollute the final report (e.g. "NO ISSUES FOUND") if concatenated.
+  let parts: string[] = [];
   for (const line of lines) {
     try {
       const event = JSON.parse(line);
       if (event.type === "message_end" && event.message?.role === "assistant") {
+        parts = [];
         for (const part of event.message.content ?? []) {
-          if (part.type === "text") texts.push(part.text);
+          if (part.type === "text") parts.push(part.text);
         }
       }
     } catch {
       // skip malformed lines
     }
   }
-  return texts.join("\n");
+  return parts.join("\n");
 }
 
 async function runExternalReviewLoop(
