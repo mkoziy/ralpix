@@ -5,6 +5,7 @@
  * Each task runs in an isolated pi process (spawn) to keep context sharp.
  *
  * Commands:
+ *   /ralpix plan <desc>  — Create a plan interactively
  *   /ralpix init          — Initialise ~/.ralpix/ with defaults
  *   /ralpix <path>        — Execute a plan
  *
@@ -23,6 +24,7 @@ import { parsePlan } from "./parser.js";
 import { ProgressLogger } from "./logger.js";
 import { executeAllTasks } from "./executor.js";
 import { runReviewPipeline } from "./reviewer.js";
+import { runPlanCreation } from "./planner.js";
 import type { RalpixState } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -55,10 +57,34 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
   // ---- /ralpix command ----------------------------------------------------
 
   pi.registerCommand("ralpix", {
-    description: "Execute a ralpix plan (/ralpix <path> or /ralpix init)",
+    description: "Execute a ralpix plan (/ralpix <path>, /ralpix init, /ralpix plan <desc>)",
     handler: async (args, ctx) => {
       const trimmed = (args ?? "").trim();
 
+      // ── /ralpix plan <description> ─────────────────────────────
+      if (trimmed.startsWith("plan ")) {
+        const description = trimmed.slice(5).trim();
+        if (!description) {
+          ctx.ui.notify("Usage: /ralpix plan <description>", "error");
+          return;
+        }
+
+        // Auto-init if needed
+        if (!existsSync(ralpixHomeDir())) {
+          ctx.ui.notify("First run — initialising ~/.ralpix/...", "info");
+          initRalpixHome();
+        }
+
+        const config = loadConfig(ctx.cwd);
+        const planPath = await runPlanCreation(description, ctx, pi, config);
+        if (planPath) {
+          // User chose to execute
+          await runPlan(planPath, ctx, pi);
+        }
+        return;
+      }
+
+      // ── /ralpix init ───────────────────────────────────────────
       if (!trimmed || trimmed === "init") {
         const ok = await ctx.ui.confirm(
           "Initialize ralpix?",
