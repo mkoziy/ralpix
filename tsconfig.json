@@ -1,0 +1,56 @@
+{
+  "compilerOptions": {
+    // ─── Type Checking (maximum strictness) ────────────────────────
+    "strict": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitAny": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "strictBuiltinIteratorReturn": true,
+    "strictNullChecks": true,
+    "strictPropertyInitialization": true,
+    "useUnknownInCatchVariables": true,
+
+    // ─── Module Resolution ─────────────────────────────────────────
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowJs": false,
+    "checkJs": false,
+
+    // ─── Output ────────────────────────────────────────────────────
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+
+    // ─── Additional Safety ─────────────────────────────────────────
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+
+    // ─── Paths ─────────────────────────────────────────────────────
+    "rootDir": "."
+  },
+  "include": [
+    "*.ts",
+    "bundled/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".worktrees"
+  ]
+}

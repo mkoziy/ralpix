@@ -2,10 +2,37 @@
   "name": "ralpix",
   "version": "0.1.0",
   "description": "Autonomous plan execution extension for pi — runs ralpix-format markdown plans hands-off, each task in a fresh pi session",
-  "keywords": ["pi-package", "pi-extension", "ralpix", "plan-execution", "autonomous"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "ralpix",
+    "plan-execution",
+    "autonomous"
+  ],
   "license": "MIT",
   "author": "",
+  "type": "module",
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck"
+  },
+  "devDependencies": {
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@types/node": "^25.8.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "eslint": "^9.39.4",
+    "eslint-plugin-import": "^2.32.0",
+    "eslint-plugin-sonarjs": "^4.0.3",
+    "eslint-plugin-unicorn": "^64.0.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.3"
   }
 }

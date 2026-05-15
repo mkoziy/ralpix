@@ -70,7 +70,7 @@ export function expandVariables(
   template: string,
   vars: Record<string, string>,
 ): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => {
+  return template.replaceAll(/{{(\w+)}}/g, (_, key: string) => {
     return vars[key] ?? `{{${key}}}`;
   });
 }
@@ -79,7 +79,7 @@ export function expandVariables(
  * Replace {{agent:name}} placeholders with the content of agent files.
  */
 export function expandAgents(template: string): string {
-  return template.replace(/\{\{agent:(\w+)\}\}/g, (_, name: string) => {
+  return template.replaceAll(/{{agent:(\w+)}}/g, (_, name: string) => {
     try {
       return loadAgent(name);
     } catch {

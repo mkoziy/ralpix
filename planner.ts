@@ -7,11 +7,13 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+
+import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { RalpixConfig } from "./types.js";
-import { loadPrompt, expandPrompt } from "./prompt.js";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,20 +23,21 @@ import { loadPrompt, expandPrompt } from "./prompt.js";
 function slugify(text: string): string {
   const slug = text
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
+    .replaceAll(/[^\da-z]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "")
     .slice(0, 60);
 
   // When the description contains no ASCII alphanumerics (e.g. Cyrillic,
   // CJK), the regex strips everything and we get an empty slug.  Fall back
   // to a short hash so the filename stays non-empty and unique.
-  if (slug) return slug;
+  if (slug.length > 0) return slug;
 
   let hash = 0;
   for (let i = 0; i < text.length; i++) {
-    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    const codePoint = text.codePointAt(i) ?? 0;
+    hash = Math.trunc((hash << 5) - hash + codePoint);
   }
-  return "plan-" + Math.abs(hash).toString(36).slice(0, 12);
+  return `plan-${Math.abs(hash).toString(36).slice(0, 12)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,14 +54,16 @@ function slugify(text: string): string {
  * Returns the path to the saved plan file if user chose to execute,
  * or null if user is done / rejected / failed.
  */
+
 export async function runPlanCreation(
   description: string,
   ctx: ExtensionCommandContext,
-  pi: ExtensionAPI,
+  _pi: ExtensionAPI,
   config: RalpixConfig,
 ): Promise<string | null> {
   // Validate
-  if (!description || description.trim().length < 5) {
+  const trimmed = description.trim();
+  if (trimmed.length < 5) {
     ctx.ui.notify("Plan description too short (min 5 characters)", "error");
     return null;
   }
@@ -76,15 +81,17 @@ export async function runPlanCreation(
   let lastAction: "accept" | "reject" | null = null;
 
   // planModel → defaultModel → (pi session default)
+  // Blank strings mean unset, so || semantics are intentional here.
+  /* eslint-disable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
   const desiredModel = config.planModel || config.defaultModel;
-  // planEffort → defaultEffort → (pi session default)
   const desiredEffort = config.planEffort || config.defaultEffort;
+  /* eslint-enable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
 
   // Run in a new session, seeding model/effort via setup entries so the
   // plan session picks up the configuration without mutating global state.
   await ctx.newSession({
-    setup: async (sm) => {
-      if (desiredModel) {
+    setup: (sm) => {
+      if (desiredModel !== null && desiredModel.length > 0) {
         const slash = desiredModel.indexOf("/");
         if (slash >= 0) {
           sm.appendModelChange(
@@ -93,7 +100,7 @@ export async function runPlanCreation(
           );
         }
       }
-      if (desiredEffort) {
+      if (desiredEffort !== null && desiredEffort.length > 0) {
         sm.appendThinkingLevelChange(desiredEffort);
       }
     },
@@ -107,6 +114,7 @@ export async function runPlanCreation(
           "Use this when you need to understand requirements, preferences, " +
           "or constraints before writing the plan.",
         promptSnippet: "Ask user: {{question}}",
+        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
         parameters: Type.Object({
           question: Type.String({
             description: "The question to ask the user",
@@ -115,13 +123,14 @@ export async function runPlanCreation(
             description: "Answer options for the user to pick from",
           }),
         }),
+        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
         async execute(_toolCallId, params) {
-          const question = params.question as string;
-          const options = params.options as string[];
+          const question = params["question"] as string;
+          const options = params["options"] as string[];
 
           const answer = await ctx.ui.select(question, options);
 
-          if (!answer) {
+          if (answer === undefined || answer.length === 0) {
             // User cancelled
             return {
               content: [
@@ -149,13 +158,15 @@ export async function runPlanCreation(
           "request revisions, or reject. If revisions are requested, " +
           "update the plan and call this tool again.",
         promptSnippet: "Submit plan draft for review",
+        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
         parameters: Type.Object({
           planContent: Type.String({
             description: "The complete plan in ralpix markdown format",
           }),
         }),
+        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
         async execute(_toolCallId, params) {
-          const content = params.planContent as string;
+          const content = params["planContent"] as string;
 
           // Show review chooser
           const reviewChoice = await ctx.ui.select(
@@ -164,7 +175,7 @@ export async function runPlanCreation(
           );
 
           // Handle "revise"
-          if (reviewChoice?.includes("Revise")) {
+          if (typeof reviewChoice === "string" && reviewChoice.includes("Revise")) {
             const feedback = await ctx.ui.input(
               "What changes would you like?",
               "Add more details, change approach, fix issues...",
@@ -174,17 +185,17 @@ export async function runPlanCreation(
               content: [
                 {
                   type: "text",
-                  text: feedback
+                  text: typeof feedback === "string" && feedback.length > 0
                     ? `User requested revisions: ${feedback}`
                     : "User requested revisions (no specific feedback provided).",
                 },
               ],
-              details: { action: "revise", feedback: feedback || "" },
+              details: { action: "revise", feedback: feedback ?? "" },
             };
           }
 
           // Handle "accept"
-          if (reviewChoice?.includes("Accept")) {
+          if (typeof reviewChoice === "string" && reviewChoice.includes("Accept")) {
             planContent = content;
             lastAction = "accept";
 
@@ -219,12 +230,14 @@ export async function runPlanCreation(
 
   // ── After session: handle results ─────────────────────────────────
 
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (lastAction === "reject") {
     ctx.ui.notify("Plan creation cancelled (user rejected)", "warning");
     return null;
   }
 
-  if (!planContent) {
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  if (planContent === null) {
     ctx.ui.notify(
       "Plan creation failed — model did not submit a plan draft",
       "error",
@@ -233,7 +246,7 @@ export async function runPlanCreation(
   }
 
   // Determine plan path
-  const plansDir = resolve(ctx.cwd, config.plansDir || "docs/plans");
+  const plansDir = resolve(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans");
   if (!existsSync(plansDir)) {
     mkdirSync(plansDir, { recursive: true });
   }
@@ -247,7 +260,7 @@ export async function runPlanCreation(
       "Plan already exists",
       `${planPath} already exists. Overwrite?`,
     );
-    if (!overwrite) {
+    if (overwrite !== true) {
       ctx.ui.notify("Plan creation cancelled (file exists)", "warning");
       return null;
     }
@@ -263,7 +276,7 @@ export async function runPlanCreation(
     ["▶ Execute plan now", "✓ Done — exit, run later"],
   );
 
-  if (execute?.includes("Execute")) {
+  if (typeof execute === "string" && execute.includes("Execute")) {
     return planPath;
   }
 

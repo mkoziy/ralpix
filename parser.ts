@@ -19,14 +19,15 @@ import type { Plan, PlanItem, PlanTask } from "./types.js";
 // Regex helpers
 // ---------------------------------------------------------------------------
 
-const RE_H1 = /^#\s+Plan:\s*(.+)/i;
+const RE_H1 = /^#\s+plan:\s*(.+)/i;
 const RE_H2 = /^##\s+(.+)/i;
-const RE_H3_TASK = /^###\s+Task\s+(\d+):\s*(.+)/i;
-const RE_CHECKBOX = /^-\s+\[([ x])\]\s+(.+)/i;
+const RE_H3_TASK = /^###\s+task\s+(\d+):\s*(.+)/i;
+const RE_CHECKBOX = /^-\s+\[([ x])]\s+(.+)/i;
 const RE_EMPTY = /^\s*$/;
+const RE_H3_OR_H2 = /^(?:###\s+task|##\s+)/i;
 
 // ---------------------------------------------------------------------------
-// Parse
+// Section handlers (break up cognitive complexity)
 // ---------------------------------------------------------------------------
 
 interface ParseState {
@@ -39,110 +40,81 @@ interface ParseState {
   taskLines: string[];
 }
 
-export function parsePlan(filePath: string): Plan {
-  if (!existsSync(filePath)) {
-    throw new Error(`Plan file not found: ${filePath}`);
+function flushCurrentTask(state: ParseState): void {
+  if (state.currentTask === null) return;
+  state.currentTask.description = state.taskLines.join("\n").trim();
+  if (state.currentTask.items.length === 0 && state.currentTask.description.length > 0) {
+    // No checkboxes — treat whole task as one implicit item
+    state.currentTask.items = [{ text: state.currentTask.description, done: false }];
   }
+  state.tasks.push(state.currentTask);
+  state.currentTask = null;
+  state.taskLines = [];
+}
 
-  const content = readFileSync(filePath, "utf-8");
-  const lines = content.split("\n");
+function handleH1(line: string): string | null {
+  const match = RE_H1.exec(line);
+  return match?.[1]?.trim() ?? null;
+}
 
-  let title = "Untitled Plan";
+function handleH2(heading: string): ParseState["section"] | "flush" {
+  const lower = heading.toLowerCase();
+  if (lower.startsWith("overview")) return "overview";
+  if (lower.startsWith("context")) return "context";
+  if (lower.startsWith("success")) return "criteria";
+  if (lower.startsWith("open question") || lower.startsWith("v2") || lower.startsWith("validation")) {
+    return "flush";
+  }
+  return "ignore";
+}
 
-  const state: ParseState = {
-    section: "overview",
-    overviewLines: [],
-    contextLines: [],
-    criteria: [],
-    tasks: [],
-    currentTask: null,
-    taskLines: [],
+function handleH3(line: string, state: ParseState): void {
+  const match = RE_H3_TASK.exec(line);
+  if (match === null) return;
+  const numStr = match[1];
+  const taskTitle = match[2];
+  if (numStr === undefined || taskTitle === undefined) return;
+
+  const num = Number.parseInt(numStr, 10);
+  state.section = "task";
+  state.currentTask = {
+    id: `task-${num}`,
+    number: num,
+    title: `Task ${num}: ${taskTitle.trim()}`,
+    description: "",
+    items: [],
+    status: "pending",
   };
+  state.taskLines = [];
+}
 
-  function flushTask(): void {
-    if (!state.currentTask) return;
-    state.currentTask.description = state.taskLines.join("\n").trim();
-    if (state.currentTask.items.length === 0 && state.currentTask.description) {
-      // No checkboxes — treat whole task as one implicit item
-      state.currentTask.items = [{ text: state.currentTask.description, done: false }];
-    }
-    state.tasks.push(state.currentTask);
-    state.currentTask = null;
-    state.taskLines = [];
+function handleCheckbox(line: string, state: ParseState): void {
+  const match = RE_CHECKBOX.exec(line);
+  if (match === null) return;
+  const done = match[1];
+  const text = match[2];
+  if (done === undefined || text === undefined) return;
+
+  const item: PlanItem = { text: text.trim(), done: done === "x" };
+  if (state.section === "task" && state.currentTask !== null) {
+    state.currentTask.items.push(item);
+  } else if (state.section === "criteria") {
+    state.criteria.push(item);
   }
+}
 
-  for (const line of lines) {
-    // H1: Plan title
-    const h1m = line.match(RE_H1);
-    if (h1m) {
-      title = h1m[1].trim();
-      continue;
-    }
-
-    // H2: sections
-    const h2m = line.match(RE_H2);
-    if (h2m) {
-      const heading = h2m[1].trim().toLowerCase();
-      if (heading.startsWith("overview")) {
-        state.section = "overview";
-      } else if (heading.startsWith("context")) {
-        state.section = "context";
-      } else if (heading.startsWith("success")) {
-        state.section = "criteria";
-      } else if (heading.startsWith("open question") || heading.startsWith("v2") || heading.startsWith("validation")) {
-        flushTask();
-        state.section = "ignore";
-      }
-      continue;
-    }
-
-    // H3: Task
-    const h3m = line.match(RE_H3_TASK);
-    if (h3m) {
-      flushTask();
-      state.section = "task";
-      const num = parseInt(h3m[1], 10);
-      state.currentTask = {
-        id: `task-${num}`,
-        number: num,
-        title: `Task ${num}: ${h3m[2].trim()}`,
-        description: "",
-        items: [],
-        status: "pending",
-      };
-      state.taskLines = [];
-      continue;
-    }
-
-    // Checkbox
-    const cbm = line.match(RE_CHECKBOX);
-    if (cbm && (state.section === "task" || state.section === "criteria")) {
-      const item: PlanItem = { text: cbm[2].trim(), done: cbm[1] === "x" };
-      if (state.section === "task" && state.currentTask) {
-        state.currentTask.items.push(item);
-      } else if (state.section === "criteria") {
-        state.criteria.push(item);
-      }
-      continue;
-    }
-
-    // Skip empty lines between sections
-    if (RE_EMPTY.test(line) && state.section !== "task") continue;
-
-    // Collect content
-    if (state.section === "overview") {
-      state.overviewLines.push(line);
-    } else if (state.section === "context") {
-      state.contextLines.push(line);
-    } else if (state.section === "task" && state.currentTask) {
-      state.taskLines.push(line);
-    }
+function collectLine(line: string, state: ParseState): void {
+  if (state.section === "overview") {
+    state.overviewLines.push(line);
+  } else if (state.section === "context") {
+    state.contextLines.push(line);
+  } else if (state.section === "task" && state.currentTask !== null) {
+    state.taskLines.push(line);
   }
+}
 
-  flushTask();
-
-  // Infer status from checkboxes
-  for (const task of state.tasks) {
+function inferTaskStatuses(tasks: PlanTask[]): void {
+  for (const task of tasks) {
     if (task.items.length === 0) continue;
     const allDone = task.items.every((i) => i.done);
     const anyDone = task.items.some((i) => i.done);
@@ -152,6 +124,76 @@ export function parsePlan(filePath: string): Plan {
       task.status = "in-progress";
     }
   }
+}
+
+function createInitialState(): ParseState {
+  return {
+    section: "overview",
+    overviewLines: [],
+    contextLines: [],
+    criteria: [],
+    tasks: [],
+    currentTask: null,
+    taskLines: [],
+  };
+}
+
+// eslint-disable-next-line sonarjs/cognitive-complexity
+export function parsePlan(filePath: string): Plan {
+  if (!existsSync(filePath)) {
+    throw new Error(`Plan file not found: ${filePath}`);
+  }
+
+  const content = readFileSync(filePath, "utf-8");
+  const lines = content.split("\n");
+
+  let title = "Untitled Plan";
+  const state = createInitialState();
+
+  for (const line of lines) {
+    // H1: Plan title
+    const h1Title = handleH1(line);
+    if (h1Title !== null) {
+      title = h1Title;
+      continue;
+    }
+
+    // H2: sections
+    const h2Match = RE_H2.exec(line);
+    if (h2Match !== null) {
+      const heading = h2Match[1] ?? "";
+      const newSection = handleH2(heading);
+      if (newSection === "flush") {
+        flushCurrentTask(state);
+        state.section = "ignore";
+      } else {
+        state.section = newSection;
+      }
+      continue;
+    }
+
+    // H3: Task
+    if (RE_H3_TASK.test(line)) {
+      flushCurrentTask(state);
+      handleH3(line, state);
+      continue;
+    }
+
+    // Checkbox
+    if (RE_CHECKBOX.test(line) && (state.section === "task" || state.section === "criteria")) {
+      handleCheckbox(line, state);
+      continue;
+    }
+
+    // Skip empty lines between sections
+    if (RE_EMPTY.test(line) && state.section !== "task") continue;
+
+    // Collect content
+    collectLine(line, state);
+  }
+
+  flushCurrentTask(state);
+  inferTaskStatuses(state.tasks);
 
   return {
     path: filePath,
@@ -171,30 +213,32 @@ export function findNextPendingTask(plan: Plan): PlanTask | null {
 /** Update checkboxes in the plan file to reflect task status */
 export function updatePlanTaskStatus(
   planPath: string,
-  taskId: string,
+  _taskId: string,
   taskTitle: string,
   status: "in-progress" | "completed" | "failed",
 ): void {
   const content = readFileSync(planPath, "utf-8");
   const lines = content.split("\n");
 
-  const taskRe = new RegExp(`^###\\s+${taskTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  const escapedTitle = taskTitle.replaceAll(/[$()*+.?[\\\]^{|}]/g, String.raw`\$&`);
+  const taskRe = new RegExp(String.raw`^###\s+${escapedTitle}`);
   let inTask = false;
+  const mark = status === "completed" ? "x" : " ";
+
   const newLines = lines.map((line) => {
     if (taskRe.test(line)) {
       inTask = true;
       return line;
     }
     if (inTask) {
-      if (/^###\s+Task/i.test(line) || /^##\s+/.test(line)) {
+      if (RE_H3_OR_H2.test(line)) {
         inTask = false;
         return line;
       }
       // Update checkboxes
-      const m = line.match(RE_CHECKBOX);
-      if (m) {
-        const mark = status === "completed" ? "x" : " ";
-        return `- [${mark}] ${m[2]}`;
+      const match = RE_CHECKBOX.exec(line);
+      if (match?.[2] !== undefined) {
+        return `- [${mark}] ${match[2]}`;
       }
     }
     return line;

@@ -8,15 +8,19 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { THINKING_LEVELS } from "./types.js";
 
 import type { RalpixConfig, ThinkingLevel } from "./types.js";
-import { THINKING_LEVELS } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
+
+const UTF8_ENCODING = "utf-8";
+const CONFIG_FILE = "config.json";
 
 export const RALPIX_HOME = join(homedir(), ".ralpix");
 
@@ -32,15 +36,15 @@ export function ralpixProjectDir(cwd: string): string {
 // Bundled defaults
 // ---------------------------------------------------------------------------
 
-let _bundledConfig: RalpixConfig | null = null;
+let bundledConfigCache: RalpixConfig | null = null;
 
 function bundledConfig(): RalpixConfig {
-  if (_bundledConfig) return _bundledConfig;
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  _bundledConfig = JSON.parse(
-    readFileSync(join(__dirname, "bundled", "config.json"), "utf-8"),
-  );
-  return _bundledConfig!;
+  if (bundledConfigCache !== null) return bundledConfigCache;
+
+  bundledConfigCache = JSON.parse(
+    readFileSync(join(__dirname, "bundled", CONFIG_FILE), UTF8_ENCODING),
+  ) as RalpixConfig;
+  return bundledConfigCache;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +78,9 @@ function validateEffort(value: unknown, fieldName: string): ThinkingLevel | null
   if (typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value)) {
     return value as ThinkingLevel;
   }
-  console.warn(`ralpix: invalid ${fieldName}="${value}" — must be one of: ${THINKING_LEVELS.join(", ")}. Ignored.`);
+  console.warn(
+    `ralpix: invalid ${fieldName}=${JSON.stringify(value)} — must be one of: ${THINKING_LEVELS.join(", ")}. Ignored.`,
+  );
   return null;
 }
 
@@ -83,16 +89,16 @@ export function loadConfig(cwd: string): RalpixConfig {
   let config = bundledConfig();
 
   // Merge global
-  const globalPath = join(RALPIX_HOME, "config.json");
+  const globalPath = join(RALPIX_HOME, CONFIG_FILE);
   const globalOverrides = readConfigFile(globalPath);
-  if (globalOverrides) {
+  if (globalOverrides !== null) {
     config = mergeConfig(config, globalOverrides);
   }
 
   // Merge project-local
-  const projectPath = join(ralpixProjectDir(cwd), "config.json");
+  const projectPath = join(ralpixProjectDir(cwd), CONFIG_FILE);
   const projectOverrides = readConfigFile(projectPath);
-  if (projectOverrides) {
+  if (projectOverrides !== null) {
     config = mergeConfig(config, projectOverrides);
   }
 
@@ -112,10 +118,10 @@ export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  const configPath = join(dir, "config.json");
+  const configPath = join(dir, CONFIG_FILE);
   const existing = readConfigFile(configPath) ?? {};
   const merged = { ...existing, ...updates };
-  writeFileSync(configPath, JSON.stringify(merged, null, 2), "utf-8");
+  writeFileSync(configPath, JSON.stringify(merged, null, 2), UTF8_ENCODING);
 }
 
 /**
@@ -124,34 +130,39 @@ export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): 
  */
 export function initRalpixHome(): void {
   const dirs = ["prompts", "agents", "progress"];
-  for (const d of dirs) {
-    const p = join(RALPIX_HOME, d);
-    if (!existsSync(p)) mkdirSync(p, { recursive: true });
+  for (const dirName of dirs) {
+    const dirPath = join(RALPIX_HOME, dirName);
+    if (!existsSync(dirPath)) mkdirSync(dirPath, { recursive: true });
   }
 
   // Copy config if missing
-  const configPath = join(RALPIX_HOME, "config.json");
+  const configPath = join(RALPIX_HOME, CONFIG_FILE);
   if (!existsSync(configPath)) {
-    writeFileSync(configPath, JSON.stringify(bundledConfig(), null, 2), "utf-8");
+    writeFileSync(configPath, JSON.stringify(bundledConfig(), null, 2), UTF8_ENCODING);
   }
 
   // Copy prompts
   const bundledPromptsDir = join(__dirname, "bundled", "prompts");
   const promptsDir = join(RALPIX_HOME, "prompts");
-  for (const name of ["task-default", "review-first", "review-second", "finalize", "external-review", "external-eval", "plan-creation"]) {
+  const promptNames = [
+    "task-default", "review-first", "review-second", "finalize",
+    "external-review", "external-eval", "plan-creation",
+  ];
+  for (const name of promptNames) {
     const dest = join(promptsDir, `${name}.md`);
     if (!existsSync(dest)) {
-      writeFileSync(dest, readFileSync(join(bundledPromptsDir, `${name}.md`), "utf-8"), "utf-8");
+      writeFileSync(dest, readFileSync(join(bundledPromptsDir, `${name}.md`), UTF8_ENCODING), UTF8_ENCODING);
     }
   }
 
   // Copy agents
   const bundledAgentsDir = join(__dirname, "bundled", "agents");
   const agentsDir = join(RALPIX_HOME, "agents");
-  for (const name of ["quality", "implementation", "testing", "simplification", "documentation"]) {
+  const agentNames = ["quality", "implementation", "testing", "simplification", "documentation"];
+  for (const name of agentNames) {
     const dest = join(agentsDir, `${name}.md`);
     if (!existsSync(dest)) {
-      writeFileSync(dest, readFileSync(join(bundledAgentsDir, `${name}.md`), "utf-8"), "utf-8");
+      writeFileSync(dest, readFileSync(join(bundledAgentsDir, `${name}.md`), UTF8_ENCODING), UTF8_ENCODING);
     }
   }
 }
