@@ -9,24 +9,18 @@ import { spawn, execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import type { Plan, PlanTask, RalpixConfig, TaskResult, ThinkingLevel } from "./types.js";
-import { THINKING_LEVELS } from "./types.js";
-import { loadPrompt, expandPrompt } from "./prompt.js";
-import { ProgressLogger } from "./logger.js";
 import { updatePlanTaskStatus } from "./parser.js";
+import { loadPrompt, expandPrompt } from "./prompt.js";
+import { THINKING_LEVELS } from "./types.js";
+
+import type { ProgressLogger } from "./logger.js";
+import type { Plan, PlanTask, RalpixConfig, TaskResult, ThinkingLevel } from "./types.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-interface TaskRunResult {
-  success: boolean;
-  error?: string;
-  summary?: string;
-  commitHash?: string;
-}
 
 /**
  * Get the pi executable path to spawn.
@@ -34,8 +28,8 @@ interface TaskRunResult {
 function getPiExecutable(): { command: string; args: string[] } {
   // Use same pi that's running us
   const currentScript = process.argv[1];
-  const isBunVirtual = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !isBunVirtual && fs.existsSync(currentScript)) {
+  const isBunVirtual = typeof currentScript === "string" && currentScript.startsWith("/$bunfs/root/");
+  if (typeof currentScript === "string" && !isBunVirtual && fs.existsSync(currentScript)) {
     return { command: process.execPath, args: [currentScript] };
   }
   // Fall back to `pi` on PATH
@@ -52,17 +46,30 @@ async function writeTempFile(prefix: string, content: string): Promise<{ dir: st
   return { dir: tmpDir, filePath };
 }
 
+interface JsonEvent {
+  type: string;
+  message?: {
+    role: string;
+    content?: Array<{ type: string; text: string }>;
+  };
+}
+
 /**
  * Read last assistant text from JSON-line messages.
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity
 function extractLastAssistantText(lines: string[]): string {
   const texts: string[] = [];
   for (const line of lines) {
     try {
-      const event = JSON.parse(line);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      const event: JsonEvent = JSON.parse(line);
       if (event.type === "message_end" && event.message?.role === "assistant") {
-        for (const part of event.message.content ?? []) {
-          if (part.type === "text") texts.push(part.text);
+        const content = event.message.content;
+        if (content !== undefined) {
+          for (const part of content) {
+            if (part.type === "text") texts.push(part.text);
+          }
         }
       }
     } catch {
@@ -82,9 +89,9 @@ function isValidEffort(effort: unknown): effort is ThinkingLevel {
 
 /** Check if stderr indicates an unsupported thinking level */
 function isUnsupportedEffortError(stderr: string): boolean {
-  return /unsupported.*(thinking|effort|reasoning)/i.test(stderr) ||
-    /thinking.*not.*(support|available)/i.test(stderr) ||
-    /invalid.*thinking/i.test(stderr);
+  return (/unsupported.*(?:thinking|effort|reasoning)/i).test(stderr) ||
+    (/thinking.*not.*(?:support|available)/i).test(stderr) ||
+    (/invalid.*thinking/i).test(stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,24 +100,24 @@ function isUnsupportedEffortError(stderr: string): boolean {
 
 async function runTaskProcess(
   cwd: string,
-  prompt: string,
+  promptContent: string,
   model: string | null,
   effort: ThinkingLevel | null,
-  signal: AbortSignal | undefined,
+  signal?: AbortSignal,
 ): Promise<{ exitCode: number; output: string; error: string; effortRejected?: boolean }> {
   const invocation = getPiExecutable();
   const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
 
-  if (model) {
+  if (model !== null && model.length > 0) {
     args.push("--model", model);
   }
 
-  if (effort) {
+  if (effort !== null) {
     args.push("--thinking", effort);
   }
 
   // Write prompt to temp file to avoid shell escaping issues
-  const { dir: tmpDir, filePath: promptFile } = await writeTempFile("task", prompt);
+  const { dir: tmpDir, filePath: promptFile } = await writeTempFile("task", promptContent);
   args.push(`@${promptFile}`);
 
   return new Promise((resolve) => {
@@ -133,8 +140,16 @@ async function runTaskProcess(
 
     proc.on("close", (code) => {
       // Cleanup temp files
-      try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
-      try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+      try {
+        fs.unlinkSync(promptFile);
+      } catch {
+        /* ignore */
+      }
+      try {
+        fs.rmdirSync(tmpDir);
+      } catch {
+        /* ignore */
+      }
 
       resolve({
         exitCode: code ?? 1,
@@ -145,8 +160,16 @@ async function runTaskProcess(
     });
 
     proc.on("error", (err) => {
-      try { fs.unlinkSync(promptFile); } catch { /* ignore */ }
-      try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+      try {
+        fs.unlinkSync(promptFile);
+      } catch {
+        /* ignore */
+      }
+      try {
+        fs.rmdirSync(tmpDir);
+      } catch {
+        /* ignore */
+      }
       resolve({
         exitCode: 1,
         output: "",
@@ -154,15 +177,18 @@ async function runTaskProcess(
       });
     });
 
-    if (signal) {
+    if (signal !== undefined) {
       const killProc = () => {
         proc.kill("SIGTERM");
         setTimeout(() => {
           if (!proc.killed) proc.kill("SIGKILL");
         }, 5000);
       };
-      if (signal.aborted) killProc();
-      else signal.addEventListener("abort", killProc, { once: true });
+      if (signal.aborted) {
+        killProc();
+      } else {
+        signal.addEventListener("abort", killProc, { once: true });
+      }
     }
   });
 }
@@ -171,28 +197,28 @@ async function runTaskProcess(
 // Auto-commit
 // ---------------------------------------------------------------------------
 
-async function tryCommit(
+function tryCommit(
   cwd: string,
   message: string,
   enabled: boolean,
-): Promise<string | null> {
+): string | null {
   if (!enabled) return null;
 
   try {
     // Check if there are changes to commit
     const status = execSync("git status --porcelain", { cwd, encoding: "utf-8" });
-    if (!status.trim()) return null; // nothing to commit
+    if (status.trim().length === 0) return null; // nothing to commit
 
-    execSync(`git add -A && git commit -m "${message.replace(/"/g, '\\"')}"`, {
+    const escapedMessage = message.replaceAll('"', String.raw`\"`);
+    execSync(`git add -A && git commit -m "${escapedMessage}"`, {
       cwd,
       encoding: "utf-8",
       stdio: "pipe",
     });
 
     // Get commit hash
-    const hash = execSync("git rev-parse --short HEAD", { cwd, encoding: "utf-8" }).trim();
-    return hash;
-  } catch (err) {
+    return execSync("git rev-parse --short HEAD", { cwd, encoding: "utf-8" }).trim();
+  } catch {
     return null; // commit failed (maybe no git repo, or nothing to commit)
   }
 }
@@ -204,9 +230,10 @@ async function tryCommit(
 /**
  * Execute a single task.
  */
+// eslint-disable-next-line sonarjs/cognitive-complexity
 export async function executeTask(
   ctx: { cwd: string },
-  pi: ExtensionAPI,
+  _pi: ExtensionAPI,
   task: PlanTask,
   config: RalpixConfig,
   plan: Plan,
@@ -217,17 +244,18 @@ export async function executeTask(
   // Load and expand the task prompt
   const template = loadPrompt("task-default", ctx.cwd);
   const prompt = expandPrompt(template, {
-    OVERVIEW: plan.overview || plan.title,
+    OVERVIEW: plan.overview.length > 0 ? plan.overview : plan.title,
     TASK_TITLE: task.title,
-    TASK_DESCRIPTION: task.description ||
-      task.items.map((i) => `- [${i.done ? "x" : " "}] ${i.text}`).join("\n"),
+    TASK_DESCRIPTION: task.description.length > 0
+      ? task.description
+      : task.items.map((i) => `- [${i.done ? "x" : " "}] ${i.text}`).join("\n"),
   });
 
   // Mark in-progress in the plan file
   updatePlanTaskStatus(plan.path, task.id, task.title, "in-progress");
 
   // Determine model and effort
-  const model = config.defaultModel || null;
+  const model = config.defaultModel ?? null;
   const effort = isValidEffort(config.defaultEffort) ? config.defaultEffort : null;
 
   let lastError: string | undefined;
@@ -239,61 +267,65 @@ export async function executeTask(
         prompt,
         model,
         effort,
-        undefined, // no abort signal for now
       );
 
       // If effort was rejected, retry once without effort
-      if (result.effortRejected && effort) {
+      if (result.effortRejected === true && effort !== null) {
         logger.logTaskEnd(task, false, `effort "${effort}" rejected by model, retrying without effort`);
         const retryResult = await runTaskProcess(
           ctx.cwd,
           prompt,
           model,
           null,
-          undefined,
         );
         if (retryResult.exitCode === 0) {
           const commitMsg = config.commitMessageTemplate
-            .replace("{{taskTitle}}", task.title)
-            .replace("{{taskNumber}}", String(task.number));
-          const hash = await tryCommit(ctx.cwd, commitMsg, config.commitEnabled);
+            .replaceAll("{{taskTitle}}", task.title)
+            .replaceAll("{{taskNumber}}", String(task.number));
+          const hash = tryCommit(ctx.cwd, commitMsg, config.commitEnabled);
           const summary = extractLastAssistantText(retryResult.output.split("\n"));
-          logger.logTaskEnd(task, true, hash ? `commit ${hash}` : "no commit");
+          logger.logTaskEnd(task, true, hash === null ? "no commit" : `commit ${hash}`);
           updatePlanTaskStatus(plan.path, task.id, task.title, "completed");
+          const retrySummary = summary.slice(0, 200).length > 0
+            ? summary.slice(0, 200)
+            : `Task ${task.number} completed`;
           return {
             success: true,
-            summary: summary.slice(0, 200) || `Task ${task.number} completed`,
+            summary: retrySummary,
           };
         }
-        lastError = retryResult.error || `Exit code ${retryResult.exitCode}`;
+        lastError = retryResult.error.length > 0 ? retryResult.error : `Exit code ${retryResult.exitCode}`;
         break;
       }
 
       if (result.exitCode === 0) {
         // Try to commit
         const commitMsg = config.commitMessageTemplate
-          .replace("{{taskTitle}}", task.title)
-          .replace("{{taskNumber}}", String(task.number));
-        const hash = await tryCommit(ctx.cwd, commitMsg, config.commitEnabled);
+          .replaceAll("{{taskTitle}}", task.title)
+          .replaceAll("{{taskNumber}}", String(task.number));
+        const hash = tryCommit(ctx.cwd, commitMsg, config.commitEnabled);
 
         // Extract summary from output
         const summary = extractLastAssistantText(result.output.split("\n"));
 
-        logger.logTaskEnd(task, true, hash ? `commit ${hash}` : "no commit");
+        logger.logTaskEnd(task, true, hash === null ? "no commit" : `commit ${hash}`);
         updatePlanTaskStatus(plan.path, task.id, task.title, "completed");
 
+        const taskSummary = summary.slice(0, 200).length > 0
+          ? summary.slice(0, 200)
+          : `Task ${task.number} completed`;
         return {
           success: true,
-          summary: summary.slice(0, 200) || `Task ${task.number} completed`,
+          summary: taskSummary,
         };
-      } else {
-        lastError = result.error || `Exit code ${result.exitCode}`;
-        if (attempt <= config.maxRetries) {
-          logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying (${lastError})`);
-        }
       }
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+
+      lastError = result.error.length > 0 ? result.error : `Exit code ${result.exitCode}`;
+      if (attempt <= config.maxRetries) {
+        logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying (${lastError})`);
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
       if (attempt <= config.maxRetries) {
         logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying`);
       }
@@ -301,9 +333,10 @@ export async function executeTask(
   }
 
   // All retries exhausted
-  logger.logTaskEnd(task, false, lastError);
+  const finalError = lastError ?? "Unknown error";
+  logger.logTaskEnd(task, false, finalError);
   updatePlanTaskStatus(plan.path, task.id, task.title, "failed");
-  return { success: false, error: lastError };
+  return { success: false, error: finalError };
 }
 
 /**

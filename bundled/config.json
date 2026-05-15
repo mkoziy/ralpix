@@ -11,5 +11,13 @@
   "reviewSecondEffort": null,
   "maxRetries": 2,
   "reviewMaxIterations": 5,
-  "movePlanOnCompletion": false
+  "movePlanOnCompletion": false,
+  "externalReviewEnabled": true,
+  "externalReviewModel": null,
+  "externalReviewEffort": null,
+  "externalReviewMaxIterations": 5,
+  "externalReviewPatience": 3,
+  "planModel": null,
+  "planEffort": null,
+  "plansDir": "docs/plans"
 }

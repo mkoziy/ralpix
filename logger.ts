@@ -3,15 +3,15 @@
  */
 
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
 import { EOL } from "node:os";
+import { join, dirname } from "node:path";
 
 import { ralpixHomeDir } from "./config.js";
+
 import type { Plan, PlanTask } from "./types.js";
 
 export class ProgressLogger {
   readonly filePath: string;
-  private initialized = false;
 
   constructor(planName: string) {
     const dir = join(ralpixHomeDir(), "progress");
@@ -46,8 +46,7 @@ export class ProgressLogger {
       "",
     ].join(EOL);
 
-    writeFileSync(this.filePath, header + EOL, "utf-8");
-    this.initialized = true;
+    writeFileSync(this.filePath, `${header}${EOL}`, "utf-8");
 
     // First entry
     this.append(
@@ -63,19 +62,23 @@ export class ProgressLogger {
 
   logTaskEnd(task: PlanTask, success: boolean, detail?: string): void {
     const status = success ? "✓ SUCCESS" : "✗ FAILED";
-    const extra = detail ? ` — ${detail}` : "";
+    const extra = detail !== undefined && detail.length > 0 ? ` — ${detail}` : "";
     this.append(
       `TASK_END    Task ${task.number}: ${task.title}  ${status}${extra}`,
     );
   }
 
+  logExternalReview(phase: string, result: string): void {
+    this.append(`REVIEW_XTRNL ${phase.padEnd(8)} ${result}`);
+  }
+
   logReview(phase: "first" | "second" | "loop", result: string): void {
-    const labels: Record<string, string> = {
+    const PHASE_LABELS: Record<"first" | "second" | "loop", string> = {
       first: "REVIEW_FIRST",
       second: "REVIEW_SECOND",
       loop: "REVIEW_LOOP",
     };
-    this.append(`${labels[phase].padEnd(14)} ${result}`);
+    this.append(`${PHASE_LABELS[phase].padEnd(14)} ${result}`);
   }
 
   logComplete(): void {
