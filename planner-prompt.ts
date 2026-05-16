@@ -34,14 +34,15 @@ export function planCreationAttemptConfigs(): PlanCreationAttemptConfig[] {
 }
 
 export interface PlannerLaunchConfig {
-  includeModel: boolean;
+  modelPhase: "plan" | "task" | null;
   includeEffort: boolean;
 }
 
 export function plannerLaunchConfigs(): PlannerLaunchConfig[] {
   return [
-    { includeModel: true, includeEffort: true },
-    { includeModel: true, includeEffort: false },
-    { includeModel: false, includeEffort: false },
+    { modelPhase: "plan", includeEffort: true },
+    { modelPhase: "plan", includeEffort: false },
+    { modelPhase: "task", includeEffort: false },
+    { modelPhase: null, includeEffort: false },
   ];
 }

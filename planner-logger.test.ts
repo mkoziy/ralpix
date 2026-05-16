@@ -48,8 +48,9 @@ void test("planCreationAttemptConfigs degrades from configured to session defaul
 
 void test("plannerLaunchConfigs degrades from configured launch to pi defaults", () => {
   assert.deepEqual(plannerLaunchConfigs(), [
-    { includeModel: true, includeEffort: true },
-    { includeModel: true, includeEffort: false },
-    { includeModel: false, includeEffort: false },
+    { modelPhase: "plan", includeEffort: true },
+    { modelPhase: "plan", includeEffort: false },
+    { modelPhase: "task", includeEffort: false },
+    { modelPhase: null, includeEffort: false },
   ]);
 });
