@@ -47,7 +47,7 @@ Don't want to write plans manually? Use interactive plan creation:
 The model will:
 1. **Generate a plan draft** in ralpix format
 2. **Validate** the draft structure before saving it
-3. **Save** it to `docs/plans/<plan-title>.md`
+3. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`
 4. **Pause for review** — you can Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
 5. **Offer execution** only after you explicitly accept the saved plan
 
@@ -271,11 +271,9 @@ Started: 2026-05-12T14:30:00.000Z
 ```bash
 # 1. Generate a plan from a one-line description
 /ralpix plan "add rate limiting middleware for Express API"
-# → Model explores codebase, asks:
-#   Q: Which rate limit algorithm? → "Token bucket"
-#   Q: Store in memory or Redis? → "Redis"
-# → Plan generated, you review and accept
-# → Saved to docs/plans/add-rate-limiting-middleware.md
+# → Plan draft generated and validated
+# → Saved to docs/plans/YYYYMMDD-add-rate-limiting-middleware-for-express-api.md
+# → You review it, edit elsewhere if needed, then accept
 # → Choose "Execute plan now"
 
 # ralpix takes over:

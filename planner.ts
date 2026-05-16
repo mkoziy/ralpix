@@ -38,6 +38,13 @@ function slugify(text: string): string {
   return `plan-${Math.abs(hash).toString(36).slice(0, 12)}`;
 }
 
+function formatDateStamp(date: Date): string {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
 function getPiExecutable(): { command: string; args: string[] } {
   const currentScript = process.argv[1];
   const isBunVirtual = typeof currentScript === "string" && currentScript.startsWith("/$bunfs/root/");
@@ -99,6 +106,10 @@ function buildPlanGenerationPrompt(
     "Make reasonable assumptions from the repository context.",
     "Your entire final response must be only the complete ralpix markdown plan.",
     "Do not include prose before or after the plan.",
+    "The plan title and overview must stay tightly aligned to the user's request.",
+    "Do not invent a different feature, subsystem, or goal than the request describes.",
+    "Use `## Success Criteria`, not `## Validation Commands`.",
+    "Do not wrap the plan in fenced code blocks.",
   ];
 
   if (round > 1 && previousDraft !== undefined) {
@@ -165,19 +176,43 @@ function validatePlanDraft(content: string): { ok: true } | { ok: false; reason:
   return { ok: true };
 }
 
-function draftFileNameFromContent(content: string, fallbackDescription: string): string {
+function draftFileNameFromContent(content: string, fallbackDescription: string, createdAt: Date): string {
   const match = (/^#\s+plan:\s+(.+)$/im).exec(content);
   const title = match?.[1]?.trim();
-  return `${slugify(title !== undefined && title.length > 0 ? title : fallbackDescription)}.md`;
+  const slug = slugify(title !== undefined && title.length > 0 ? title : fallbackDescription);
+  return `${formatDateStamp(createdAt)}-${slug}.md`;
+}
+
+function nextAvailableDraftPath(plansDir: string, fileName: string, previousPath?: string): string {
+  const initialPath = join(plansDir, fileName);
+  if (!existsSync(initialPath) || previousPath === initialPath) {
+    return initialPath;
+  }
+
+  const suffix = fileName.endsWith(".md") ? ".md" : "";
+  const baseName = suffix.length > 0 ? fileName.slice(0, -suffix.length) : fileName;
+  for (let attempt = 2; attempt < 1000; attempt++) {
+    const candidate = join(plansDir, `${baseName}-${String(attempt)}${suffix}`);
+    if (!existsSync(candidate) || previousPath === candidate) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`Unable to allocate draft filename for ${fileName}`);
 }
 
 function saveDraftFile(
   plansDir: string,
   description: string,
   content: string,
+  createdAt: Date,
   previousPath?: string,
 ): string {
-  const nextPath = join(plansDir, draftFileNameFromContent(content, description));
+  const nextPath = nextAvailableDraftPath(
+    plansDir,
+    draftFileNameFromContent(content, description, createdAt),
+    previousPath,
+  );
   writeFileSync(nextPath, `${content.trimEnd()}\n`, "utf-8");
   if (previousPath !== undefined && previousPath !== nextPath && existsSync(previousPath)) {
     unlinkSync(previousPath);
@@ -350,6 +385,7 @@ export async function runPlanCreation(
   let feedback: string | undefined;
   const launchConfigs = plannerLaunchConfigs();
   const plansDir = resolve(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans");
+  const createdAt = new Date();
   if (!existsSync(plansDir)) {
     mkdirSync(plansDir, { recursive: true });
   }
@@ -400,7 +436,7 @@ export async function runPlanCreation(
       continue;
     }
 
-    draftPath = saveDraftFile(plansDir, description, draft, draftPath);
+    draftPath = saveDraftFile(plansDir, description, draft, createdAt, draftPath);
     appendPlanCreationDebug(ctx.cwd, `round ${round}: saved draft ${draftPath}`);
     ctx.ui.notify(`Plan draft written to ${draftPath}`, "info");
 

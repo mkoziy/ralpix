@@ -34,9 +34,9 @@ Create a complete implementation plan following this exact format:
 ## Overview
 <2-3 sentences describing what this plan achieves and the approach>
 
-## Validation Commands
-- `<test command to verify correctness>`
-- `<lint command if applicable>`
+## Success Criteria
+- [ ] `<observable outcome proving the feature works>`
+- [ ] `<relevant verification command passes>`
 
 ### Task 1: <Title>
 - [ ] <Specific, actionable checklist item>
@@ -47,12 +47,15 @@ Create a complete implementation plan following this exact format:
 ```
 
 **Plan writing rules:**
+- The plan title must stay tightly aligned to the user's request. Do not invent a different feature, subsystem, or theme.
+- Reuse the user's wording for the core feature when possible so the title and overview are obviously about the requested work.
 - Each `### Task N:` should be small, concrete, and independently valuable
 - Each task has 2-5 checklist items that are specific and verifiable
 - Use `- [ ]` for all items (pending — ralpix will mark them done during execution)
 - Tasks must be in dependency order (Task 2 can depend on Task 1, but not vice versa)
-- `## Validation Commands` should include real commands that exist in the project (e.g., `npm test`, `go test ./...`)
+- `## Success Criteria` should be concrete and testable, and should mention real verification commands when applicable (e.g., `npm test`, `go test ./...`)
 - Title should be concise but descriptive (6-10 words)
+- Do not wrap the plan in fenced code blocks
 
 ### Phase 4: Submit for Review
 Call `ralpix_submit_plan_draft` with the complete plan text as the `planContent` parameter.
