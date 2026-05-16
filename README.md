@@ -45,13 +45,13 @@ Don't want to write plans manually? Use interactive plan creation:
 ```
 
 The model will:
-1. **Explore** your codebase to understand project structure and conventions
-2. **Ask clarifying questions** (pick from options in the UI)
-3. **Generate a plan draft** in ralpix format
-4. **Show it for review** — you can Accept, Revise (with feedback), or Reject
-5. **Save** to `docs/plans/` and offer to execute immediately
+1. **Generate a plan draft** in ralpix format
+2. **Validate** the draft structure before saving it
+3. **Save** it to `docs/plans/<plan-title>.md`
+4. **Pause for review** — you can Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
+5. **Offer execution** only after you explicitly accept the saved plan
 
-**Requirements:** Your project should have a `README.md` and source files for the model to explore.
+The saved plan file is the review source of truth, so you can inspect or edit it in another tool before continuing.
 
 ## Plan Format
 
