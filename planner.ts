@@ -42,6 +42,141 @@ function slugify(text: string): string {
   return `plan-${Math.abs(hash).toString(36).slice(0, 12)}`;
 }
 
+interface PlanCreationSessionResult {
+  planContent: string | null;
+  lastAction: "accept" | "reject" | null;
+}
+
+async function runPlanCreationSession(
+  prompt: string,
+  attempt: number,
+  ctx: ExtensionCommandContext,
+  planModelCfg: ReturnType<typeof resolveModel>,
+): Promise<PlanCreationSessionResult> {
+  let planContent: string | null = null;
+  let lastAction: "accept" | "reject" | null = null;
+
+  await ctx.newSession({
+    setup: (sm) => applyModelConfigToSession(sm, planModelCfg),
+    withSession: async (planCtx) => {
+      planCtx.registerTool({
+        name: "ralpix_ask_question",
+        label: "Ask User Question",
+        description:
+          "Ask the user a clarifying question during plan creation. " +
+          "Use this when you need to understand requirements, preferences, " +
+          "or constraints before writing the plan.",
+        promptSnippet: "Ask user: {{question}}",
+        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
+        parameters: Type.Object({
+          question: Type.String({
+            description: "The question to ask the user",
+          }),
+          options: Type.Array(Type.String(), {
+            description: "Answer options for the user to pick from",
+          }),
+        }),
+        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+        async execute(_toolCallId, params) {
+          const question = params["question"] as string;
+          const options = params["options"] as string[];
+
+          const answer = await ctx.ui.select(question, options);
+
+          if (answer === undefined || answer.length === 0) {
+            return {
+              content: [
+                { type: "text", text: "User cancelled the question." },
+              ],
+              details: { cancelled: true },
+            };
+          }
+
+          return {
+            content: [
+              { type: "text", text: `User selected: ${answer}` },
+            ],
+            details: { answer },
+          };
+        },
+      });
+
+      planCtx.registerTool({
+        name: "ralpix_submit_plan_draft",
+        label: "Submit Plan Draft",
+        description:
+          "Submit a plan draft for user review. The user will accept, " +
+          "request revisions, or reject. If revisions are requested, " +
+          "update the plan and call this tool again.",
+        promptSnippet: "Submit plan draft for review",
+        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
+        parameters: Type.Object({
+          planContent: Type.String({
+            description: "The complete plan in ralpix markdown format",
+          }),
+        }),
+        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+        async execute(_toolCallId, params) {
+          const content = params["planContent"] as string;
+
+          const reviewChoice = await ctx.ui.select(
+            "Review the plan draft:",
+            ["✓ Accept — save and finish", "↻ Revise — provide feedback", "✗ Reject — discard the plan"],
+          );
+
+          if (typeof reviewChoice === "string" && reviewChoice.includes("Revise")) {
+            const feedback = await ctx.ui.input(
+              "What changes would you like?",
+              "Add more details, change approach, fix issues...",
+            );
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: typeof feedback === "string" && feedback.length > 0
+                    ? `User requested revisions: ${feedback}`
+                    : "User requested revisions (no specific feedback provided).",
+                },
+              ],
+              details: { action: "revise", feedback: feedback ?? "" },
+            };
+          }
+
+          if (typeof reviewChoice === "string" && reviewChoice.includes("Accept")) {
+            planContent = content;
+            lastAction = "accept";
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "Plan accepted! The user approved the plan draft. No further action needed.",
+                },
+              ],
+              details: { action: "accept" },
+            };
+          }
+
+          lastAction = "reject";
+
+          return {
+            content: [
+              { type: "text", text: "Plan rejected by user." },
+            ],
+            details: { action: "reject" },
+          };
+        },
+      });
+
+      await planCtx.sendUserMessage(buildPlanCreationPrompt(prompt, attempt));
+      await planCtx.waitForIdle();
+    },
+  });
+
+  return { planContent, lastAction };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -78,150 +213,31 @@ export async function runPlanCreation(
     DESCRIPTION: description,
   });
 
-  // Captured from tool calls
-  let planContent: string | null = null;
-  let lastAction: "accept" | "reject" | null = null;
-
   // Resolve model + effort via the central resolveModel()
   const planModelCfg = resolveModel(config, "plan");
 
-  // Run in a new session, seeding model/effort via setup entries so the
-  // plan session picks up the configuration without mutating global state.
-  await ctx.newSession({
-    setup: (sm) => applyModelConfigToSession(sm, planModelCfg),
-    withSession: async (planCtx) => {
-      // ── ralpix_ask_question ──────────────────────────────────────
-      planCtx.registerTool({
-        name: "ralpix_ask_question",
-        label: "Ask User Question",
-        description:
-          "Ask the user a clarifying question during plan creation. " +
-          "Use this when you need to understand requirements, preferences, " +
-          "or constraints before writing the plan.",
-        promptSnippet: "Ask user: {{question}}",
-        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-        parameters: Type.Object({
-          question: Type.String({
-            description: "The question to ask the user",
-          }),
-          options: Type.Array(Type.String(), {
-            description: "Answer options for the user to pick from",
-          }),
-        }),
-        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
-        async execute(_toolCallId, params) {
-          const question = params["question"] as string;
-          const options = params["options"] as string[];
-
-          const answer = await ctx.ui.select(question, options);
-
-          if (answer === undefined || answer.length === 0) {
-            // User cancelled
-            return {
-              content: [
-                { type: "text", text: "User cancelled the question." },
-              ],
-              details: { cancelled: true },
-            };
-          }
-
-          return {
-            content: [
-              { type: "text", text: `User selected: ${answer}` },
-            ],
-            details: { answer },
-          };
-        },
-      });
-
-      // ── ralpix_submit_plan_draft ──────────────────────────────────
-      planCtx.registerTool({
-        name: "ralpix_submit_plan_draft",
-        label: "Submit Plan Draft",
-        description:
-          "Submit a plan draft for user review. The user will accept, " +
-          "request revisions, or reject. If revisions are requested, " +
-          "update the plan and call this tool again.",
-        promptSnippet: "Submit plan draft for review",
-        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-        parameters: Type.Object({
-          planContent: Type.String({
-            description: "The complete plan in ralpix markdown format",
-          }),
-        }),
-        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
-        async execute(_toolCallId, params) {
-          const content = params["planContent"] as string;
-
-          // Show review chooser
-          const reviewChoice = await ctx.ui.select(
-            "Review the plan draft:",
-            ["✓ Accept — save and finish", "↻ Revise — provide feedback", "✗ Reject — discard the plan"],
-          );
-
-          // Handle "revise"
-          if (typeof reviewChoice === "string" && reviewChoice.includes("Revise")) {
-            const feedback = await ctx.ui.input(
-              "What changes would you like?",
-              "Add more details, change approach, fix issues...",
-            );
-
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: typeof feedback === "string" && feedback.length > 0
-                    ? `User requested revisions: ${feedback}`
-                    : "User requested revisions (no specific feedback provided).",
-                },
-              ],
-              details: { action: "revise", feedback: feedback ?? "" },
-            };
-          }
-
-          // Handle "accept"
-          if (typeof reviewChoice === "string" && reviewChoice.includes("Accept")) {
-            planContent = content;
-            lastAction = "accept";
-
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Plan accepted! The user approved the plan draft. No further action needed.",
-                },
-              ],
-              details: { action: "accept" },
-            };
-          }
-
-          // Handle "reject" (or cancelled)
-          lastAction = "reject";
-
-          return {
-            content: [
-              { type: "text", text: "Plan rejected by user." },
-            ],
-            details: { action: "reject" },
-          };
-        },
-      });
-
-      // ── Send prompt and wait ─────────────────────────────────────
-      await planCtx.sendUserMessage(buildPlanCreationPrompt(prompt));
-      await planCtx.waitForIdle();
-    },
-  });
+  let planContent: string | null = null;
+  let lastAction: "accept" | "reject" | null = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const result = await runPlanCreationSession(prompt, attempt, ctx, planModelCfg);
+    planContent = result.planContent;
+    lastAction = result.lastAction;
+    if (lastAction === "reject" || planContent !== null) break;
+    if (attempt < 2) {
+      ctx.ui.notify(
+        "Plan session ended without submitting a draft. Retrying once with a stronger completion prompt...",
+        "warning",
+      );
+    }
+  }
 
   // ── After session: handle results ─────────────────────────────────
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (lastAction === "reject") {
     ctx.ui.notify("Plan creation cancelled (user rejected)", "warning");
     return null;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (planContent === null) {
     ctx.ui.notify(
       "Plan creation failed — session ended without submitting a plan draft",

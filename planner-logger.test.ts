@@ -18,3 +18,10 @@ void test("buildPlanCreationPrompt requires draft submission before session ends
   assert.match(prompt, /ralpix_submit_plan_draft/);
   assert.match(prompt, /do not end the session without either submitting a draft/i);
 });
+
+void test("buildPlanCreationPrompt adds a retry notice on follow-up attempts", () => {
+  const prompt = buildPlanCreationPrompt("# Plan Creation", 2);
+
+  assert.match(prompt, /Retry Notice/);
+  assert.match(prompt, /previous attempt ended without submitting a draft/i);
+});
