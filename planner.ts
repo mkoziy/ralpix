@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 
 import { Type } from "typebox";
 
-import { applyModelConfigToSession, resolveModel } from "./config.js";
+import { resolveModel } from "./config.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { buildPlanCreationPrompt, planCreationAttemptConfigs } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
@@ -105,7 +105,7 @@ async function runPlanCreationSession(
   prompt: string,
   attempt: number,
   ctx: ExtensionCommandContext,
-  planModelCfg: ReturnType<typeof resolveModel>,
+  _planModelCfg: ReturnType<typeof resolveModel>,
   attemptConfig: { includeEffort: boolean; seedSessionConfig: boolean },
 ): Promise<PlanCreationSessionResult> {
   let planContent: string | null = null;
@@ -116,14 +116,6 @@ async function runPlanCreationSession(
   );
 
   await ctx.newSession({
-    setup: (sm) => {
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: setup enter`);
-      if (attemptConfig.seedSessionConfig) {
-        applyModelConfigToSession(sm, planModelCfg, attemptConfig.includeEffort);
-        appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: setup applied session config`);
-      }
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: setup exit`);
-    },
     withSession: async (planCtx) => {
       appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: withSession enter`);
       planCtx.registerTool({
