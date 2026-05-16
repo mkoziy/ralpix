@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 import { Type } from "typebox";
 
 import { applyModelConfigToSession, resolveModel } from "./config.js";
-import { buildPlanCreationPrompt } from "./planner-prompt.js";
+import { buildPlanCreationPrompt, planCreationAttemptConfigs } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { RalpixConfig } from "./types.js";
@@ -47,17 +47,36 @@ interface PlanCreationSessionResult {
   lastAction: "accept" | "reject" | null;
 }
 
+function notifyPlanCreationRetry(ctx: ExtensionCommandContext, attempt: number): void {
+  if (attempt === 1) {
+    ctx.ui.notify(
+      "Plan session ended without submitting a draft. Retrying without plan effort...",
+      "warning",
+    );
+  } else if (attempt === 2) {
+    ctx.ui.notify(
+      "Plan session still ended without a draft. Retrying with pi's default session model...",
+      "warning",
+    );
+  }
+}
+
 async function runPlanCreationSession(
   prompt: string,
   attempt: number,
   ctx: ExtensionCommandContext,
   planModelCfg: ReturnType<typeof resolveModel>,
+  attemptConfig: { includeEffort: boolean; seedSessionConfig: boolean },
 ): Promise<PlanCreationSessionResult> {
   let planContent: string | null = null;
   let lastAction: "accept" | "reject" | null = null;
 
   await ctx.newSession({
-    setup: (sm) => applyModelConfigToSession(sm, planModelCfg),
+    setup: (sm) => {
+      if (attemptConfig.seedSessionConfig) {
+        applyModelConfigToSession(sm, planModelCfg, attemptConfig.includeEffort);
+      }
+    },
     withSession: async (planCtx) => {
       planCtx.registerTool({
         name: "ralpix_ask_question",
@@ -218,17 +237,14 @@ export async function runPlanCreation(
 
   let planContent: string | null = null;
   let lastAction: "accept" | "reject" | null = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const result = await runPlanCreationSession(prompt, attempt, ctx, planModelCfg);
+  const attemptConfigs = planCreationAttemptConfigs();
+  for (const [index, attemptConfig] of attemptConfigs.entries()) {
+    const attempt = index + 1;
+    const result = await runPlanCreationSession(prompt, attempt, ctx, planModelCfg, attemptConfig);
     planContent = result.planContent;
     lastAction = result.lastAction;
     if (lastAction === "reject" || planContent !== null) break;
-    if (attempt < 2) {
-      ctx.ui.notify(
-        "Plan session ended without submitting a draft. Retrying once with a stronger completion prompt...",
-        "warning",
-      );
-    }
+    notifyPlanCreationRetry(ctx, attempt);
   }
 
   // ── After session: handle results ─────────────────────────────────

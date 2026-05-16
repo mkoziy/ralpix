@@ -19,3 +19,16 @@ export function buildPlanCreationPrompt(prompt: string, attempt = 1): string {
 
   return lines.join("\n");
 }
+
+export interface PlanCreationAttemptConfig {
+  includeEffort: boolean;
+  seedSessionConfig: boolean;
+}
+
+export function planCreationAttemptConfigs(): PlanCreationAttemptConfig[] {
+  return [
+    { includeEffort: true, seedSessionConfig: true },
+    { includeEffort: false, seedSessionConfig: true },
+    { includeEffort: false, seedSessionConfig: false },
+  ];
+}

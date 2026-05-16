@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { progressDirForCwd } from "./logger.js";
-import { buildPlanCreationPrompt } from "./planner-prompt.js";
+import { buildPlanCreationPrompt, planCreationAttemptConfigs } from "./planner-prompt.js";
 
 void test("progressDirForCwd uses project-local .ralpix/progress", () => {
   assert.equal(
@@ -24,4 +24,12 @@ void test("buildPlanCreationPrompt adds a retry notice on follow-up attempts", (
 
   assert.match(prompt, /Retry Notice/);
   assert.match(prompt, /previous attempt ended without submitting a draft/i);
+});
+
+void test("planCreationAttemptConfigs degrades from configured to session default", () => {
+  assert.deepEqual(planCreationAttemptConfigs(), [
+    { includeEffort: true, seedSessionConfig: true },
+    { includeEffort: false, seedSessionConfig: true },
+    { includeEffort: false, seedSessionConfig: false },
+  ]);
 });
