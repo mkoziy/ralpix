@@ -45,7 +45,7 @@ Don't want to write plans manually? Use interactive plan creation:
 ```
 
 The model will:
-1. **Ask clarifying questions** in the UI when needed
+1. **Ask clarifying questions** in the UI when needed (with option picker + custom free-form answer)
 2. **Generate a plan draft** in ralpix format
 3. **Validate** the draft structure before saving it
 4. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`

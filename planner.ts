@@ -166,8 +166,14 @@ async function askClarification(
   req: ClarificationRequest,
 ): Promise<string | null> {
   if (req.options.length >= 2) {
-    const selected = await ctx.ui.select(req.question, req.options);
+    const customLabel = "Other (type your own answer)";
+    const selected = await ctx.ui.select(req.question, [...req.options, customLabel]);
     if (selected == null) return null;
+    if (selected === customLabel) {
+      const custom = await ctx.ui.input(req.question, "Type your custom answer");
+      if (custom == null || custom.trim().length === 0) return null;
+      return custom.trim();
+    }
     return selected.trim();
   }
   const answer = await ctx.ui.input(req.question, "Your answer");
