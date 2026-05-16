@@ -30,7 +30,7 @@ pi install git:github.com/mkoziy/ralpix
 
 What happens:
 1. Plan is parsed
-2. Each task runs in an isolated `pi --mode json -p --no-session` process
+2. Each task runs in an isolated `pi` session seeded from the merged ralpix config
 3. Auto-commit after each successful task
 4. Progress is logged to `~/.ralpix/progress/<plan-name>.txt`
 5. After all tasks: review pipeline runs (first pass → second pass)
@@ -96,23 +96,26 @@ ralpix uses a three-layer config merge:
 ```jsonc
 // ~/.ralpix/config.json
 {
-  "defaultModel": null,           // e.g. "anthropic/claude-sonnet-4-5"
+  "defaultModel": "opencode-go/deepseek-v4-flash", // Task execution default
   "defaultProvider": null,        // e.g. "anthropic"
+  "defaultEffort": "low",         // Executor reasoning effort; kept low because the default executor uses a flash-tier model
   "commitEnabled": true,          // Auto-commit after each task
   "commitMessageTemplate": "ralpix: {{taskTitle}}",
   "reviewEnabled": true,          // Run review pipeline after tasks
-  "reviewFirstModel": null,       // Model for first review (falls back to defaultModel)
-  "reviewSecondModel": null,      // Model for second review
-  "reviewFirstEffort": null,      // Thinking effort for first review
-  "reviewSecondEffort": null,     // Thinking effort for second review
+  "reviewFirstModel": "opencode-go/glm-5.1",   // First review pass
+  "reviewSecondModel": "opencode-go/kimi-k2.6", // Second review pass
+  "reviewFirstEffort": "high",    // Thinking effort for first review
+  "reviewSecondEffort": "medium", // Thinking effort for second review
   "maxRetries": 2,                // Max retries per task on failure
   "reviewMaxIterations": 5,       // Max iterations for review loop
   "movePlanOnCompletion": false,  // Move plan.md → completed/plan.md when done
   "externalReviewEnabled": true,  // Enable external review phase (different model)
-  "externalReviewModel": null,    // Model for external review (null = defaultModel)
-  "externalReviewEffort": null,   // Thinking effort for external review
+  "externalReviewModel": "openai/gpt-5.5", // Independent external reviewer
+  "externalReviewEffort": "medium", // Thinking effort for external review
   "externalReviewMaxIterations": 5, // Max iterations in external review loop
-  "externalReviewPatience": 3     // Stalemate: exit after N unchanged rounds
+  "externalReviewPatience": 3,    // Stalemate: exit after N unchanged rounds
+  "planModel": "openai/gpt-5.5",  // Interactive plan creation
+  "planEffort": "medium"          // Plan generation effort
 }
 ```
 

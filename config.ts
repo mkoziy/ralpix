@@ -13,7 +13,21 @@ import { join } from "node:path";
 
 import { THINKING_LEVELS } from "./types.js";
 
-import type { RalpixConfig, ThinkingLevel } from "./types.js";
+import type { ModelConfig, ModelPhase, RalpixConfig, ThinkingLevel } from "./types.js";
+
+interface PhaseFields {
+  modelField: keyof RalpixConfig;
+  effortField: keyof RalpixConfig;
+}
+
+const PHASE_FIELDS: Record<ModelPhase, PhaseFields> = {
+  task: { modelField: "defaultModel", effortField: "defaultEffort" },
+  "review-first": { modelField: "reviewFirstModel", effortField: "reviewFirstEffort" },
+  "review-second": { modelField: "reviewSecondModel", effortField: "reviewSecondEffort" },
+  "external-review": { modelField: "externalReviewModel", effortField: "externalReviewEffort" },
+  "external-eval": { modelField: "defaultModel", effortField: "defaultEffort" },
+  plan: { modelField: "planModel", effortField: "planEffort" },
+};
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -51,8 +65,94 @@ function bundledConfig(): RalpixConfig {
 // Deep merge (shallow enough for our config — no nested objects)
 // ---------------------------------------------------------------------------
 
-function mergeConfig(base: RalpixConfig, override: Partial<RalpixConfig>): RalpixConfig {
-  return { ...base, ...override };
+function hasOwn(config: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(config, key);
+}
+
+function stripInheritedPresetFields(
+  mergedModels: Partial<Record<ModelPhase, ModelConfig | undefined>>,
+  override: Partial<RalpixConfig>,
+): void {
+  const overrideModels = override.models;
+
+  for (const phase of Object.keys(mergedModels) as ModelPhase[]) {
+    const preset = mergedModels[phase] as Partial<ModelConfig> | undefined;
+    if (preset == null) continue;
+
+    // Same-layer structured presets still win over same-layer flat fields.
+    if (overrideModels != null && hasOwn(overrideModels, phase)) {
+      continue;
+    }
+
+    const fields = PHASE_FIELDS[phase];
+    if (hasOwn(override, fields.modelField)) {
+      delete preset.model;
+    }
+    if (hasOwn(override, fields.effortField)) {
+      delete preset.effort;
+    }
+    if (hasOwn(override, "defaultProvider")) {
+      delete preset.provider;
+    }
+
+    if (!hasOwn(preset, "model") && !hasOwn(preset, "provider") && !hasOwn(preset, "effort")) {
+      mergedModels[phase] = undefined;
+    }
+  }
+}
+
+function normalizeProviderOnlyPreset(
+  preset: ModelConfig,
+  source: ModelConfig,
+): ModelConfig {
+  if (hasOwn(source, "provider") && !hasOwn(source, "model")) {
+    return { ...preset, model: null };
+  }
+  return preset;
+}
+
+export function mergeConfig(base: RalpixConfig, override: Partial<RalpixConfig>): RalpixConfig {
+  // Merge top-level keys
+  const merged = { ...base, ...override };
+
+  // Deep-merge `models` so per-layer phase presets survive.
+  // If both layers define models, each phase key is merged individually
+  // (project overrides individual fields within a phase without dropping
+  //  sibling fields from the global layer).
+  if (override.models != null && base.models != null) {
+    const phaseKeys = new Set([
+      ...Object.keys(base.models),
+      ...Object.keys(override.models),
+    ]) as Set<ModelPhase>;
+
+    const mergedModels: Partial<Record<ModelPhase, ModelConfig | undefined>> = {};
+    for (const key of phaseKeys) {
+      const baseVal = base.models[key];
+      const overrideVal = override.models[key];
+
+      // null explicitly means "clear this phase preset" — skip it
+      // entirely so the caller reverts to the flat field chain for that phase.
+      if (overrideVal === (null as unknown as ModelConfig | undefined)) continue;
+
+      if (baseVal != null && overrideVal != null) {
+        const mergedPreset = normalizeProviderOnlyPreset(
+          { ...baseVal, ...overrideVal },
+          overrideVal,
+        );
+        mergedModels[key] = mergedPreset;
+      } else if (overrideVal != null) {
+        mergedModels[key] = normalizeProviderOnlyPreset({ ...overrideVal }, overrideVal);
+      } else if (baseVal != null) {
+        mergedModels[key] = baseVal;
+      }
+    }
+    stripInheritedPresetFields(mergedModels, override);
+    merged.models = mergedModels as Partial<Record<ModelPhase, ModelConfig>>;
+  } else if (merged.models != null) {
+    stripInheritedPresetFields(merged.models, override);
+  }
+
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +212,169 @@ export function loadConfig(cwd: string): RalpixConfig {
   return config;
 }
 
+/**
+ * Resolve the effective model configuration for a given phase.
+ *
+ * Resolution order (first non-null/non-blank wins):
+ *   1. `config.models?.[phase]` — full ModelConfig override for this phase
+ *   2. Phase-specific flat fields — e.g. `reviewFirstModel`, `reviewFirstEffort`
+ *   3. Global default flat fields — `defaultModel`, `defaultProvider`, `defaultEffort`
+ *   4. `null` for each field
+ *
+ * Blank strings (`""`) are treated the same as `null` (unset), so
+ * e.g. `planModel: ""` correctly falls back to `defaultModel`.
+ */
+/** Return true if the value is a non-empty string (runtime-safe, survives JSON null/undefined). */
+function isValidEffortValue(value: string | null | undefined): value is ThinkingLevel {
+  return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * Extract a single field from a phase preset.
+ *
+ * Returns:
+ *   - `string`       if the key exists with a non-empty value
+ *   - `null`          if the key exists with null or "" (explicitly cleared)
+ *   - `undefined`     if the key is absent from the preset object
+ */
+function resolvePresetField(
+  preset: ModelConfig,
+  field: string,
+): string | null | undefined {
+  if (!(field in preset)) return undefined;
+  const val = preset[field as keyof ModelConfig];
+  if (typeof val === "string" && val.length > 0) return val;
+  return null;
+}
+
+export function resolveModel(config: RalpixConfig, phase: ModelPhase): ModelConfig {
+  const preset = config.models?.[phase];
+
+  let model: string | null;
+  let provider: string | null;
+  let effort: string | null;
+
+  if (preset == null) {
+    // No preset at all — full fallback through flat fields to global defaults
+    model = resolveFlatField(config, phase, "model");
+    provider = resolveDefaultProvider(config);
+    effort = resolveFlatField(config, phase, "effort");
+  } else {
+    const pModel = resolvePresetField(preset, "model");
+    const pProv = resolvePresetField(preset, "provider");
+    const pEff = resolvePresetField(preset, "effort");
+
+    // Per-field fallback: explicit values stay, absent fields inherit from
+    // phase-specific flat fields → global defaults.  Explicit null/"" clears
+    // that field (stays null).
+    model = pModel === undefined ? resolveFlatField(config, phase, "model") : pModel;
+    provider = pProv === undefined ? resolveDefaultProvider(config) : pProv;
+    effort = pEff === undefined ? resolveFlatField(config, phase, "effort") : pEff;
+  }
+
+  // If the model string is already fully-qualified (contains "/"),
+  // drop the separate provider — the model alone is enough.
+  if (model?.includes("/") === true) {
+    provider = null;
+  }
+
+  // Validate effort against known thinking levels.
+  if (effort != null && !isValidEffortValue(effort)) {
+    console.warn(
+      `ralpix: invalid effort "${effort}" for phase "${phase}" — must be one of: ${THINKING_LEVELS.join(", ")}. Ignored.`,
+    );
+    effort = null;
+  }
+
+  return { model, provider, effort };
+}
+
+function resolveFlatField(
+  config: RalpixConfig,
+  phase: ModelPhase,
+  kind: "model" | "effort",
+): string | null {
+  const fields = PHASE_FIELDS[phase];
+  const fieldName = kind === "model" ? fields.modelField : fields.effortField;
+
+  const phaseVal = (config as unknown as Record<string, unknown>)[fieldName] as string | null | undefined;
+  if (phaseVal !== null && phaseVal !== "" && phaseVal !== undefined) {
+    return phaseVal;
+  }
+
+  // Fall back to global default — treat blank strings as unset here too,
+  // so defaultModel: "" means "use pi's own default" (omit --model).
+  const defaultFieldName = kind === "model" ? "defaultModel" : "defaultEffort";
+  const defaultVal = (config as unknown as Record<string, unknown>)[defaultFieldName] as string | null;
+  if (defaultVal !== null && defaultVal !== "") {
+    return defaultVal;
+  }
+
+  return null;
+}
+
+function resolveDefaultProvider(config: RalpixConfig): string | null {
+  return config.defaultProvider ?? null;
+}
+
+/**
+ * Build the `--model` argument value from a resolved ModelConfig.
+ *
+ * Returns a value suitable for `--model` only when a concrete model is
+ * available — either a plain name (`"gpt-5"`) or a combined
+ * provider/model string (`"openai/gpt-5"`).  When only the provider
+ * is set (no model), returns `null` so the caller can use `--provider`
+ * instead and let pi pick that provider's default model.
+ */
+export function buildModelArg(cfg: ModelConfig): string | null {
+  const { model, provider } = cfg;
+  if (model?.includes("/") === true) {
+    return model;
+  }
+  if (provider !== null && model !== null && provider.length > 0 && model.length > 0) {
+    return `${provider}/${model}`;
+  }
+  if (model !== null && model.length > 0) {
+    return model;
+  }
+  return null;
+}
+
+export function buildSessionModelChange(
+  cfg: ModelConfig,
+): { provider: string; model: string } | null {
+  const { model, provider } = cfg;
+  if (model?.includes("/") === true) {
+    const slash = model.indexOf("/");
+    return {
+      provider: model.slice(0, slash),
+      model: model.slice(slash + 1),
+    };
+  }
+  if (provider !== null && provider.length > 0 && model !== null && model.length > 0) {
+    return { provider, model };
+  }
+  return null;
+}
+
+export function applyModelConfigToSession(
+  sessionManager: {
+    appendModelChange: (provider: string, model: string) => void;
+    appendThinkingLevelChange: (level: string) => void;
+  },
+  cfg: ModelConfig,
+  includeEffort = true,
+): void {
+  const modelChange = buildSessionModelChange(cfg);
+  if (modelChange !== null) {
+    sessionManager.appendModelChange(modelChange.provider, modelChange.model);
+  }
+
+  if (includeEffort && cfg.effort !== null && cfg.effort.length > 0) {
+    sessionManager.appendThinkingLevelChange(cfg.effort);
+  }
+}
+
 /** Save project-local config (creates .ralpix/ dir if needed) */
 export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): void {
   const dir = ralpixProjectDir(cwd);
@@ -119,8 +382,8 @@ export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): 
     mkdirSync(dir, { recursive: true });
   }
   const configPath = join(dir, CONFIG_FILE);
-  const existing = readConfigFile(configPath) ?? {};
-  const merged = { ...existing, ...updates };
+  const existing = (readConfigFile(configPath) ?? {}) as Record<string, unknown>;
+  const merged = { ...existing, ...updates } as Record<string, unknown>;
   writeFileSync(configPath, JSON.stringify(merged, null, 2), UTF8_ENCODING);
 }
 

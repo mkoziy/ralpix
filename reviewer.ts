@@ -1,45 +1,21 @@
 /**
  * Review pipeline — first pass + external review + iterative loop.
- *
- * Phase 1 (first):      One-shot comprehensive review — all 5 agents, review-first.md.
- * Phase 2.5 (external):  External review loop — different model reviews, main model fixes.
- *                        Iterates until clean, stalemate, or max iterations.
- * Phase 3 (loop):        Iterative critical/major review — 2 agents, review-second.md.
- *                        Repeats while HEAD changes, up to reviewMaxIterations.
- *
- * Pattern follows ralphex: runClaudeReview → runExternalReviewLoop → runClaudeReviewLoop.
  */
 
-import { spawn, execSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import { execSync } from "node:child_process";
 
+import { Type } from "typebox";
+
+import { applyModelConfigToSession, buildSessionModelChange, resolveModel } from "./config.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
-import { THINKING_LEVELS } from "./types.js";
 
 import type { ProgressLogger } from "./logger.js";
-import type { Plan, RalpixConfig, ThinkingLevel } from "./types.js";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ModelConfig, Plan, RalpixConfig } from "./types.js";
+import type { ExtensionAPI, ExtensionCommandContext, SessionContext } from "@earendil-works/pi-coding-agent";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function getPiExecutable(): { command: string; args: string[] } {
-  const currentScript: string | undefined = process.argv[1];
-  const isBunVirtual = typeof currentScript === "string" && currentScript.startsWith("/$bunfs/root/");
-  if (typeof currentScript === "string" && currentScript.length > 0 && !isBunVirtual && fs.existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript] };
-  }
-  return { command: "pi", args: [] };
-}
-
-async function writeTempFile(prefix: string, content: string): Promise<{ dir: string; filePath: string }> {
-  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ralpix-review-"));
-  const filePath = path.join(tmpDir, `${prefix}.md`);
-  await fs.promises.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
-  return { dir: tmpDir, filePath };
+interface ReviewSessionReport {
+  success: boolean;
+  summary: string;
 }
 
 function detectDefaultBranch(cwd: string): string {
@@ -71,83 +47,111 @@ function getHeadHash(cwd: string): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Effort helpers
-// ---------------------------------------------------------------------------
+function buildReviewPrompt(
+  promptContent: string,
+  phase: "first" | "second" | "external" | "eval",
+): string {
+  const lines = [
+    promptContent,
+    "",
+    "## Completion Contract",
+    "Before finishing, call `ralpix_report_review_result` exactly once.",
+  ];
 
-function isValidEffort(effort: unknown): effort is ThinkingLevel {
-  return typeof effort === "string" && (THINKING_LEVELS as readonly string[]).includes(effort);
+  switch (phase) {
+    case "external": {
+      lines.push(
+        "Use `success: true` and put the exact review findings in `summary`.",
+        "If the review is clean, set `summary` to exactly `NO ISSUES FOUND`.",
+        "Use `success: false` only if you cannot complete the review.",
+      );
+      break;
+    }
+    case "eval": {
+      lines.push(
+        "Use `success: true` with a concise summary of what you evaluated and fixed.",
+        "Include `EXTERNAL_REVIEW_DONE` in `summary` when all findings are resolved.",
+        "Use `success: false` only if you cannot complete the evaluation.",
+      );
+      break;
+    }
+    case "first":
+    case "second": {
+      lines.push(
+        "Use `success: true` with a concise summary when the review pass completes.",
+        "Use `success: false` with the blocker or failure reason when you cannot complete the review.",
+      );
+      break;
+    }
+  }
+
+  lines.push("Do not end the session without calling this tool.");
+  return lines.join("\n");
 }
 
-function isUnsupportedEffortError(stderr: string): boolean {
-  return (/unsupported.*(?:thinking|effort|reasoning)/i).test(stderr) ||
-    (/thinking.*not.*(?:support|available)/i).test(stderr) ||
-    (/invalid.*thinking/i).test(stderr);
-}
+async function runReviewSession(
+  ctx: ExtensionCommandContext,
+  promptContent: string,
+  phase: "first" | "second" | "external" | "eval",
+  modelCfg: ModelConfig,
+  includeEffort = true,
+): Promise<ReviewSessionReport> {
+  const state: { report?: ReviewSessionReport } = {};
 
-// ---------------------------------------------------------------------------
-// Spawn helpers
-// ---------------------------------------------------------------------------
-
-interface ReviewPhaseResult {
-  exitCode: number;
-  output: string;
-  error: string;
-  effortRejected?: boolean;
-}
-
-async function spawnPiProcess(
-  cwd: string,
-  args: string[],
-): Promise<ReviewPhaseResult> {
-  const invocation = getPiExecutable();
-
-  return new Promise((resolve) => {
-    const proc = spawn(invocation.command, args, {
-      cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
-    });
-    proc.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      resolve({
-        exitCode: code ?? 1,
-        output: stdout,
-        error: stderr,
-        effortRejected: isUnsupportedEffortError(stderr),
+  await ctx.newSession({
+    setup: (sm) => applyModelConfigToSession(sm, modelCfg, includeEffort),
+    withSession: async (reviewCtx: SessionContext) => {
+      reviewCtx.registerTool({
+        name: "ralpix_report_review_result",
+        label: "Report Review Result",
+        description: "Report the final review status and concise summary.",
+        promptSnippet: "Report review result: {{summary}}",
+        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
+        parameters: Type.Object({
+          success: Type.Boolean({
+            description: "True when the review completed, false when blocked or failed.",
+          }),
+          summary: Type.String({
+            description: "Short outcome summary or failure reason.",
+          }),
+        }),
+        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
+        execute(_toolCallId, params) {
+          state.report = {
+            success: params["success"] as boolean,
+            summary: params["summary"] as string,
+          };
+          return {
+            content: [
+              { type: "text", text: "Review result recorded." },
+            ],
+          };
+        },
       });
-    });
 
-    proc.on("error", (err) => {
-      resolve({ exitCode: 1, output: "", error: err.message });
-    });
+      await reviewCtx.sendUserMessage(buildReviewPrompt(promptContent, phase));
+      await reviewCtx.waitForIdle();
+    },
   });
+
+  return state.report ?? {
+    success: false,
+    summary: "Session ended without reporting a review result.",
+  };
 }
 
 async function runReviewProcess(
-  cwd: string,
+  ctx: ExtensionCommandContext,
   promptName: "review-first" | "review-second" | "external-review" | "external-eval",
   config: RalpixConfig,
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
   phase: "first" | "second" | "external" | "eval",
-  iteration: number,
-  effort: ThinkingLevel | null,
-  modelOverride?: string | null,
+  includeEffort = true,
   extraVars?: Record<string, string>,
-): Promise<ReviewPhaseResult> {
-  const template = loadPrompt(promptName, cwd);
+): Promise<ReviewSessionReport> {
+  const template = loadPrompt(promptName, ctx.cwd);
   const prompt = expandPrompt(template, {
     GOAL: plan.title,
     PROGRESS_FILE: logger.filePath,
@@ -155,96 +159,44 @@ async function runReviewProcess(
     ...extraVars,
   });
 
-  let model: string | null;
-  if (modelOverride === undefined) {
-    /* eslint-disable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
-    model = (phase === "first" ? config.reviewFirstModel : config.reviewSecondModel) ||
-      config.defaultModel ||
-      null;
-    /* eslint-enable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
-  } else {
-    /* eslint-disable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
-    model = modelOverride || null;
-    /* eslint-enable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
-  }
-
-  const invocation = getPiExecutable();
-  const args: string[] = [...invocation.args, "--mode", "json", "-p", "--no-session"];
-
-  if (model !== null && model.length > 0) {
-    args.push("--model", model);
-  }
-
-  if (effort !== null) {
-    args.push("--thinking", effort);
-  }
-
-  const { dir: tmpDir, filePath: promptFile } = await writeTempFile(
-    `review-${phase}-${iteration}`,
-    prompt,
-  );
-  args.push(`@${promptFile}`);
-
-  const result = await spawnPiProcess(cwd, args);
-
-  // Cleanup temp files
-  try {
-    fs.unlinkSync(promptFile);
-  } catch {
-    /* ignore */
-  }
-  try {
-    fs.rmdirSync(tmpDir);
-  } catch {
-    /* ignore */
-  }
-
-  return result;
+  const phaseToModelKey = {
+    first: "review-first",
+    second: "review-second",
+    external: "external-review",
+    eval: "external-eval",
+  } as const;
+  const modelCfg = resolveModel(config, phaseToModelKey[phase]);
+  return runReviewSession(ctx, prompt, phase, modelCfg, includeEffort);
 }
 
-// ---------------------------------------------------------------------------
-// Phase 1: First review (one-shot, all 5 agents)
-// ---------------------------------------------------------------------------
-
 async function runFirstReview(
-  cwd: string,
+  ctx: ExtensionCommandContext,
   config: RalpixConfig,
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
 ): Promise<string> {
-  const effort = isValidEffort(config.reviewFirstEffort) ? config.reviewFirstEffort : null;
-  const effortSuffix = effort === null ? "" : ` — effort: ${effort}`;
+  const modelCfg = resolveModel(config, "review-first");
+  const effortSuffix = modelCfg.effort === null ? "" : ` — effort: ${modelCfg.effort}`;
   logger.logReview("first", `STARTED (5 agents, comprehensive)${effortSuffix}`);
 
-  let result = await runReviewProcess(
-    cwd, "review-first", config, plan, logger, defaultBranch, "first", 0, effort,
+  const result = await runReviewProcess(
+    ctx, "review-first", config, plan, logger, defaultBranch, "first",
   );
 
-  if (result.effortRejected === true && effort !== null) {
-    logger.logReview("first", `effort "${effort}" rejected, retrying without effort`);
-    result = await runReviewProcess(
-      cwd, "review-first", config, plan, logger, defaultBranch, "first", 0, null,
-    );
-  }
-
-  if (result.exitCode === 0) {
+  if (result.success) {
     const msg = "COMPLETE";
     logger.logReview("first", msg);
     return msg;
   }
 
-  const msg = `ERROR: exit ${result.exitCode} — ${result.error.slice(0, 200)}`;
+  const msg = `ERROR: ${result.summary.slice(0, 200)}`;
   logger.logReview("first", msg);
   return msg;
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2: Review loop (iterative, 2 agents — critical/major only)
-// ---------------------------------------------------------------------------
-
 async function runReviewLoop(
-  cwd: string,
+  ctx: ExtensionCommandContext,
   config: RalpixConfig,
   plan: Plan,
   logger: ProgressLogger,
@@ -252,47 +204,41 @@ async function runReviewLoop(
 ): Promise<string> {
   const maxIterations = config.reviewMaxIterations === 0 ? 5 : config.reviewMaxIterations;
 
-  const loopMsg = `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`;
-  logger.logReview("loop", loopMsg);
+  logger.logReview("loop", `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
 
   for (let i = 0; i < maxIterations; i++) {
-    const headBefore = getHeadHash(cwd);
+    const headBefore = getHeadHash(ctx.cwd);
     if (headBefore.length === 0) {
       const msg = "ERROR: cannot determine HEAD hash (not a git repo?)";
       logger.logReview("loop", msg);
       return msg;
     }
 
-    const effort = isValidEffort(config.reviewSecondEffort) ? config.reviewSecondEffort : null;
-    const effortInfo = effort === null ? "" : ` (effort: ${effort})`;
+    const modelCfg = resolveModel(config, "review-second");
+    const effortInfo = modelCfg.effort === null ? "" : ` (effort: ${modelCfg.effort})`;
     logger.logReview("loop", `Iteration ${i + 1}/${maxIterations} — running review...${effortInfo}`);
 
-    let result = await runReviewProcess(
-      cwd, "review-second", config, plan, logger, defaultBranch, "second", i, effort,
+    const result = await runReviewProcess(
+      ctx, "review-second", config, plan, logger, defaultBranch, "second",
     );
 
-    if (result.effortRejected === true && effort !== null) {
-      logger.logReview("loop", `effort "${effort}" rejected, retrying without effort`);
-      result = await runReviewProcess(
-        cwd, "review-second", config, plan, logger, defaultBranch, "second", i, null,
-      );
-    }
-
-    if (result.exitCode !== 0) {
-      const msg = `ERROR: exit ${result.exitCode} — ${result.error.slice(0, 200)}`;
+    if (!result.success) {
+      const msg = `ERROR: ${result.summary.slice(0, 200)}`;
       logger.logReview("loop", msg);
       return msg;
     }
 
-    const headAfter = getHeadHash(cwd);
+    const headAfter = getHeadHash(ctx.cwd);
     if (headAfter === headBefore) {
       const msg = `COMPLETE (iteration ${i + 1}) — no changes, review clean`;
       logger.logReview("loop", msg);
       return msg;
     }
 
-    const iterMsg = `Iteration ${i + 1}: fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}), continuing...`;
-    logger.logReview("loop", iterMsg);
+    logger.logReview(
+      "loop",
+      `Iteration ${i + 1}: fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}), continuing...`,
+    );
   }
 
   const msg = `MAX_ITERATIONS (${maxIterations}) — review loop exhausted`;
@@ -300,44 +246,9 @@ async function runReviewLoop(
   return msg;
 }
 
-// ---------------------------------------------------------------------------
-// Phase 2.5: External review loop (different model reviews, main model fixes)
-// ---------------------------------------------------------------------------
-
-interface JsonEvent {
-  type: string;
-  message?: {
-    role: string;
-    content?: Array<{ type: string; text: string }>;
-  };
-}
-
-// eslint-disable-next-line sonarjs/cognitive-complexity
-function extractLastAssistantText(lines: string[]): string {
-  let parts: string[] = [];
-  for (const line of lines) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      const event: JsonEvent = JSON.parse(line);
-      if (event.type === "message_end" && event.message?.role === "assistant") {
-        parts = [];
-        const content = event.message.content;
-        if (content !== undefined) {
-          for (const part of content) {
-            if (part.type === "text") parts.push(part.text);
-          }
-        }
-      }
-    } catch {
-      // skip malformed lines
-    }
-  }
-  return parts.join("\n");
-}
-
 // eslint-disable-next-line sonarjs/cognitive-complexity
 async function runExternalReviewLoop(
-  cwd: string,
+  ctx: ExtensionCommandContext,
   config: RalpixConfig,
   plan: Plan,
   logger: ProgressLogger,
@@ -346,30 +257,34 @@ async function runExternalReviewLoop(
   const maxIterations = config.externalReviewMaxIterations === 0 ? 5 : config.externalReviewMaxIterations;
   const patience = config.externalReviewPatience === 0 ? 3 : config.externalReviewPatience;
 
-  const externalModel = config.externalReviewModel ?? config.defaultModel;
+  const externalModelCfg = resolveModel(config, "external-review");
+  const reviewerLabel =
+    buildSessionModelChange(externalModelCfg)?.model ??
+    externalModelCfg.model ??
+    externalModelCfg.provider;
 
-  if (externalModel === null || externalModel.length === 0) {
+  if ((reviewerLabel ?? "").length === 0) {
     const msg = "SKIPPED — no model configured (externalReviewModel/defaultModel)";
     logger.logExternalReview("loop", msg);
     return msg;
   }
+  const reviewerName = reviewerLabel ?? "(default)";
 
-  const startMsg = `STARTED (reviewer: ${externalModel}, max ${maxIterations} iterations, patience: ${patience})`;
-  logger.logExternalReview("loop", startMsg);
+  logger.logExternalReview(
+    "loop",
+    `STARTED (reviewer: ${reviewerName}, max ${maxIterations} iterations, patience: ${patience})`,
+  );
 
   let unchangedRounds = 0;
   let previousFindings = "";
   let lastReviewHead = "";
 
   for (let i = 0; i < maxIterations; i++) {
-    // ---- Step 1: External reviewer finds issues ----
-    const externalEffort = isValidEffort(config.externalReviewEffort) ? config.externalReviewEffort : null;
-
     const diffInstruction = lastReviewHead.length > 0
       ? `Run: \`git diff ${lastReviewHead}..HEAD\` to see the latest fix changes.`
       : `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`;
 
-    const reviewTemplate = loadPrompt("external-review", cwd);
+    const reviewTemplate = loadPrompt("external-review", ctx.cwd);
     let reviewPrompt = expandPrompt(reviewTemplate, {
       GOAL: plan.title,
       DEFAULT_BRANCH: defaultBranch,
@@ -382,129 +297,62 @@ async function runExternalReviewLoop(
         `\n## Previous Review Findings\n\n${previousFindings}\n\n`,
         "**Guidance for this round:**",
         "- The diff above shows only the latest fix changes (not the full branch).",
-        "- **Re-verify** each previous finding by reading the relevant file(s) with the `read` tool",
-        "  — if the issue is still present, re-report it; if fixed or inaccurate, skip it.",
-        "- **Add** new issues discovered in the fix delta or in files you inspected.",
-        "- If all previous findings are resolved and no new issues exist, respond with `NO ISSUES FOUND`.",
+        "- **Re-verify** each previous finding by reading the relevant file(s) with the `read` tool.",
+        "- Re-report unresolved issues, skip resolved or inaccurate ones, and add any new issues you find.",
+        "- If everything is clean, report `NO ISSUES FOUND`.",
       ].join("\n");
     }
 
-    const iterLabel = `Iteration ${i + 1}/${maxIterations} — running external reviewer...`;
-    logger.logExternalReview("review", iterLabel);
+    logger.logExternalReview("review", `Iteration ${i + 1}/${maxIterations} — running external reviewer...`);
 
-    const invocation = getPiExecutable();
-    const reviewArgs = [...invocation.args, "--mode", "json", "-p", "--no-session"];
-    if (externalModel.length > 0) reviewArgs.push("--model", externalModel);
-    if (externalEffort !== null) reviewArgs.push("--thinking", externalEffort);
-
-    const { dir: rTmpDir, filePath: rPromptFile } = await writeTempFile(
-      `external-review-${i}`, reviewPrompt,
-    );
-    reviewArgs.push(`@${rPromptFile}`);
-
-    let reviewResult = await spawnPiProcess(cwd, reviewArgs);
-    try {
-      fs.unlinkSync(rPromptFile);
-    } catch {
-      /* ignore */
-    }
-    try {
-      fs.rmdirSync(rTmpDir);
-    } catch {
-      /* ignore */
-    }
-
-    // Retry without effort if rejected
-    if (reviewResult.effortRejected === true && externalEffort !== null) {
-      const retryMsg = `effort "${externalEffort}" rejected, retrying without effort`;
-      logger.logExternalReview("review", retryMsg);
-      const retryArgs = reviewArgs.filter(
-        (a) => !a.startsWith("@") || !a.includes("external-review"),
-      );
-      const thinkIdx = retryArgs.indexOf("--thinking");
-      if (thinkIdx >= 0) retryArgs.splice(thinkIdx, 2);
-
-      const { dir: r2TmpDir, filePath: r2PromptFile } = await writeTempFile(
-        `external-review-${i}-retry`, reviewPrompt,
-      );
-      retryArgs.push(`@${r2PromptFile}`);
-
-      reviewResult = await spawnPiProcess(cwd, retryArgs);
-      try {
-        fs.unlinkSync(r2PromptFile);
-      } catch {
-        /* ignore */
-      }
-      try {
-        fs.rmdirSync(r2TmpDir);
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (reviewResult.exitCode !== 0) {
-      const msg = `ERROR: exit ${reviewResult.exitCode}`;
+    const reviewResult = await runReviewSession(ctx, reviewPrompt, "external", externalModelCfg);
+    if (!reviewResult.success) {
+      const msg = `ERROR: ${reviewResult.summary.slice(0, 200)}`;
       logger.logExternalReview("review", msg);
       return msg;
     }
 
-    const findings = extractLastAssistantText(reviewResult.output.split("\n"));
-
-    if (findings.length === 0 || (/^no issues found$/i).test(findings.trim()) || findings.trim().length < 10) {
+    const findings = reviewResult.summary.trim();
+    if (findings.length === 0 || (/^no issues found$/i).test(findings) || findings.length < 10) {
       const msg = `COMPLETE (iteration ${i + 1}) — no issues found`;
       logger.logExternalReview("review", msg);
       return msg;
     }
 
     previousFindings = findings;
-    lastReviewHead = getHeadHash(cwd);
+    lastReviewHead = getHeadHash(ctx.cwd);
 
-    // ---- Step 2: Main model evaluates and fixes ----
-    const headBefore = getHeadHash(cwd);
-    const mainEffort = isValidEffort(config.defaultEffort) ? config.defaultEffort : null;
-    const mainModel = config.defaultModel ?? null;
-
+    const headBefore = getHeadHash(ctx.cwd);
     logger.logExternalReview("eval", `Iteration ${i + 1} — evaluating findings...`);
 
-    let evalResult = await runReviewProcess(
-      cwd, "external-eval", config, plan, logger, defaultBranch,
-      "eval", i, mainEffort, mainModel,
+    const evalResult = await runReviewProcess(
+      ctx,
+      "external-eval",
+      config,
+      plan,
+      logger,
+      defaultBranch,
+      "eval",
+      true,
       { FINDINGS: findings },
     );
 
-    if (evalResult.effortRejected === true && mainEffort !== null) {
-      const evalMsg = `effort "${mainEffort}" rejected, retrying without effort`;
-      logger.logExternalReview("eval", evalMsg);
-      evalResult = await runReviewProcess(
-        cwd, "external-eval", config, plan, logger, defaultBranch,
-        "eval", i, null, mainModel,
-        { FINDINGS: findings },
-      );
-    }
-
-    if (evalResult.exitCode !== 0) {
-      const msg = `ERROR: eval exit ${evalResult.exitCode}`;
+    if (!evalResult.success) {
+      const msg = `ERROR: ${evalResult.summary.slice(0, 200)}`;
       logger.logExternalReview("eval", msg);
       return msg;
     }
 
-    const evalText = extractLastAssistantText(evalResult.output.split("\n"));
-
-    if (evalText.includes("EXTERNAL_REVIEW_DONE")) {
+    if (evalResult.summary.includes("EXTERNAL_REVIEW_DONE")) {
       const msg = `COMPLETE (iteration ${i + 1}) — all findings resolved`;
       logger.logExternalReview("eval", msg);
       return msg;
     }
 
-    // ---- Step 3: Stalemate detection ----
-    const headAfter = getHeadHash(cwd);
-
+    const headAfter = getHeadHash(ctx.cwd);
     if (headAfter === headBefore) {
       unchangedRounds++;
-      logger.logExternalReview(
-        "eval",
-        `no changes (${unchangedRounds}/${patience} stalemate rounds)`,
-      );
+      logger.logExternalReview("eval", `no changes (${unchangedRounds}/${patience} stalemate rounds)`);
 
       if (unchangedRounds >= patience) {
         const msg = `STALEMATE — ${patience} rounds without changes`;
@@ -513,8 +361,7 @@ async function runExternalReviewLoop(
       }
     } else {
       unchangedRounds = 0;
-      const hashMsg = `fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)})`;
-      logger.logExternalReview("eval", hashMsg);
+      logger.logExternalReview("eval", `fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)})`);
     }
   }
 
@@ -523,12 +370,8 @@ async function runExternalReviewLoop(
   return msg;
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 export async function runReviewPipeline(
-  ctx: { cwd: string },
+  ctx: ExtensionCommandContext,
   _pi: ExtensionAPI,
   plan: Plan,
   config: RalpixConfig,
@@ -543,19 +386,16 @@ export async function runReviewPipeline(
 
   const defaultBranch = detectDefaultBranch(ctx.cwd);
 
-  // Phase 1: First review
-  const firstResult = await runFirstReview(ctx.cwd, config, plan, logger, defaultBranch);
+  const firstResult = await runFirstReview(ctx, config, plan, logger, defaultBranch);
 
-  // Phase 2.5: External review loop
   let externalResult = "SKIPPED (disabled)";
   if (config.externalReviewEnabled) {
-    externalResult = await runExternalReviewLoop(ctx.cwd, config, plan, logger, defaultBranch);
+    externalResult = await runExternalReviewLoop(ctx, config, plan, logger, defaultBranch);
   } else {
     logger.logExternalReview("loop", "SKIPPED (externalReviewEnabled: false)");
   }
 
-  // Phase 3: Review loop
-  const loopResult = await runReviewLoop(ctx.cwd, config, plan, logger, defaultBranch);
+  const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch);
 
   return { firstResult, externalResult, loopResult };
 }

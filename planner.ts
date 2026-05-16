@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 
 import { Type } from "typebox";
 
+import { applyModelConfigToSession, resolveModel } from "./config.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { RalpixConfig } from "./types.js";
@@ -80,30 +81,13 @@ export async function runPlanCreation(
   let planContent: string | null = null;
   let lastAction: "accept" | "reject" | null = null;
 
-  // planModel → defaultModel → (pi session default)
-  // Blank strings mean unset, so || semantics are intentional here.
-  /* eslint-disable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
-  const desiredModel = config.planModel || config.defaultModel;
-  const desiredEffort = config.planEffort || config.defaultEffort;
-  /* eslint-enable @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/strict-boolean-expressions */
+  // Resolve model + effort via the central resolveModel()
+  const planModelCfg = resolveModel(config, "plan");
 
   // Run in a new session, seeding model/effort via setup entries so the
   // plan session picks up the configuration without mutating global state.
   await ctx.newSession({
-    setup: (sm) => {
-      if (desiredModel !== null && desiredModel.length > 0) {
-        const slash = desiredModel.indexOf("/");
-        if (slash >= 0) {
-          sm.appendModelChange(
-            desiredModel.slice(0, slash),
-            desiredModel.slice(slash + 1),
-          );
-        }
-      }
-      if (desiredEffort !== null && desiredEffort.length > 0) {
-        sm.appendThinkingLevelChange(desiredEffort);
-      }
-    },
+    setup: (sm) => applyModelConfigToSession(sm, planModelCfg),
     withSession: async (planCtx) => {
       // ── ralpix_ask_question ──────────────────────────────────────
       planCtx.registerTool({

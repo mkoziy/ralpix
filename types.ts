@@ -6,6 +6,34 @@
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+/**
+ * Phases that use a model configuration.
+ * - "task":           Task execution
+ * - "review-first":    First review pass (5 agents)
+ * - "review-second":   Second review pass (2 agents, iterative)
+ * - "external-review": External reviewer (different model finds issues)
+ * - "external-eval":   External review eval (main model fixes issues)
+ * - "plan":            Interactive plan creation
+ */
+export type ModelPhase = "task" | "review-first" | "review-second" | "external-review" | "external-eval" | "plan";
+
+/** All valid model phases */
+export const MODEL_PHASES: ModelPhase[] = [
+  "task",
+  "review-first",
+  "review-second",
+  "external-review",
+  "external-eval",
+  "plan",
+];
+
+/** Model configuration for a single phase */
+export interface ModelConfig {
+  model: string | null;
+  provider: string | null;
+  effort: ThinkingLevel | null;
+}
+
 /** ralpix configuration (merged from bundled → global → project) */
 export interface RalpixConfig {
   defaultModel: string | null;
@@ -32,6 +60,12 @@ export interface RalpixConfig {
   planEffort: ThinkingLevel | null;
   /** Directory for created/stored plan files */
   plansDir: string;
+  /**
+   * Named model presets keyed by phase.
+   * Each preset provides model/provider/effort for the given phase.
+   * Overrides the flat fields (e.g. defaultModel) when set.
+   */
+  models?: Partial<Record<ModelPhase, ModelConfig>>;
 }
 
 /** A single checklist item within a task */
