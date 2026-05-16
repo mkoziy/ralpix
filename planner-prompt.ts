@@ -32,3 +32,16 @@ export function planCreationAttemptConfigs(): PlanCreationAttemptConfig[] {
     { includeEffort: false, seedSessionConfig: false },
   ];
 }
+
+export interface PlannerLaunchConfig {
+  includeModel: boolean;
+  includeEffort: boolean;
+}
+
+export function plannerLaunchConfigs(): PlannerLaunchConfig[] {
+  return [
+    { includeModel: true, includeEffort: true },
+    { includeModel: true, includeEffort: false },
+    { includeModel: false, includeEffort: false },
+  ];
+}

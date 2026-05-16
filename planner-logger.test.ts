@@ -3,7 +3,11 @@ import test from "node:test";
 
 import { progressDirForCwd } from "./logger.js";
 import { planCreationDebugFilePath } from "./planner-debug.js";
-import { buildPlanCreationPrompt, planCreationAttemptConfigs } from "./planner-prompt.js";
+import {
+  buildPlanCreationPrompt,
+  planCreationAttemptConfigs,
+  plannerLaunchConfigs,
+} from "./planner-prompt.js";
 
 void test("progressDirForCwd uses project-local .ralpix/progress", () => {
   assert.equal(
@@ -39,5 +43,13 @@ void test("planCreationAttemptConfigs degrades from configured to session defaul
     { includeEffort: true, seedSessionConfig: true },
     { includeEffort: false, seedSessionConfig: true },
     { includeEffort: false, seedSessionConfig: false },
+  ]);
+});
+
+void test("plannerLaunchConfigs degrades from configured launch to pi defaults", () => {
+  assert.deepEqual(plannerLaunchConfigs(), [
+    { includeModel: true, includeEffort: true },
+    { includeModel: true, includeEffort: false },
+    { includeModel: false, includeEffort: false },
   ]);
 });
