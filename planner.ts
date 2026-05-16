@@ -11,6 +11,7 @@ import { join, resolve } from "node:path";
 import { Type } from "typebox";
 
 import { applyModelConfigToSession, resolveModel } from "./config.js";
+import { buildPlanCreationPrompt } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { RalpixConfig } from "./types.js";
@@ -207,7 +208,7 @@ export async function runPlanCreation(
       });
 
       // ── Send prompt and wait ─────────────────────────────────────
-      await planCtx.sendUserMessage(prompt);
+      await planCtx.sendUserMessage(buildPlanCreationPrompt(prompt));
       await planCtx.waitForIdle();
     },
   });
@@ -223,7 +224,7 @@ export async function runPlanCreation(
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (planContent === null) {
     ctx.ui.notify(
-      "Plan creation failed — model did not submit a plan draft",
+      "Plan creation failed — session ended without submitting a plan draft",
       "error",
     );
     return null;

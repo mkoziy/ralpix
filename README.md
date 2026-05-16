@@ -32,7 +32,7 @@ What happens:
 1. Plan is parsed
 2. Each task runs in an isolated `pi` session seeded from the merged ralpix config
 3. Auto-commit after each successful task
-4. Progress is logged to `~/.ralpix/progress/<plan-name>.txt`
+4. Progress is logged to `./.ralpix/progress/<plan-name>.txt`
 5. After all tasks: review pipeline runs (first pass → second pass)
 6. Plan checkboxes are updated automatically
 
@@ -222,7 +222,7 @@ Set `reviewFirstModel` and `reviewSecondModel` to use different models for revie
 
 ## Progress Logs
 
-All execution is logged to `~/.ralpix/progress/<plan-name>.txt`:
+All execution is logged to `./.ralpix/progress/<plan-name>.txt`:
 
 ```
 ============================================================
@@ -455,7 +455,7 @@ Each task runs as an isolated pi process:
 │        └─► spawn pi (review-second)     Iteration 2  │
 │            └─► check HEAD: unchanged → done          │
 │                                                      │
-│  Progress: ~/.ralpix/progress/<plan>.txt              │
+│  Progress: ./.ralpix/progress/<plan>.txt              │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -488,9 +488,9 @@ which pi
 ```
 
 ### Progress log is empty
-Check that `~/.ralpix/progress/` exists and is writable:
+Check that `./.ralpix/progress/` exists and is writable:
 ```bash
-ls -la ~/.ralpix/progress/
+ls -la .ralpix/progress/
 ```
 
 ## v2 Ideas

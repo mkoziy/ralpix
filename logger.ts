@@ -4,17 +4,19 @@
 
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { EOL } from "node:os";
-import { join, dirname } from "node:path";
-
-import { ralpixHomeDir } from "./config.js";
+import { dirname, join, resolve } from "node:path";
 
 import type { Plan, PlanTask } from "./types.js";
+
+export function progressDirForCwd(cwd: string): string {
+  return resolve(cwd, ".ralpix", "progress");
+}
 
 export class ProgressLogger {
   readonly filePath: string;
 
-  constructor(planName: string) {
-    const dir = join(ralpixHomeDir(), "progress");
+  constructor(cwd: string, planName: string) {
+    const dir = progressDirForCwd(cwd);
     this.filePath = join(dir, `${planName}.txt`);
   }
 

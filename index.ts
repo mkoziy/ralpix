@@ -220,7 +220,7 @@ async function runPlan(
   // Setup progress logger
   const fileName = planPath.split("/").pop() ?? "plan";
   const planStem = fileName.replace(/\.md$/, "");
-  const logger = new ProgressLogger(planStem);
+  const logger = new ProgressLogger(ctx.cwd, planStem);
   logger.logStart(plan);
 
   // Initial state
