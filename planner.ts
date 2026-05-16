@@ -11,6 +11,7 @@ import { join, resolve } from "node:path";
 import { Type } from "typebox";
 
 import { applyModelConfigToSession, resolveModel } from "./config.js";
+import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { buildPlanCreationPrompt, planCreationAttemptConfigs } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
@@ -47,6 +48,45 @@ interface PlanCreationSessionResult {
   lastAction: "accept" | "reject" | null;
 }
 
+async function runPlanCreationAttempts(
+  prompt: string,
+  ctx: ExtensionCommandContext,
+  planModelCfg: ReturnType<typeof resolveModel>,
+): Promise<PlanCreationSessionResult | null> {
+  let planContent: string | null = null;
+  let lastAction: "accept" | "reject" | null = null;
+  const attemptConfigs = planCreationAttemptConfigs();
+
+  for (const [index, attemptConfig] of attemptConfigs.entries()) {
+    const attempt = index + 1;
+    try {
+      const result = await runPlanCreationSession(prompt, attempt, ctx, planModelCfg, attemptConfig);
+      planContent = result.planContent;
+      lastAction = result.lastAction;
+    } catch (error) {
+      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: newSession threw ${message}`);
+      if (attempt < attemptConfigs.length) {
+        notifyPlanCreationRetry(ctx, attempt);
+        continue;
+      }
+      ctx.ui.notify(
+        `Plan creation failed before draft submission. See ${planCreationDebugFilePath(ctx.cwd)}`,
+        "error",
+      );
+      return null;
+    }
+
+    if (lastAction === "reject" || planContent !== null) {
+      return { planContent, lastAction };
+    }
+
+    notifyPlanCreationRetry(ctx, attempt);
+  }
+
+  return { planContent, lastAction };
+}
+
 function notifyPlanCreationRetry(ctx: ExtensionCommandContext, attempt: number): void {
   if (attempt === 1) {
     ctx.ui.notify(
@@ -70,14 +110,22 @@ async function runPlanCreationSession(
 ): Promise<PlanCreationSessionResult> {
   let planContent: string | null = null;
   let lastAction: "accept" | "reject" | null = null;
+  appendPlanCreationDebug(
+    ctx.cwd,
+    `attempt ${attempt}: start (seedSessionConfig=${String(attemptConfig.seedSessionConfig)}, includeEffort=${String(attemptConfig.includeEffort)})`,
+  );
 
   await ctx.newSession({
     setup: (sm) => {
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: setup enter`);
       if (attemptConfig.seedSessionConfig) {
         applyModelConfigToSession(sm, planModelCfg, attemptConfig.includeEffort);
+        appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: setup applied session config`);
       }
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: setup exit`);
     },
     withSession: async (planCtx) => {
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: withSession enter`);
       planCtx.registerTool({
         name: "ralpix_ask_question",
         label: "Ask User Question",
@@ -97,6 +145,7 @@ async function runPlanCreationSession(
         }),
         /* eslint-enable @typescript-eslint/no-unsafe-assignment */
         async execute(_toolCallId, params) {
+          appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: ralpix_ask_question called`);
           const question = params["question"] as string;
           const options = params["options"] as string[];
 
@@ -119,6 +168,7 @@ async function runPlanCreationSession(
           };
         },
       });
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: registered ralpix_ask_question`);
 
       planCtx.registerTool({
         name: "ralpix_submit_plan_draft",
@@ -136,6 +186,7 @@ async function runPlanCreationSession(
         }),
         /* eslint-enable @typescript-eslint/no-unsafe-assignment */
         async execute(_toolCallId, params) {
+          appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: ralpix_submit_plan_draft called`);
           const content = params["planContent"] as string;
 
           const reviewChoice = await ctx.ui.select(
@@ -165,6 +216,7 @@ async function runPlanCreationSession(
           if (typeof reviewChoice === "string" && reviewChoice.includes("Accept")) {
             planContent = content;
             lastAction = "accept";
+            appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: plan accepted`);
 
             return {
               content: [
@@ -178,6 +230,7 @@ async function runPlanCreationSession(
           }
 
           lastAction = "reject";
+          appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: plan rejected`);
 
           return {
             content: [
@@ -187,11 +240,21 @@ async function runPlanCreationSession(
           };
         },
       });
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: registered ralpix_submit_plan_draft`);
 
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: sendUserMessage start`);
       await planCtx.sendUserMessage(buildPlanCreationPrompt(prompt, attempt));
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: sendUserMessage done`);
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: waitForIdle start`);
       await planCtx.waitForIdle();
+      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: waitForIdle done`);
     },
   });
+
+  appendPlanCreationDebug(
+    ctx.cwd,
+    `attempt ${attempt}: newSession resolved (lastAction=${String(lastAction)}, planContent=${typeof planContent === "string" ? "set" : "null"})`,
+  );
 
   return { planContent, lastAction };
 }
@@ -225,6 +288,8 @@ export async function runPlanCreation(
   }
 
   ctx.ui.notify(`Creating plan for: "${description}"...`, "info");
+  appendPlanCreationDebug(ctx.cwd, `runPlanCreation: start description=${JSON.stringify(description)}`);
+  appendPlanCreationDebug(ctx.cwd, `runPlanCreation: debug file ${planCreationDebugFilePath(ctx.cwd)}`);
 
   // Load and expand the plan creation prompt
   const template = loadPrompt("plan-creation", ctx.cwd);
@@ -234,18 +299,11 @@ export async function runPlanCreation(
 
   // Resolve model + effort via the central resolveModel()
   const planModelCfg = resolveModel(config, "plan");
-
-  let planContent: string | null = null;
-  let lastAction: "accept" | "reject" | null = null;
-  const attemptConfigs = planCreationAttemptConfigs();
-  for (const [index, attemptConfig] of attemptConfigs.entries()) {
-    const attempt = index + 1;
-    const result = await runPlanCreationSession(prompt, attempt, ctx, planModelCfg, attemptConfig);
-    planContent = result.planContent;
-    lastAction = result.lastAction;
-    if (lastAction === "reject" || planContent !== null) break;
-    notifyPlanCreationRetry(ctx, attempt);
+  const attemptResult = await runPlanCreationAttempts(prompt, ctx, planModelCfg);
+  if (attemptResult === null) {
+    return null;
   }
+  const { planContent, lastAction } = attemptResult;
 
   // ── After session: handle results ─────────────────────────────────
 
@@ -255,8 +313,9 @@ export async function runPlanCreation(
   }
 
   if (planContent === null) {
+    appendPlanCreationDebug(ctx.cwd, "runPlanCreation: exhausted all attempts without a draft");
     ctx.ui.notify(
-      "Plan creation failed — session ended without submitting a plan draft",
+      `Plan creation failed — session ended without submitting a plan draft. See ${planCreationDebugFilePath(ctx.cwd)}`,
       "error",
     );
     return null;

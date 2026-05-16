@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { progressDirForCwd } from "./logger.js";
+import { planCreationDebugFilePath } from "./planner-debug.js";
 import { buildPlanCreationPrompt, planCreationAttemptConfigs } from "./planner-prompt.js";
 
 void test("progressDirForCwd uses project-local .ralpix/progress", () => {
   assert.equal(
     progressDirForCwd("/tmp/example"),
     "/tmp/example/.ralpix/progress",
+  );
+});
+
+void test("planCreationDebugFilePath uses project-local progress directory", () => {
+  assert.equal(
+    planCreationDebugFilePath("/tmp/example"),
+    "/tmp/example/.ralpix/progress/plan-creation-debug.txt",
   );
 });
 
