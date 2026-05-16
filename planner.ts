@@ -1,28 +1,23 @@
 /**
- * Interactive plan creation — model explores codebase, asks clarifying
- * questions, generates a plan draft, and iterates on user feedback.
+ * Interactive plan creation — generates a plan draft, lets the user revise it,
+ * and saves the accepted result.
  *
- * Called by the /ralpix plan <description> command.
+ * Uses a subprocess backend instead of ctx.newSession() because the host
+ * runtime currently aborts before the session callback starts.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, rmdirSync } from "node:fs";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { Type } from "typebox";
-
-import { resolveModel } from "./config.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
-import { buildPlanCreationPrompt, planCreationAttemptConfigs } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Convert a description into a filesystem-safe plan filename. */
 function slugify(text: string): string {
   const slug = text
     .toLowerCase()
@@ -30,9 +25,6 @@ function slugify(text: string): string {
     .replaceAll(/^-+|-+$/g, "")
     .slice(0, 60);
 
-  // When the description contains no ASCII alphanumerics (e.g. Cyrillic,
-  // CJK), the regex strips everything and we get an empty slug.  Fall back
-  // to a short hash so the filename stays non-empty and unique.
   if (slug.length > 0) return slug;
 
   let hash = 0;
@@ -43,236 +35,191 @@ function slugify(text: string): string {
   return `plan-${Math.abs(hash).toString(36).slice(0, 12)}`;
 }
 
-interface PlanCreationSessionResult {
-  planContent: string | null;
-  lastAction: "accept" | "reject" | null;
+function getPiExecutable(): { command: string; args: string[] } {
+  const currentScript = process.argv[1];
+  const isBunVirtual = typeof currentScript === "string" && currentScript.startsWith("/$bunfs/root/");
+  if (typeof currentScript === "string" && !isBunVirtual && existsSync(currentScript)) {
+    return { command: process.execPath, args: [currentScript] };
+  }
+  return { command: "pi", args: [] };
 }
 
-async function runPlanCreationAttempts(
-  prompt: string,
-  ctx: ExtensionCommandContext,
-  planModelCfg: ReturnType<typeof resolveModel>,
-): Promise<PlanCreationSessionResult | null> {
-  let planContent: string | null = null;
-  let lastAction: "accept" | "reject" | null = null;
-  const attemptConfigs = planCreationAttemptConfigs();
+async function writeTempFile(prefix: string, content: string): Promise<{ dir: string; filePath: string }> {
+  const dir = await fs.mkdtemp(join(tmpdir(), "ralpix-plan-"));
+  const filePath = join(dir, `${prefix}.md`);
+  await fs.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
+  return { dir, filePath };
+}
 
-  for (const [index, attemptConfig] of attemptConfigs.entries()) {
-    const attempt = index + 1;
+interface JsonEvent {
+  type: string;
+  message?: {
+    role: string;
+    content?: Array<{ type: string; text: string }>;
+  };
+}
+
+// eslint-disable-next-line sonarjs/cognitive-complexity
+function extractLastAssistantText(lines: string[]): string {
+  let parts: string[] = [];
+  for (const line of lines) {
     try {
-      const result = await runPlanCreationSession(prompt, attempt, ctx, planModelCfg, attemptConfig);
-      planContent = result.planContent;
-      lastAction = result.lastAction;
-    } catch (error) {
-      const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: newSession threw ${message}`);
-      if (attempt < attemptConfigs.length) {
-        notifyPlanCreationRetry(ctx, attempt);
-        continue;
+      const event = JSON.parse(line) as JsonEvent;
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        parts = [];
+        const content = event.message.content;
+        if (content !== undefined) {
+          for (const part of content) {
+            if (part.type === "text") parts.push(part.text);
+          }
+        }
       }
-      ctx.ui.notify(
-        `Plan creation failed before draft submission. See ${planCreationDebugFilePath(ctx.cwd)}`,
-        "error",
-      );
-      return null;
+    } catch {
+      // skip malformed lines
     }
-
-    if (lastAction === "reject" || planContent !== null) {
-      return { planContent, lastAction };
-    }
-
-    notifyPlanCreationRetry(ctx, attempt);
   }
-
-  return { planContent, lastAction };
+  return parts.join("\n").trim();
 }
 
-function notifyPlanCreationRetry(ctx: ExtensionCommandContext, attempt: number): void {
-  if (attempt === 1) {
-    ctx.ui.notify(
-      "Plan session ended without submitting a draft. Retrying without plan effort...",
-      "warning",
-    );
-  } else if (attempt === 2) {
-    ctx.ui.notify(
-      "Plan session still ended without a draft. Retrying with pi's default session model...",
-      "warning",
+function buildPlanGenerationPrompt(
+  basePrompt: string,
+  round: number,
+  previousDraft?: string,
+  feedback?: string,
+): string {
+  const sections = [
+    basePrompt,
+    "",
+    "## Runtime Override",
+    "You are running in one-shot plan generation mode.",
+    "Do not ask questions and do not call any tools.",
+    "Make reasonable assumptions from the repository context.",
+    "Your entire final response must be only the complete ralpix markdown plan.",
+    "Do not include prose before or after the plan.",
+  ];
+
+  if (round > 1 && previousDraft !== undefined) {
+    sections.push(
+      "",
+      "## Previous Draft",
+      previousDraft,
+      "",
+      "## Revision Request",
+      feedback ?? "Revise the draft.",
+      "",
+      "Return the full updated plan markdown only.",
     );
   }
+
+  return sections.join("\n");
 }
 
-async function runPlanCreationSession(
-  prompt: string,
-  attempt: number,
-  ctx: ExtensionCommandContext,
-  _planModelCfg: ReturnType<typeof resolveModel>,
-  attemptConfig: { includeEffort: boolean; seedSessionConfig: boolean },
-): Promise<PlanCreationSessionResult> {
-  let planContent: string | null = null;
-  let lastAction: "accept" | "reject" | null = null;
-  appendPlanCreationDebug(
-    ctx.cwd,
-    `attempt ${attempt}: start (seedSessionConfig=${String(attemptConfig.seedSessionConfig)}, includeEffort=${String(attemptConfig.includeEffort)})`,
-  );
+interface PlannerProcessResult {
+  exitCode: number;
+  output: string;
+  error: string;
+}
 
-  await ctx.newSession({
-    withSession: async (planCtx) => {
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: withSession enter`);
-      planCtx.registerTool({
-        name: "ralpix_ask_question",
-        label: "Ask User Question",
-        description:
-          "Ask the user a clarifying question during plan creation. " +
-          "Use this when you need to understand requirements, preferences, " +
-          "or constraints before writing the plan.",
-        promptSnippet: "Ask user: {{question}}",
-        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-        parameters: Type.Object({
-          question: Type.String({
-            description: "The question to ask the user",
-          }),
-          options: Type.Array(Type.String(), {
-            description: "Answer options for the user to pick from",
-          }),
-        }),
-        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
-        async execute(_toolCallId, params) {
-          appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: ralpix_ask_question called`);
-          const question = params["question"] as string;
-          const options = params["options"] as string[];
+async function runPlannerProcess(
+  cwd: string,
+  promptContent: string,
+  round: number,
+): Promise<PlannerProcessResult> {
+  appendPlanCreationDebug(cwd, `round ${round}: subprocess start`);
+  const invocation = getPiExecutable();
+  const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
+  const { dir, filePath } = await writeTempFile(`plan-round-${round}`, promptContent);
+  args.push(`@${filePath}`);
+  appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared`);
 
-          const answer = await ctx.ui.select(question, options);
+  return new Promise((resolvePromise) => {
+    const proc = spawn(invocation.command, args, {
+      cwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
-          if (answer === undefined || answer.length === 0) {
-            return {
-              content: [
-                { type: "text", text: "User cancelled the question." },
-              ],
-              details: { cancelled: true },
-            };
-          }
+    let stdout = "";
+    let stderr = "";
 
-          return {
-            content: [
-              { type: "text", text: `User selected: ${answer}` },
-            ],
-            details: { answer },
-          };
-        },
+    proc.stdout.on("data", (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      try {
+        unlinkSync(filePath);
+      } catch {
+        // ignore
+      }
+      try {
+        rmdirSync(dir);
+      } catch {
+        // ignore
+      }
+      appendPlanCreationDebug(cwd, `round ${round}: subprocess close exit=${String(code ?? 1)}`);
+      resolvePromise({
+        exitCode: code ?? 1,
+        output: stdout,
+        error: stderr,
       });
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: registered ralpix_ask_question`);
+    });
 
-      planCtx.registerTool({
-        name: "ralpix_submit_plan_draft",
-        label: "Submit Plan Draft",
-        description:
-          "Submit a plan draft for user review. The user will accept, " +
-          "request revisions, or reject. If revisions are requested, " +
-          "update the plan and call this tool again.",
-        promptSnippet: "Submit plan draft for review",
-        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-        parameters: Type.Object({
-          planContent: Type.String({
-            description: "The complete plan in ralpix markdown format",
-          }),
-        }),
-        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
-        async execute(_toolCallId, params) {
-          appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: ralpix_submit_plan_draft called`);
-          const content = params["planContent"] as string;
-
-          const reviewChoice = await ctx.ui.select(
-            "Review the plan draft:",
-            ["✓ Accept — save and finish", "↻ Revise — provide feedback", "✗ Reject — discard the plan"],
-          );
-
-          if (typeof reviewChoice === "string" && reviewChoice.includes("Revise")) {
-            const feedback = await ctx.ui.input(
-              "What changes would you like?",
-              "Add more details, change approach, fix issues...",
-            );
-
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: typeof feedback === "string" && feedback.length > 0
-                    ? `User requested revisions: ${feedback}`
-                    : "User requested revisions (no specific feedback provided).",
-                },
-              ],
-              details: { action: "revise", feedback: feedback ?? "" },
-            };
-          }
-
-          if (typeof reviewChoice === "string" && reviewChoice.includes("Accept")) {
-            planContent = content;
-            lastAction = "accept";
-            appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: plan accepted`);
-
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Plan accepted! The user approved the plan draft. No further action needed.",
-                },
-              ],
-              details: { action: "accept" },
-            };
-          }
-
-          lastAction = "reject";
-          appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: plan rejected`);
-
-          return {
-            content: [
-              { type: "text", text: "Plan rejected by user." },
-            ],
-            details: { action: "reject" },
-          };
-        },
+    proc.on("error", (error) => {
+      try {
+        unlinkSync(filePath);
+      } catch {
+        // ignore
+      }
+      try {
+        rmdirSync(dir);
+      } catch {
+        // ignore
+      }
+      appendPlanCreationDebug(cwd, `round ${round}: subprocess error ${error.message}`);
+      resolvePromise({
+        exitCode: 1,
+        output: "",
+        error: error.message,
       });
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: registered ralpix_submit_plan_draft`);
-
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: sendUserMessage start`);
-      await planCtx.sendUserMessage(buildPlanCreationPrompt(prompt, attempt));
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: sendUserMessage done`);
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: waitForIdle start`);
-      await planCtx.waitForIdle();
-      appendPlanCreationDebug(ctx.cwd, `attempt ${attempt}: waitForIdle done`);
-    },
+    });
   });
-
-  appendPlanCreationDebug(
-    ctx.cwd,
-    `attempt ${attempt}: newSession resolved (lastAction=${String(lastAction)}, planContent=${typeof planContent === "string" ? "set" : "null"})`,
-  );
-
-  return { planContent, lastAction };
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+async function reviewDraft(
+  ctx: ExtensionCommandContext,
+): Promise<{ action: "accept" | "reject" | "revise"; feedback?: string }> {
+  const reviewChoice = await ctx.ui.select(
+    "Review the plan draft:",
+    ["✓ Accept — save and finish", "↻ Revise — provide feedback", "✗ Reject — discard the plan"],
+  );
 
-/**
- * Run interactive plan creation.
- *
- * Spawns a new pi session with two registered tools:
- *  - ralpix_ask_question   — model asks user a clarifying question
- *  - ralpix_submit_plan_draft — model submits plan for accept/revise/reject
- *
- * Returns the path to the saved plan file if user chose to execute,
- * or null if user is done / rejected / failed.
- */
+  if (typeof reviewChoice === "string" && reviewChoice.includes("Accept")) {
+    return { action: "accept" };
+  }
 
+  if (typeof reviewChoice === "string" && reviewChoice.includes("Revise")) {
+    const feedback = await ctx.ui.input(
+      "What changes would you like?",
+      "Add more details, change approach, fix issues...",
+    );
+    return { action: "revise", feedback: feedback ?? "" };
+  }
+
+  return { action: "reject" };
+}
+
+// eslint-disable-next-line sonarjs/cognitive-complexity
 export async function runPlanCreation(
   description: string,
   ctx: ExtensionCommandContext,
   _pi: ExtensionAPI,
   config: RalpixConfig,
 ): Promise<string | null> {
-  // Validate
   const trimmed = description.trim();
   if (trimmed.length < 5) {
     ctx.ui.notify("Plan description too short (min 5 characters)", "error");
@@ -282,71 +229,89 @@ export async function runPlanCreation(
   ctx.ui.notify(`Creating plan for: "${description}"...`, "info");
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: start description=${JSON.stringify(description)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: debug file ${planCreationDebugFilePath(ctx.cwd)}`);
+  appendPlanCreationDebug(ctx.cwd, `runPlanCreation: plansDir=${config.plansDir}`);
 
-  // Load and expand the plan creation prompt
   const template = loadPrompt("plan-creation", ctx.cwd);
-  const prompt = expandPrompt(template, {
+  const basePrompt = expandPrompt(template, {
     DESCRIPTION: description,
   });
 
-  // Resolve model + effort via the central resolveModel()
-  const planModelCfg = resolveModel(config, "plan");
-  const attemptResult = await runPlanCreationAttempts(prompt, ctx, planModelCfg);
-  if (attemptResult === null) {
-    return null;
-  }
-  const { planContent, lastAction } = attemptResult;
+  let previousDraft: string | undefined;
+  let feedback: string | undefined;
 
-  // ── After session: handle results ─────────────────────────────────
+  for (let round = 1; round <= 3; round++) {
+    const prompt = buildPlanGenerationPrompt(basePrompt, round, previousDraft, feedback);
+    const result = await runPlannerProcess(ctx.cwd, prompt, round);
 
-  if (lastAction === "reject") {
-    ctx.ui.notify("Plan creation cancelled (user rejected)", "warning");
-    return null;
-  }
-
-  if (planContent === null) {
-    appendPlanCreationDebug(ctx.cwd, "runPlanCreation: exhausted all attempts without a draft");
-    ctx.ui.notify(
-      `Plan creation failed — session ended without submitting a plan draft. See ${planCreationDebugFilePath(ctx.cwd)}`,
-      "error",
-    );
-    return null;
-  }
-
-  // Determine plan path
-  const plansDir = resolve(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans");
-  if (!existsSync(plansDir)) {
-    mkdirSync(plansDir, { recursive: true });
-  }
-
-  const planName = slugify(description);
-  const planPath = join(plansDir, `${planName}.md`);
-
-  // Check if file exists
-  if (existsSync(planPath)) {
-    const overwrite = await ctx.ui.confirm(
-      "Plan already exists",
-      `${planPath} already exists. Overwrite?`,
-    );
-    if (overwrite !== true) {
-      ctx.ui.notify("Plan creation cancelled (file exists)", "warning");
+    if (result.exitCode !== 0) {
+      ctx.ui.notify(
+        `Plan creation failed in subprocess. See ${planCreationDebugFilePath(ctx.cwd)}`,
+        "error",
+      );
       return null;
     }
+
+    const draft = extractLastAssistantText(result.output.split("\n"));
+    const draftStatus = draft.length > 0 ? `len=${String(draft.length)}` : "empty";
+    appendPlanCreationDebug(
+      ctx.cwd,
+      `round ${round}: extracted draft ${draftStatus}`,
+    );
+
+    if (draft.length === 0) {
+      ctx.ui.notify(
+        `Plan creation produced no draft. See ${planCreationDebugFilePath(ctx.cwd)}`,
+        "error",
+      );
+      return null;
+    }
+
+    const review = await reviewDraft(ctx);
+    if (review.action === "reject") {
+      ctx.ui.notify("Plan creation cancelled (user rejected)", "warning");
+      return null;
+    }
+    if (review.action === "accept") {
+      const plansDir = resolve(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans");
+      if (!existsSync(plansDir)) {
+        mkdirSync(plansDir, { recursive: true });
+      }
+
+      const planName = slugify(description);
+      const planPath = join(plansDir, `${planName}.md`);
+
+      if (existsSync(planPath)) {
+        const overwrite = await ctx.ui.confirm(
+          "Plan already exists",
+          `${planPath} already exists. Overwrite?`,
+        );
+        if (overwrite !== true) {
+          ctx.ui.notify("Plan creation cancelled (file exists)", "warning");
+          return null;
+        }
+      }
+
+      writeFileSync(planPath, draft, "utf-8");
+      appendPlanCreationDebug(ctx.cwd, `runPlanCreation: saved ${planPath}`);
+      ctx.ui.notify(`Plan saved to ${planPath}`, "success");
+
+      const execute = await ctx.ui.select(
+        "Plan created. What next?",
+        ["▶ Execute plan now", "✓ Done — exit, run later"],
+      );
+
+      if (typeof execute === "string" && execute.includes("Execute")) {
+        return planPath;
+      }
+
+      return null;
+    }
+
+    previousDraft = draft;
+    feedback = review.feedback;
+    appendPlanCreationDebug(ctx.cwd, `round ${round}: revision requested`);
   }
 
-  // Write plan
-  writeFileSync(planPath, planContent, "utf-8");
-  ctx.ui.notify(`Plan saved to ${planPath}`, "success");
-
-  // Offer execution
-  const execute = await ctx.ui.select(
-    "Plan created. What next?",
-    ["▶ Execute plan now", "✓ Done — exit, run later"],
-  );
-
-  if (typeof execute === "string" && execute.includes("Execute")) {
-    return planPath;
-  }
-
+  ctx.ui.notify("Plan creation exhausted revision rounds", "error");
   return null;
 }
