@@ -12,6 +12,7 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { buildModelArg, resolveModel } from "./config.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
@@ -124,13 +125,24 @@ async function runPlannerProcess(
   cwd: string,
   promptContent: string,
   round: number,
+  config: RalpixConfig,
 ): Promise<PlannerProcessResult> {
   appendPlanCreationDebug(cwd, `round ${round}: subprocess start`);
   const invocation = getPiExecutable();
   const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
+  const modelCfg = resolveModel(config, "plan");
+  const modelArg = buildModelArg(modelCfg);
+  if (modelArg !== null) {
+    args.push("--model", modelArg);
+  } else if (modelCfg.provider !== null && modelCfg.provider.length > 0) {
+    args.push("--provider", modelCfg.provider);
+  }
+  if (modelCfg.effort !== null) {
+    args.push("--thinking", modelCfg.effort);
+  }
   const { dir, filePath } = await writeTempFile(`plan-round-${round}`, promptContent);
   args.push(`@${filePath}`);
-  appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared`);
+  appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared model=${modelArg ?? modelCfg.provider ?? "default"} effort=${modelCfg.effort ?? "default"}`);
 
   return new Promise((resolvePromise) => {
     const proc = spawn(invocation.command, args, {
@@ -138,6 +150,13 @@ async function runPlannerProcess(
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const timeout = setTimeout(() => {
+      appendPlanCreationDebug(cwd, `round ${round}: subprocess timeout`);
+      proc.kill("SIGTERM");
+      setTimeout(() => {
+        if (!proc.killed) proc.kill("SIGKILL");
+      }, 5000);
+    }, 120000);
 
     let stdout = "";
     let stderr = "";
@@ -161,6 +180,7 @@ async function runPlannerProcess(
       } catch {
         // ignore
       }
+      clearTimeout(timeout);
       appendPlanCreationDebug(cwd, `round ${round}: subprocess close exit=${String(code ?? 1)}`);
       resolvePromise({
         exitCode: code ?? 1,
@@ -180,6 +200,7 @@ async function runPlannerProcess(
       } catch {
         // ignore
       }
+      clearTimeout(timeout);
       appendPlanCreationDebug(cwd, `round ${round}: subprocess error ${error.message}`);
       resolvePromise({
         exitCode: 1,
@@ -230,6 +251,7 @@ export async function runPlanCreation(
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: start description=${JSON.stringify(description)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: debug file ${planCreationDebugFilePath(ctx.cwd)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: plansDir=${config.plansDir}`);
+  ctx.ui.notify("Generating plan draft...", "info");
 
   const template = loadPrompt("plan-creation", ctx.cwd);
   const basePrompt = expandPrompt(template, {
@@ -241,11 +263,11 @@ export async function runPlanCreation(
 
   for (let round = 1; round <= 3; round++) {
     const prompt = buildPlanGenerationPrompt(basePrompt, round, previousDraft, feedback);
-    const result = await runPlannerProcess(ctx.cwd, prompt, round);
+    const result = await runPlannerProcess(ctx.cwd, prompt, round, config);
 
     if (result.exitCode !== 0) {
       ctx.ui.notify(
-        `Plan creation failed in subprocess. See ${planCreationDebugFilePath(ctx.cwd)}`,
+        `Plan creation failed in subprocess. See ${planCreationDebugFilePath(ctx.cwd)} and stderr in debug log.`,
         "error",
       );
       return null;
