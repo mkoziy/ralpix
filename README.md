@@ -45,11 +45,12 @@ Don't want to write plans manually? Use interactive plan creation:
 ```
 
 The model will:
-1. **Generate a plan draft** in ralpix format
-2. **Validate** the draft structure before saving it
-3. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`
-4. **Pause for review** — you can Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
-5. **Offer execution** only after you explicitly accept the saved plan
+1. **Ask clarifying questions** in the UI when needed
+2. **Generate a plan draft** in ralpix format
+3. **Validate** the draft structure before saving it
+4. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`
+5. **Pause for review** — you can Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
+6. **Offer execution** only after you explicitly accept the saved plan
 
 The saved plan file is the review source of truth, so you can inspect or edit it in another tool before continuing.
 
@@ -110,14 +111,16 @@ ralpix uses a three-layer config merge:
   "reviewMaxIterations": 5,       // Max iterations for review loop
   "movePlanOnCompletion": false,  // Move plan.md → completed/plan.md when done
   "externalReviewEnabled": true,  // Enable external review phase (different model)
-  "externalReviewModel": "openai/gpt-5.5", // Independent external reviewer
+  "externalReviewModel": "openai-codex/gpt-5.5", // Independent external reviewer via ChatGPT Plus/Pro OAuth
   "externalReviewEffort": "medium", // Thinking effort for external review
   "externalReviewMaxIterations": 5, // Max iterations in external review loop
   "externalReviewPatience": 3,    // Stalemate: exit after N unchanged rounds
-  "planModel": "openai/gpt-5.5",  // Interactive plan creation
+  "planModel": "openai-codex/gpt-5.5",  // Interactive plan creation via ChatGPT Plus/Pro OAuth
   "planEffort": "medium"          // Plan generation effort
 }
 ```
+
+`openai/...` uses the plain OpenAI provider and expects an API key. `openai-codex/...` uses the ChatGPT Plus/Pro Codex OAuth provider from `/login`.
 
 ### Per-project config
 

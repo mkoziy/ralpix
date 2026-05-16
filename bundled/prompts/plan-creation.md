@@ -14,14 +14,25 @@ You are creating an implementation plan for a software project. Your job is to e
 4. Identify existing patterns, naming conventions, and architectural decisions to follow
 
 ### Phase 2: Clarify (if needed)
-Use the `ralpix_ask_question` tool to ask the user clarifying questions:
+If clarification is needed, ask using this exact output block and nothing else:
+
+```text
+<RALPIX_QUESTION>
+Question: <single concise question>
+Options:
+- <option 1>
+- <option 2>
+- <option 3>
+</RALPIX_QUESTION>
+```
+
+Guidelines:
 - What approach should be taken? (when multiple valid paths exist)
 - Any constraints, preferences, or requirements not obvious from the codebase?
 - Specific libraries, patterns, or tools to use or avoid?
 
-**Guidelines:**
 - Ask at most 2-3 questions total
-- Group related questions into one call when practical
+- Ask one question at a time
 - Only ask when genuinely uncertain — don't ask about obvious things
 - Prefer multiple-choice options over open-ended questions
 
@@ -57,12 +68,5 @@ Create a complete implementation plan following this exact format:
 - Title should be concise but descriptive (6-10 words)
 - Do not wrap the plan in fenced code blocks
 
-### Phase 4: Submit for Review
-Call `ralpix_submit_plan_draft` with the complete plan text as the `planContent` parameter.
-
-The user will review and choose:
-- **Accept** — plan is saved and ready for execution
-- **Revise** — user provides feedback, you apply it and call `ralpix_submit_plan_draft` again
-- **Reject** — plan is discarded
-
-If the user requests revisions, read their feedback carefully, update the plan accordingly, and resubmit.
+### Phase 4: Final Output
+When you have enough context, output only the full plan markdown (no extra prose).

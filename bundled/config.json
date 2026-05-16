@@ -13,11 +13,11 @@
   "reviewMaxIterations": 5,
   "movePlanOnCompletion": false,
   "externalReviewEnabled": true,
-  "externalReviewModel": "openai/gpt-5.5",
+  "externalReviewModel": "openai-codex/gpt-5.5",
   "externalReviewEffort": "medium",
   "externalReviewMaxIterations": 5,
   "externalReviewPatience": 3,
-  "planModel": "openai/gpt-5.5",
+  "planModel": "openai-codex/gpt-5.5",
   "planEffort": "medium",
   "plansDir": "docs/plans",
   "models": {}

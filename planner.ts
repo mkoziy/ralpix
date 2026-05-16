@@ -38,6 +38,11 @@ function slugify(text: string): string {
   return `plan-${Math.abs(hash).toString(36).slice(0, 12)}`;
 }
 
+interface ClarificationRequest {
+  question: string;
+  options: string[];
+}
+
 function formatDateStamp(date: Date): string {
   const year = String(date.getFullYear());
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -94,6 +99,7 @@ function extractLastAssistantText(lines: string[]): string {
 function buildPlanGenerationPrompt(
   basePrompt: string,
   round: number,
+  clarifications: Array<{ question: string; answer: string }>,
   previousDraft?: string,
   feedback?: string,
 ): string {
@@ -102,15 +108,25 @@ function buildPlanGenerationPrompt(
     "",
     "## Runtime Override",
     "You are running in one-shot plan generation mode.",
-    "Do not ask questions and do not call any tools.",
     "Make reasonable assumptions from the repository context.",
-    "Your entire final response must be only the complete ralpix markdown plan.",
-    "Do not include prose before or after the plan.",
+    "If you need clarification, output only this block and nothing else:",
+    "<RALPIX_QUESTION>",
+    "Question: <single concise question>",
+    "Options:",
+    "- <option 1>",
+    "- <option 2>",
+    "- <option 3>",
+    "</RALPIX_QUESTION>",
+    "If no clarification is needed, output only the complete ralpix markdown plan.",
     "The plan title and overview must stay tightly aligned to the user's request.",
     "Do not invent a different feature, subsystem, or goal than the request describes.",
     "Use `## Success Criteria`, not `## Validation Commands`.",
     "Do not wrap the plan in fenced code blocks.",
   ];
+
+  if (clarifications.length > 0) {
+    sections.push("", "## Clarifications", ...clarifications.map((entry) => `- Q: ${entry.question}\n  A: ${entry.answer}`));
+  }
 
   if (round > 1 && previousDraft !== undefined) {
     sections.push(
@@ -126,6 +142,37 @@ function buildPlanGenerationPrompt(
   }
 
   return sections.join("\n");
+}
+
+function extractClarificationRequest(text: string): ClarificationRequest | null {
+  const match = (/<ralpix_question>\s*([\S\s]*?)\s*<\/ralpix_question>/i).exec(text);
+  if (match?.[1] == null) return null;
+  const body = match[1];
+
+  const questionMatch = (/^\s*question:\s*(.+)$/im).exec(body);
+  const question = questionMatch?.[1]?.trim();
+  if (question == null || question.length === 0) return null;
+
+  const options = [...body.matchAll(/^\s*-\s+(.+)$/gim)]
+    .map((x) => x[1]?.trim())
+    .filter((x): x is string => x != null && x.length > 0)
+    .slice(0, 3);
+
+  return { question, options };
+}
+
+async function askClarification(
+  ctx: ExtensionCommandContext,
+  req: ClarificationRequest,
+): Promise<string | null> {
+  if (req.options.length >= 2) {
+    const selected = await ctx.ui.select(req.question, req.options);
+    if (selected == null) return null;
+    return selected.trim();
+  }
+  const answer = await ctx.ui.input(req.question, "Your answer");
+  if (answer == null || answer.trim().length === 0) return null;
+  return answer.trim();
 }
 
 function stripMarkdownFence(text: string): string {
@@ -383,6 +430,7 @@ export async function runPlanCreation(
 
   let previousDraft: string | undefined;
   let feedback: string | undefined;
+  const clarifications: Array<{ question: string; answer: string }> = [];
   const launchConfigs = plannerLaunchConfigs();
   const plansDir = resolve(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans");
   const createdAt = new Date();
@@ -391,8 +439,8 @@ export async function runPlanCreation(
   }
   let draftPath: string | undefined;
 
-  for (let round = 1; round <= 3; round++) {
-    const prompt = buildPlanGenerationPrompt(basePrompt, round, previousDraft, feedback);
+  for (let round = 1; round <= 5; round++) {
+    const prompt = buildPlanGenerationPrompt(basePrompt, round, clarifications, previousDraft, feedback);
     let result: PlannerProcessResult | null = null;
     for (const [launchIndex, launchConfig] of launchConfigs.entries()) {
       result = await runPlannerProcess(ctx.cwd, prompt, round, config, launchConfig);
@@ -417,6 +465,19 @@ export async function runPlanCreation(
       ctx.cwd,
       `round ${round}: extracted draft ${draftStatus}`,
     );
+
+    const clarification = extractClarificationRequest(draft);
+    if (clarification !== null) {
+      appendPlanCreationDebug(ctx.cwd, `round ${round}: model asked clarification ${JSON.stringify(clarification.question)}`);
+      const answer = await askClarification(ctx, clarification);
+      if (answer == null || answer.length === 0) {
+        ctx.ui.notify("Plan creation cancelled (clarification unanswered)", "warning");
+        return null;
+      }
+      clarifications.push({ question: clarification.question, answer });
+      appendPlanCreationDebug(ctx.cwd, `round ${round}: clarification answered ${JSON.stringify(answer)}`);
+      continue;
+    }
 
     if (draft.length === 0) {
       ctx.ui.notify(
