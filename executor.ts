@@ -4,9 +4,9 @@
 
 import { execSync } from "node:child_process";
 
-import { resolveModel } from "./config.js";
+import { buildModelArg, resolveModel } from "./config.js";
 import { updatePlanTaskStatus } from "./parser.js";
-import { runPiSubprocessPrompt } from "./pi-subprocess.js";
+import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { ProgressLogger } from "./logger.js";
@@ -57,18 +57,14 @@ async function runTaskSession(
   modelCfg: ModelConfig,
   onProgress?: (detail: string) => void,
 ): Promise<TaskSessionReport> {
-  const result = await runPiSubprocessPrompt(ctx.cwd, buildTaskPrompt(promptContent), modelCfg, true, 30 * 60 * 1000, {
-    onLifecycle(message) {
-      onProgress?.(message);
-    },
-    onEvent(event) {
-      if (event.type === "tool_execution_start") onProgress?.("tool execution started");
-      if (event.type === "tool_execution_end") onProgress?.("tool execution finished");
-      if (event.type === "message_end" && event.message?.role === "assistant") {
-        onProgress?.("assistant message completed");
-      }
-    },
-  });
+  const result = await runPiSubprocessPrompt(
+    ctx.cwd,
+    buildTaskPrompt(promptContent),
+    modelCfg,
+    true,
+    30 * 60 * 1000,
+    createPiProgressHooks(onProgress),
+  );
   const report = parseTaskSessionReport(result.lastAssistantText);
   if (report !== null) return report;
 
@@ -135,7 +131,8 @@ export async function executeTask(
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
-      logger.logTaskInfo(task, `attempt ${attempt} launched`);
+      const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
+      logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
       ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
       const result = await runTaskSession(ctx, prompt, modelCfg, (detail) => {
         logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);

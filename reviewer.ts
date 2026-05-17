@@ -5,7 +5,7 @@
 import { execSync } from "node:child_process";
 
 import { buildSessionModelChange, resolveModel } from "./config.js";
-import { runPiSubprocessPrompt } from "./pi-subprocess.js";
+import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { ProgressLogger } from "./logger.js";
@@ -123,18 +123,7 @@ async function runReviewSession(
     modelCfg,
     includeEffort,
     30 * 60 * 1000,
-    {
-      onLifecycle(message) {
-        onProgress?.(message);
-      },
-      onEvent(event) {
-        if (event.type === "tool_execution_start") onProgress?.("tool execution started");
-        if (event.type === "tool_execution_end") onProgress?.("tool execution finished");
-        if (event.type === "message_end" && event.message?.role === "assistant") {
-          onProgress?.("assistant message completed");
-        }
-      },
-    },
+    createPiProgressHooks(onProgress),
   );
   const report = parseReviewSessionReport(result.lastAssistantText);
   if (report !== null) return report;

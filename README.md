@@ -238,6 +238,10 @@ Started: 2026-05-12T14:30:00.000Z
 
 [2026-05-12T14:30:00.001Z] PLAN_START  My Feature (3 tasks)
 [2026-05-12T14:30:05.123Z] TASK_START  Task 1: Set up the foundation
+[2026-05-12T14:30:05.124Z] TASK_INFO   Task 1: Set up the foundation  attempt 1 launched (openai-codex/gpt-5.5)
+[2026-05-12T14:30:09.870Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: tool started: exec_command rg -n "health" src
+[2026-05-12T14:30:10.401Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: tool finished in 1s: exec_command rg -n "health" src
+[2026-05-12T14:30:12.208Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: assistant: Audited the existing health-check wiring and test coverage.
 [2026-05-12T14:32:10.456Z] TASK_END    Task 1: Set up the foundation  ✓ SUCCESS — commit a1b2c3d
 [2026-05-12T14:32:10.457Z] TASK_START  Task 2: Implement core logic
 ...
@@ -245,6 +249,8 @@ Started: 2026-05-12T14:30:00.000Z
 [2026-05-12T14:48:00.000Z] REVIEW_SECOND  COMPLETE (iteration 1)
 [2026-05-12T14:48:00.001Z] PLAN_COMPLETE  All tasks finished
 ```
+
+`TASK_INFO` lines are live subprocess summaries. They show attempt starts, compact tool/command previews, short assistant status notes, and idle heartbeats when a task stops producing output for a while.
 
 ## Directory Structure
 
