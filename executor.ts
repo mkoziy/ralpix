@@ -4,31 +4,51 @@
 
 import { execSync } from "node:child_process";
 
-import { Type } from "typebox";
-
-import { applyModelConfigToSession, resolveModel } from "./config.js";
+import { resolveModel } from "./config.js";
 import { updatePlanTaskStatus } from "./parser.js";
+import { runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { ProgressLogger } from "./logger.js";
 import type { ModelConfig, Plan, PlanTask, RalpixConfig, TaskResult } from "./types.js";
-import type { ExtensionAPI, ExtensionCommandContext, SessionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 interface TaskSessionReport {
   success: boolean;
   summary: string;
 }
 
-function buildTaskPrompt(promptContent: string): string {
+export function buildTaskPrompt(promptContent: string): string {
   return [
     promptContent,
     "",
     "## Completion Contract",
-    "Before finishing, call `ralpix_report_task_result` exactly once.",
-    "- Use `success: true` with a concise summary when the task is complete.",
-    "- Use `success: false` with the blocker or failure reason when you cannot complete the task.",
-    "Do not end the session without calling this tool.",
+    "End your final response with this exact block and nothing after it:",
+    "<RALPIX_TASK_RESULT>",
+    "Success: true|false",
+    "Summary: <one-line concise summary>",
+    "</RALPIX_TASK_RESULT>",
+    "Use `Success: true` only when the task is complete.",
+    "Use `Success: false` with the blocker or failure reason when you cannot complete the task.",
+    "Do not end your response without this block.",
   ].join("\n");
+}
+
+export function parseTaskSessionReport(text: string): TaskSessionReport | null {
+  const match = (/<ralpix_task_result>\s*([\S\s]*?)\s*<\/ralpix_task_result>/i).exec(text);
+  if (match?.[1] == null) return null;
+
+  const body = match[1];
+  const successMatch = (/^\s*success:\s*(true|false)\s*$/im).exec(body);
+  const summaryMatch = (/^\s*summary:\s*(.+)$/im).exec(body);
+  const successRaw = successMatch?.[1]?.toLowerCase();
+  const summary = summaryMatch?.[1]?.trim();
+
+  if (successRaw == null || summary == null || summary.length === 0) return null;
+  return {
+    success: successRaw === "true",
+    summary,
+  };
 }
 
 async function runTaskSession(
@@ -36,47 +56,19 @@ async function runTaskSession(
   promptContent: string,
   modelCfg: ModelConfig,
 ): Promise<TaskSessionReport> {
-  const state: { report?: TaskSessionReport } = {};
+  const result = await runPiSubprocessPrompt(ctx.cwd, buildTaskPrompt(promptContent), modelCfg, true);
+  const report = parseTaskSessionReport(result.lastAssistantText);
+  if (report !== null) return report;
 
-  await ctx.newSession({
-    setup: (sm) => applyModelConfigToSession(sm, modelCfg),
-    withSession: async (taskCtx: SessionContext) => {
-      taskCtx.registerTool({
-        name: "ralpix_report_task_result",
-        label: "Report Task Result",
-        description: "Report the final task status and concise summary.",
-        promptSnippet: "Report task result: {{summary}}",
-        /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-        parameters: Type.Object({
-          success: Type.Boolean({
-            description: "True when the task is complete, false when blocked or failed.",
-          }),
-          summary: Type.String({
-            description: "Short summary of completed work or the blocking issue.",
-          }),
-        }),
-        /* eslint-enable @typescript-eslint/no-unsafe-assignment */
-        execute(_toolCallId, params) {
-          state.report = {
-            success: params["success"] as boolean,
-            summary: params["summary"] as string,
-          };
-          return {
-            content: [
-              { type: "text", text: "Task result recorded." },
-            ],
-          };
-        },
-      });
+  const stderr = result.error.trim();
+  const assistantText = result.lastAssistantText.trim();
+  let detail = `pi exited with code ${String(result.exitCode)}`;
+  if (assistantText.length > 0) detail = assistantText;
+  if (stderr.length > 0) detail = stderr;
 
-      await taskCtx.sendUserMessage(buildTaskPrompt(promptContent));
-      await taskCtx.waitForIdle();
-    },
-  });
-
-  return state.report ?? {
+  return {
     success: false,
-    summary: "Session ended without reporting a task result.",
+    summary: `Task session did not report a structured result. ${detail}`.slice(0, 500),
   };
 }
 
