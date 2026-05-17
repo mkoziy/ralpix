@@ -55,8 +55,20 @@ async function runTaskSession(
   ctx: ExtensionCommandContext,
   promptContent: string,
   modelCfg: ModelConfig,
+  onProgress?: (detail: string) => void,
 ): Promise<TaskSessionReport> {
-  const result = await runPiSubprocessPrompt(ctx.cwd, buildTaskPrompt(promptContent), modelCfg, true);
+  const result = await runPiSubprocessPrompt(ctx.cwd, buildTaskPrompt(promptContent), modelCfg, true, 30 * 60 * 1000, {
+    onLifecycle(message) {
+      onProgress?.(message);
+    },
+    onEvent(event) {
+      if (event.type === "tool_execution_start") onProgress?.("tool execution started");
+      if (event.type === "tool_execution_end") onProgress?.("tool execution finished");
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        onProgress?.("assistant message completed");
+      }
+    },
+  });
   const report = parseTaskSessionReport(result.lastAssistantText);
   if (report !== null) return report;
 
@@ -123,7 +135,11 @@ export async function executeTask(
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
-      const result = await runTaskSession(ctx, prompt, modelCfg);
+      logger.logTaskInfo(task, `attempt ${attempt} launched`);
+      ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
+      const result = await runTaskSession(ctx, prompt, modelCfg, (detail) => {
+        logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
+      });
 
       if (result.success) {
         const commitMsg = config.commitMessageTemplate

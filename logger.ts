@@ -70,6 +70,10 @@ export class ProgressLogger {
     );
   }
 
+  logTaskInfo(task: PlanTask, detail: string): void {
+    this.append(`TASK_INFO   Task ${task.number}: ${task.title}  ${detail}`);
+  }
+
   logExternalReview(phase: string, result: string): void {
     this.append(`REVIEW_XTRNL ${phase.padEnd(8)} ${result}`);
   }

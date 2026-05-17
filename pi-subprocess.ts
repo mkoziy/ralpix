@@ -28,6 +28,11 @@ export interface PiSubprocessResult {
   lastAssistantText: string;
 }
 
+export interface PiSubprocessHooks {
+  onEvent?: (event: JsonEvent) => void;
+  onLifecycle?: (message: string) => void;
+}
+
 function getPiExecutable(): PiInvocation {
   const currentScript = process.argv[1];
   const isBunVirtual = typeof currentScript === "string" && currentScript.startsWith("/$bunfs/root/");
@@ -82,6 +87,7 @@ export async function runPiSubprocessPrompt(
   modelCfg: ModelConfig,
   includeEffort = true,
   timeoutMs = 30 * 60 * 1000,
+  hooks?: PiSubprocessHooks,
 ): Promise<PiSubprocessResult> {
   const invocation = getPiExecutable();
   const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
@@ -101,33 +107,55 @@ export async function runPiSubprocessPrompt(
   args.push(`@${filePath}`);
 
   return await new Promise((resolvePromise) => {
+    hooks?.onLifecycle?.("subprocess spawned");
     const proc = spawn(invocation.command, args, {
       cwd,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    let lastActivity = Date.now();
     const timeout = setTimeout(() => {
+      hooks?.onLifecycle?.(`timeout after ${String(Math.round(timeoutMs / 1000))}s`);
       proc.kill("SIGTERM");
       setTimeout(() => {
         if (!proc.killed) proc.kill("SIGKILL");
       }, 5000);
     }, timeoutMs);
 
+    const heartbeat = setInterval(() => {
+      const seconds = Math.round((Date.now() - lastActivity) / 1000);
+      hooks?.onLifecycle?.(`still running (${String(seconds)}s since last output)`);
+    }, 30000);
+
     let stdout = "";
     let stderr = "";
+    let stdoutBuffer = "";
 
     proc.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
+      const chunk = data.toString();
+      stdout += chunk;
+      stdoutBuffer += chunk;
+      lastActivity = Date.now();
+
+      const lines = stdoutBuffer.split("\n");
+      stdoutBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const event = parseJsonEvent(line);
+        if (event !== null) hooks?.onEvent?.(event);
+      }
     });
 
     proc.stderr.on("data", (data: Buffer) => {
       stderr += data.toString();
+      lastActivity = Date.now();
     });
 
     proc.on("close", (code) => {
       void cleanupTempDir(dir).finally(() => {
         clearTimeout(timeout);
+        clearInterval(heartbeat);
+        hooks?.onLifecycle?.(`subprocess exited with code ${String(code ?? 1)}`);
         resolvePromise({
           exitCode: code ?? 1,
           output: stdout,
@@ -140,6 +168,8 @@ export async function runPiSubprocessPrompt(
     proc.on("error", (error) => {
       void cleanupTempDir(dir).finally(() => {
         clearTimeout(timeout);
+        clearInterval(heartbeat);
+        hooks?.onLifecycle?.(`subprocess error: ${error.message}`);
         resolvePromise({
           exitCode: 1,
           output: stdout,

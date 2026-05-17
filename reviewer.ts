@@ -115,12 +115,26 @@ async function runReviewSession(
   phase: "first" | "second" | "external" | "eval",
   modelCfg: ModelConfig,
   includeEffort = true,
+  onProgress?: (detail: string) => void,
 ): Promise<ReviewSessionReport> {
   const result = await runPiSubprocessPrompt(
     ctx.cwd,
     buildReviewPrompt(promptContent, phase),
     modelCfg,
     includeEffort,
+    30 * 60 * 1000,
+    {
+      onLifecycle(message) {
+        onProgress?.(message);
+      },
+      onEvent(event) {
+        if (event.type === "tool_execution_start") onProgress?.("tool execution started");
+        if (event.type === "tool_execution_end") onProgress?.("tool execution finished");
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          onProgress?.("assistant message completed");
+        }
+      },
+    },
   );
   const report = parseReviewSessionReport(result.lastAssistantText);
   if (report !== null) return report;
@@ -163,7 +177,9 @@ async function runReviewProcess(
     eval: "external-eval",
   } as const;
   const modelCfg = resolveModel(config, phaseToModelKey[phase]);
-  return runReviewSession(ctx, prompt, phase, modelCfg, includeEffort);
+  return runReviewSession(ctx, prompt, phase, modelCfg, includeEffort, (detail) => {
+    logger.logReview("loop", `${phase}: ${detail}`);
+  });
 }
 
 async function runFirstReview(
