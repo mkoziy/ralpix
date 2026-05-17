@@ -40,6 +40,42 @@ interface SessionEntry {
   data?: unknown;
 }
 
+type NotifyLevel = "error" | "info" | "success" | "warning";
+type NotifyFn = (message: string, level: NotifyLevel) => void;
+
+export function normalizePlanPathArg(rawPath: string): string {
+  if (!rawPath.startsWith("@")) return rawPath;
+
+  const unwrappedPath = rawPath.slice(1);
+  if (unwrappedPath.startsWith("/") || unwrappedPath.startsWith("./") || unwrappedPath.startsWith("../")) {
+    return unwrappedPath;
+  }
+  if (unwrappedPath.includes("/")) {
+    const firstSegment = unwrappedPath.split("/")[0];
+    if (firstSegment?.includes(".") === true) {
+      return rawPath;
+    }
+    return unwrappedPath;
+  }
+
+  return rawPath;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function withRalpixErrorHandling(
+  action: () => Promise<void>,
+  notify: NotifyFn,
+): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    notify(`ralpix error: ${errorMessage(error)}`, "error");
+  }
+}
+
 function persistState(pi: ExtensionAPI, state: RalpixState): void {
   pi.appendEntry(STATE_TYPE, state);
 }
@@ -65,7 +101,7 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
 
   pi.registerCommand("ralpix", {
     description: "Execute a ralpix plan (/ralpix <path>, /ralpix init, /ralpix plan <desc>)",
-    handler: async (args, ctx) => {
+    handler: async (args, ctx) => withRalpixErrorHandling(async () => {
       const trimmed = typeof args === "string" ? args.trim() : "";
 
       // ── Subcommands first (always accessible regardless of filesystem) ──
@@ -129,7 +165,9 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
 
       // Execute a plan (fallback — will show "not found" if invalid)
       await runPlan(trimmed, ctx, pi);
-    },
+    }, (message, level) => {
+      ctx.ui.notify(message, level);
+    }),
   });
 
   // ---- tool: ralpix_mark_task_done ----------------------------------------
@@ -196,7 +234,7 @@ async function runPlan(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  const planPath = resolve(ctx.cwd, rawPath);
+  const planPath = resolve(ctx.cwd, normalizePlanPathArg(rawPath));
 
   if (!existsSync(planPath)) {
     ctx.ui.notify(`Plan file not found: ${planPath}`, "error");
