@@ -76,6 +76,36 @@ export async function withRalpixErrorHandling(
   }
 }
 
+export function markTaskExecutionStarted(
+  state: RalpixState,
+  taskId: string,
+): RalpixState {
+  return {
+    ...state,
+    currentTaskId: taskId,
+  };
+}
+
+export function markTaskExecutionFinished(
+  state: RalpixState,
+  taskId: string,
+  success: boolean,
+): RalpixState {
+  const completedTasks = success && !state.completedTasks.includes(taskId)
+    ? [...state.completedTasks, taskId]
+    : state.completedTasks;
+  const failedTasks = !success && !state.failedTasks.includes(taskId)
+    ? [...state.failedTasks, taskId]
+    : state.failedTasks;
+
+  return {
+    ...state,
+    currentTaskId: null,
+    completedTasks,
+    failedTasks,
+  };
+}
+
 function persistState(pi: ExtensionAPI, state: RalpixState): void {
   pi.appendEntry(STATE_TYPE, state);
 }
@@ -228,7 +258,6 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
 // Plan execution orchestrator
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line sonarjs/cognitive-complexity
 async function runPlan(
   rawPath: string,
   ctx: ExtensionCommandContext,
@@ -278,21 +307,22 @@ async function runPlan(
   if (pendingCount > 0) {
     ctx.ui.notify(`Executing ${pendingCount} pending tasks...`, "info");
 
-    const results = await executeAllTasks(ctx, pi, plan, config, logger);
-
-    // Update state
-    for (let i = 0; i < plan.tasks.length; i++) {
-      const task = plan.tasks[i];
-      const result = results[i];
-      if (task === undefined) continue;
-      if (result?.success === true) {
-        if (!state.completedTasks.includes(task.id)) {
-          state.completedTasks.push(task.id);
-        }
-      } else if (result?.success === false && !state.failedTasks.includes(task.id)) {
-        state.failedTasks.push(task.id);
-      }
-    }
+    const results = await executeAllTasks(ctx, pi, plan, config, logger, {
+      onTaskStart(task) {
+        const nextState = markTaskExecutionStarted(state, task.id);
+        state.currentTaskId = nextState.currentTaskId;
+        persistState(pi, state);
+        updateStatusWidget(state, ctx);
+      },
+      onTaskFinish(task, result) {
+        const nextState = markTaskExecutionFinished(state, task.id, result.success);
+        state.currentTaskId = nextState.currentTaskId;
+        state.completedTasks = nextState.completedTasks;
+        state.failedTasks = nextState.failedTasks;
+        persistState(pi, state);
+        updateStatusWidget(state, ctx);
+      },
+    });
 
     const allSuccess = results.every((r) => r.success);
     if (!allSuccess) {
@@ -370,15 +400,15 @@ function updateStatusWidget(
   state: RalpixState,
   ctx: { ui: WidgetUI },
 ): void {
-  const { completedTasks, failedTasks, planTitle, phase, planPath } = state;
+  const { completedTasks, currentTaskId, failedTasks, planTitle, phase, planPath } = state;
 
   // Try to re-parse plan for fresh task titles
-  let taskTitles: string[] = [];
+  let tasks: Array<{ id: string; title: string }> = [];
   let total = completedTasks.length + failedTasks.length;
   try {
     if (existsSync(planPath)) {
       const plan = parsePlan(planPath);
-      taskTitles = plan.tasks.map((t) => t.title);
+      tasks = plan.tasks.map((task) => ({ id: task.id, title: task.title }));
       total = plan.tasks.length;
     }
   } catch {
@@ -395,21 +425,23 @@ function updateStatusWidget(
     ctx.ui.theme.fg("muted", `Phase: ${phase} | ${done}/${total} tasks`),
   ];
 
-  for (const [i, taskTitle] of taskTitles.entries()) {
-    const tid = `task-${i + 1}`;
+  for (const task of tasks) {
     let icon: string;
     let color: string;
-    if (completedTasks.includes(tid)) {
+    if (completedTasks.includes(task.id)) {
       icon = "✓";
       color = "success";
-    } else if (failedTasks.includes(tid)) {
+    } else if (failedTasks.includes(task.id)) {
       icon = "✗";
       color = "error";
+    } else if (currentTaskId === task.id) {
+      icon = "▶";
+      color = "accent";
     } else {
       icon = "○";
       color = "muted";
     }
-    lines.push(ctx.ui.theme.fg(color, `${icon} ${taskTitle}`));
+    lines.push(ctx.ui.theme.fg(color, `${icon} ${task.title}`));
   }
 
   ctx.ui.setWidget("ralpix", lines);

@@ -18,6 +18,11 @@ interface TaskSessionReport {
   summary: string;
 }
 
+export interface TaskExecutionHooks {
+  onTaskStart?: (task: PlanTask) => void;
+  onTaskFinish?: (task: PlanTask, result: TaskResult) => void;
+}
+
 export function buildTaskPrompt(promptContent: string): string {
   return [
     promptContent,
@@ -112,7 +117,9 @@ export async function executeTask(
   config: RalpixConfig,
   plan: Plan,
   logger: ProgressLogger,
+  hooks?: TaskExecutionHooks,
 ): Promise<TaskResult> {
+  hooks?.onTaskStart?.(task);
   logger.logTaskStart(task);
 
   const template = loadPrompt("task-default", ctx.cwd);
@@ -147,12 +154,14 @@ export async function executeTask(
         logger.logTaskEnd(task, true, hash === null ? "no commit" : `commit ${hash}`);
         updatePlanTaskStatus(plan.path, task.id, task.title, "completed");
 
-        return {
+        const taskResult = {
           success: true,
           summary: result.summary.slice(0, 200).length > 0
             ? result.summary.slice(0, 200)
             : `Task ${task.number} completed`,
         };
+        hooks?.onTaskFinish?.(task, taskResult);
+        return taskResult;
       }
 
       lastError = result.summary;
@@ -170,7 +179,9 @@ export async function executeTask(
   const finalError = lastError ?? "Unknown error";
   logger.logTaskEnd(task, false, finalError);
   updatePlanTaskStatus(plan.path, task.id, task.title, "failed");
-  return { success: false, error: finalError };
+  const taskResult = { success: false, error: finalError };
+  hooks?.onTaskFinish?.(task, taskResult);
+  return taskResult;
 }
 
 export async function executeAllTasks(
@@ -179,6 +190,7 @@ export async function executeAllTasks(
   plan: Plan,
   config: RalpixConfig,
   logger: ProgressLogger,
+  hooks?: TaskExecutionHooks,
 ): Promise<TaskResult[]> {
   const results: TaskResult[] = [];
 
@@ -192,7 +204,7 @@ export async function executeAllTasks(
       continue;
     }
 
-    const result = await executeTask(ctx, pi, task, config, plan, logger);
+    const result = await executeTask(ctx, pi, task, config, plan, logger, hooks);
     results.push(result);
 
     if (!result.success) break;
