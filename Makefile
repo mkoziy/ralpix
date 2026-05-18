@@ -6,6 +6,7 @@ IMAGE_REF := $(REGISTRY)/$(IMAGE_NAME)
 PLATFORMS ?= linux/amd64,linux/arm64
 BUILDER_NAME ?= ralpix-release
 GHCR_USERNAME ?=
+GHCR_TOKEN ?=
 
 .PHONY: release
 release:
@@ -27,14 +28,35 @@ release:
 	done; \
 	docker buildx version >/dev/null; \
 	github_user="$(GHCR_USERNAME)"; \
-	if [[ -z "$$github_user" ]]; then \
-		github_user="$$(gh api user --jq .login)"; \
+	ghcr_token="$(GHCR_TOKEN)"; \
+	if [[ -z "$$ghcr_token" && -n "$${GITHUB_TOKEN:-}" ]]; then \
+		ghcr_token="$${GITHUB_TOKEN}"; \
+	fi; \
+	if [[ -z "$$ghcr_token" && -n "$${GH_TOKEN:-}" ]]; then \
+		ghcr_token="$${GH_TOKEN}"; \
 	fi; \
 	if [[ -z "$$github_user" ]]; then \
-		echo "Unable to resolve GitHub username for GHCR login" >&2; \
+		if [[ -n "$${GITHUB_ACTOR:-}" ]]; then \
+			github_user="$${GITHUB_ACTOR}"; \
+		else \
+			github_user="$$(gh api user --jq .login 2>/dev/null || true)"; \
+		fi; \
+	fi; \
+	if [[ -z "$$github_user" ]]; then \
+		echo "Unable to resolve GitHub username for GHCR login. Set GHCR_USERNAME." >&2; \
 		exit 1; \
 	fi; \
-	gh auth token | docker login "$(REGISTRY)" -u "$$github_user" --password-stdin >/dev/null; \
+	if [[ -z "$$ghcr_token" ]]; then \
+		if ! gh auth status >/dev/null 2>&1; then \
+			echo "GitHub CLI auth is invalid. Run 'gh auth login' or set GHCR_TOKEN/GITHUB_TOKEN with write:packages scope." >&2; \
+			exit 1; \
+		fi; \
+		ghcr_token="$$(gh auth token)"; \
+	fi; \
+	if ! printf '%s' "$$ghcr_token" | docker login "$(REGISTRY)" -u "$$github_user" --password-stdin >/dev/null 2>&1; then \
+		echo "GHCR login failed. Use a token with package write access, e.g. GHCR_TOKEN or GITHUB_TOKEN with write:packages." >&2; \
+		exit 1; \
+	fi; \
 	if ! docker buildx use "$(BUILDER_NAME)" >/dev/null 2>&1; then \
 		docker buildx create --name "$(BUILDER_NAME)" --driver docker-container --use >/dev/null; \
 	fi; \

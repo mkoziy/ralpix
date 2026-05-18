@@ -136,6 +136,11 @@ Requirements:
 - `npm`
 - permission to push tags and packages to `ghcr.io/mkoziy/ralpix`
 
+Credential options for GHCR push:
+- `GHCR_TOKEN` with `write:packages` scope and matching `GHCR_USERNAME`
+- `GITHUB_TOKEN` or `GH_TOKEN` with `write:packages` scope
+- fallback: `gh auth token`, if `gh auth status` is valid and that token includes package write access
+
 Run:
 
 ```bash
@@ -146,6 +151,12 @@ If needed, re-authenticate `gh` with package publishing scope before releasing:
 
 ```bash
 gh auth refresh -h github.com -s write:packages
+```
+
+Or provide explicit credentials for the release command:
+
+```bash
+GHCR_USERNAME=mkoziy GHCR_TOKEN=... make release VERSION=1.2.3
 ```
 
 What it does:
