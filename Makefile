@@ -35,14 +35,13 @@ release:
 		exit 1; \
 	fi; \
 	gh auth token | docker login "$(REGISTRY)" -u "$$github_user" --password-stdin >/dev/null; \
-	builder_driver="$$(docker buildx inspect "$(BUILDER_NAME)" --format '{{.Driver}}' 2>/dev/null || true)"; \
-	if [[ "$$builder_driver" != "docker-container" ]]; then \
-		if [[ -n "$$builder_driver" ]]; then \
-			docker buildx rm "$(BUILDER_NAME)" >/dev/null 2>&1 || true; \
-		fi; \
+	if ! docker buildx use "$(BUILDER_NAME)" >/dev/null 2>&1; then \
 		docker buildx create --name "$(BUILDER_NAME)" --driver docker-container --use >/dev/null; \
-	else \
-		docker buildx use "$(BUILDER_NAME)"; \
+	fi; \
+	builder_driver="$$(docker buildx inspect "$(BUILDER_NAME)" --format '{{.Driver}}')"; \
+	if [[ "$$builder_driver" != "docker-container" ]]; then \
+		docker buildx rm "$(BUILDER_NAME)" >/dev/null 2>&1 || true; \
+		docker buildx create --name "$(BUILDER_NAME)" --driver docker-container --use >/dev/null; \
 	fi; \
 	docker buildx inspect --bootstrap >/dev/null; \
 	if [[ -n "$$(git status --porcelain)" ]]; then \
