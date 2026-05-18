@@ -5,6 +5,7 @@ IMAGE_NAME ?= mkoziy/ralpix
 IMAGE_REF := $(REGISTRY)/$(IMAGE_NAME)
 PLATFORMS ?= linux/amd64,linux/arm64
 BUILDER_NAME ?= ralpix-release
+GHCR_USERNAME ?=
 
 .PHONY: release
 release:
@@ -25,6 +26,15 @@ release:
 		fi; \
 	done; \
 	docker buildx version >/dev/null; \
+	github_user="$(GHCR_USERNAME)"; \
+	if [[ -z "$$github_user" ]]; then \
+		github_user="$$(gh api user --jq .login)"; \
+	fi; \
+	if [[ -z "$$github_user" ]]; then \
+		echo "Unable to resolve GitHub username for GHCR login" >&2; \
+		exit 1; \
+	fi; \
+	gh auth token | docker login "$(REGISTRY)" -u "$$github_user" --password-stdin >/dev/null; \
 	builder_driver="$$(docker buildx inspect "$(BUILDER_NAME)" --format '{{.Driver}}' 2>/dev/null || true)"; \
 	if [[ "$$builder_driver" != "docker-container" ]]; then \
 		if [[ -n "$$builder_driver" ]]; then \

@@ -132,7 +132,7 @@ Release publishing is local, not GitHub Actions based.
 
 Requirements:
 - `docker` with `buildx`
-- `gh` authenticated for the target repository
+- `gh` authenticated for the target repository with permission to publish packages
 - `npm`
 - permission to push tags and packages to `ghcr.io/mkoziy/ralpix`
 
@@ -140,6 +140,12 @@ Run:
 
 ```bash
 make release VERSION=1.2.3
+```
+
+If needed, re-authenticate `gh` with package publishing scope before releasing:
+
+```bash
+gh auth refresh -h github.com -s write:packages
 ```
 
 What it does:
