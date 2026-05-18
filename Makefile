@@ -87,9 +87,9 @@ release:
 	fi; \
 	tags=(-t "$(IMAGE_REF):$$version"); \
 	published_tags=("$(IMAGE_REF):$$version"); \
-	prerelease_flag=(); \
+	is_prerelease=false; \
 	if [[ "$$version" =~ - ]]; then \
-		prerelease_flag=(--prerelease); \
+		is_prerelease=true; \
 	else \
 		minor_tag="$${version%.*}"; \
 		tags+=(-t "$(IMAGE_REF):$$minor_tag" -t "$(IMAGE_REF):latest"); \
@@ -122,7 +122,13 @@ release:
 		"$${tags[@]}" \
 		.; \
 	git push origin "$$version"; \
-	gh release create "$$version" \
-		--title "$$version" \
-		"$${prerelease_flag[@]}" \
-		--notes-file "$$release_notes_file"
+	if [[ "$$is_prerelease" == "true" ]]; then \
+		gh release create "$$version" \
+			--title "$$version" \
+			--prerelease \
+			--notes-file "$$release_notes_file"; \
+	else \
+		gh release create "$$version" \
+			--title "$$version" \
+			--notes-file "$$release_notes_file"; \
+	fi
