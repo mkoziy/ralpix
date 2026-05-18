@@ -1,0 +1,13 @@
+{
+  "name": "ralpix project",
+  "image": "ghcr.io/mkoziy/ralpix:latest",
+  "remoteUser": "pi",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/pi/.pi/agent/auth.json,type=bind"
+  ],
+  "runArgs": [
+    "--init"
+  ]
+}

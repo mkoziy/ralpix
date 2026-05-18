@@ -14,6 +14,146 @@ ln -s $(pwd) ~/.pi/agent/extensions/ralpix
 pi install git:github.com/mkoziy/ralpix
 ```
 
+## Dev Container
+
+Recommended setup: run `pi` and `ralpix` inside your project's dev container, using the published `ralpix` image as the base. This repo ships a minimal example at `.devcontainer/devcontainer.json`:
+
+```json
+{
+  "name": "ralpix project",
+  "image": "ghcr.io/mkoziy/ralpix:latest",
+  "remoteUser": "pi",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/pi/.pi/agent/auth.json,type=bind"
+  ],
+  "runArgs": [
+    "--init"
+  ]
+}
+```
+
+Create the Pi auth file on the host before starting the container:
+
+```bash
+mkdir -p "$HOME/.pi/agent"
+touch "$HOME/.pi/agent/auth.json"
+```
+
+Then open the repo in a dev container and run `/login` inside `pi` if you need ChatGPT Plus/Pro OAuth for `openai-codex/...` models. Mounting only `auth.json` preserves the image's bundled `AGENTS.md` and `settings.json`.
+
+## Docker
+
+Build an end-user image with `pi`, `ralpix`, `ripgrep`, `fd`, and `fzf` installed:
+
+```bash
+docker build -t ralpix-pi .
+```
+
+Run `pi` in a mounted workspace:
+
+```bash
+docker run --rm -it \
+  -v "$(pwd)":/workspace \
+  -e OPENAI_API_KEY \
+  ralpix-pi
+```
+
+Run the published image from GHCR:
+
+```bash
+docker run --rm -it \
+  -v "$(pwd)":/workspace \
+  -e OPENAI_API_KEY \
+  ghcr.io/mkoziy/ralpix:latest
+```
+
+### Docker credentials
+
+`pi` resolves credentials from `--api-key`, then `~/.pi/agent/auth.json`, then environment variables. In the container, the practical options are:
+
+OpenAI API key for `openai/...` models:
+
+```bash
+docker run --rm -it \
+  -v "$(pwd)":/workspace \
+  -e OPENAI_API_KEY=sk-... \
+  ghcr.io/mkoziy/ralpix:latest
+```
+
+OpenCode Go API key for `opencode-go/...` models:
+
+```bash
+docker run --rm -it \
+  -v "$(pwd)":/workspace \
+  -e OPENCODE_API_KEY=... \
+  ghcr.io/mkoziy/ralpix:latest
+```
+
+OpenAI Codex for `openai-codex/...` models uses Pi's `/login` flow rather than `OPENAI_API_KEY`. To persist that auth across container runs without hiding the image's bundled `AGENTS.md` and `settings.json`, mount only Pi's `auth.json`:
+
+```bash
+mkdir -p "$HOME/.pi/agent"
+touch "$HOME/.pi/agent/auth.json"
+
+docker run --rm -it \
+  -v "$(pwd)":/workspace \
+  -v "$HOME/.pi/agent/auth.json:/home/pi/.pi/agent/auth.json" \
+  ghcr.io/mkoziy/ralpix:latest
+```
+
+Then run `/login` inside `pi` and select ChatGPT Plus/Pro (Codex). Pi stores the OAuth tokens in `/home/pi/.pi/agent/auth.json` inside the container, which persists because that single file is mounted from the host.
+
+If you also want persisted ralpix config/prompts, mount `~/.ralpix` separately:
+
+```bash
+mkdir -p "$HOME/.pi/agent"
+touch "$HOME/.pi/agent/auth.json"
+
+docker run --rm -it \
+  -v "$(pwd)":/workspace \
+  -v "$HOME/.pi/agent/auth.json:/home/pi/.pi/agent/auth.json" \
+  -v "$HOME/.ralpix:/home/pi/.ralpix" \
+  ghcr.io/mkoziy/ralpix:latest
+```
+
+Notes:
+- The image registers this checkout as a global Pi package via `~/.pi/agent/settings.json`.
+- `ripgrep`, `fd`, and `fzf` are installed in the container, and the bundled global `~/.pi/agent/AGENTS.md` tells Pi to prefer `rg`/`rg --files`.
+- `FZF_DEFAULT_COMMAND` and `FZF_CTRL_T_COMMAND` are set to use `rg --files --hidden --follow --glob '!.git'`.
+- On container startup, the image generates `~/.pi/agent/APPEND_SYSTEM.md` with the current UTC date, a configurable knowledge cutoff, and a freshness protocol for version/API/current-state questions. This is the Pi equivalent of the temporal-context pattern described in the linked blog post.
+- The default cutoff is `2025-01-01`. Override it with `-e PI_KNOWLEDGE_CUTOFF=YYYY-MM-DD` if you want a different baseline.
+- Use `make release VERSION=1.2.3` to validate the repo, build and push multi-arch images to `ghcr.io/mkoziy/ralpix`, push the git tag, and create a GitHub release. Stable releases publish `1.2.3`, `1.2`, and `latest`; prereleases publish only the exact tag.
+
+## Release
+
+Release publishing is local, not GitHub Actions based.
+
+Requirements:
+- `docker` with `buildx`
+- `gh` authenticated for the target repository
+- `npm`
+- permission to push tags and packages to `ghcr.io/mkoziy/ralpix`
+
+Run:
+
+```bash
+make release VERSION=1.2.3
+```
+
+What it does:
+1. Verifies the working tree is clean and the tag does not already exist
+2. Runs `npm ci` and `npm run check`
+3. Counts commits since the previous semver tag and uses that range in the GitHub release notes
+4. Builds and pushes `linux/amd64` and `linux/arm64` images with Docker Buildx
+5. Pushes the git tag
+6. Creates the GitHub release
+
+Tag behavior:
+- Stable `1.2.3` releases publish `ghcr.io/mkoziy/ralpix:1.2.3`, `ghcr.io/mkoziy/ralpix:1.2`, and `latest`
+- Prereleases like `1.2.3-rc1` publish only `ghcr.io/mkoziy/ralpix:1.2.3-rc1`
+
 ## Quick Start
 
 ```bash
