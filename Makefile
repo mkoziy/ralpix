@@ -38,11 +38,6 @@ release:
 	if ! docker buildx use "$(BUILDER_NAME)" >/dev/null 2>&1; then \
 		docker buildx create --name "$(BUILDER_NAME)" --driver docker-container --use >/dev/null; \
 	fi; \
-	builder_driver="$$(docker buildx inspect "$(BUILDER_NAME)" --format '{{.Driver}}')"; \
-	if [[ "$$builder_driver" != "docker-container" ]]; then \
-		docker buildx rm "$(BUILDER_NAME)" >/dev/null 2>&1 || true; \
-		docker buildx create --name "$(BUILDER_NAME)" --driver docker-container --use >/dev/null; \
-	fi; \
 	docker buildx inspect --bootstrap >/dev/null; \
 	if [[ -n "$$(git status --porcelain)" ]]; then \
 		echo "Working tree must be clean before release" >&2; \
