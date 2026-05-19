@@ -55,6 +55,35 @@ exec pi --host docker "$@"
 
 With that setup, a project `Makefile` can keep using host-oriented commands such as `bun run --cwd api ...` and `docker compose ...` from inside the dev container, without rewriting paths or changing `localhost`-based service URLs.
 
+### LLM setup flow
+
+If you want an LLM to bootstrap `ralpix` in another project, give it these instructions:
+
+1. Copy `.devcontainer/devcontainer.json` from this repo into the target project's `.devcontainer/devcontainer.json`.
+2. Copy `.devcontainer/bin/bun` and `.devcontainer/bin/docker` from this repo into the target project's `.devcontainer/bin/`.
+3. Preserve executable bits on both wrapper scripts.
+4. Keep the target project's workspace mounted at `/workspace`.
+5. Create the host auth file if it does not exist: `mkdir -p "$HOME/.pi/agent" && touch "$HOME/.pi/agent/auth.json"`.
+6. Rebuild or reopen the target project in the dev container.
+7. Inside the dev container, run `/login` in `pi` if OAuth auth is needed.
+8. Verify that `bun` and `docker` resolve through `/workspace/.devcontainer/bin/` before running project `make` targets.
+
+The intended outcome is:
+
+- `pi` and `ralpix` run inside the dev container
+- `bun ...` and `docker compose ...` invoked by the project's `Makefile` execute on the host through `pi --host`
+- the project can keep its existing `Makefile`, bind mounts, and `localhost` service URLs unchanged
+
+For a target project, the copied files should look like this:
+
+```text
+.devcontainer/
+├── bin/
+│   ├── bun
+│   └── docker
+└── devcontainer.json
+```
+
 Create the Pi auth file on the host before starting the container:
 
 ```bash
