@@ -9,5 +9,8 @@
   ],
   "runArgs": [
     "--init"
-  ]
+  ],
+  "remoteEnv": {
+    "PATH": "/workspace/.devcontainer/bin:${containerEnv:PATH}"
+  }
 }

@@ -30,9 +30,30 @@ Recommended setup: run `pi` and `ralpix` inside your project's dev container, us
   ],
   "runArgs": [
     "--init"
-  ]
+  ],
+  "remoteEnv": {
+    "PATH": "/workspace/.devcontainer/bin:${containerEnv:PATH}"
+  }
 }
 ```
+
+Add lightweight host-forwarding wrappers at `.devcontainer/bin/bun` and `.devcontainer/bin/docker` when you want `make` to run in the dev container but `bun ...` and `docker compose ...` to execute on the host:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec pi --host bun "$@"
+```
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec pi --host docker "$@"
+```
+
+With that setup, a project `Makefile` can keep using host-oriented commands such as `bun run --cwd api ...` and `docker compose ...` from inside the dev container, without rewriting paths or changing `localhost`-based service URLs.
 
 Create the Pi auth file on the host before starting the container:
 
