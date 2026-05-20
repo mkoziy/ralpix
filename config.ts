@@ -7,9 +7,18 @@
  *   3. Bundled defaults       (bundled inside extension)
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { THINKING_LEVELS } from "./types.js";
 
@@ -49,6 +58,10 @@ export function ralpixProjectDir(cwd: string): string {
 
 export function defaultPiAgentDir(): string {
   return join(RALPIX_HOME, DEFAULT_PI_AGENT_DIR_NAME);
+}
+
+export function defaultPiAuthPath(): string {
+  return join(homedir(), ".pi", "agent", "auth.json");
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +343,38 @@ export function resolvePiAgentDir(cwd: string, config: RalpixConfig): string | n
   return isAbsolute(raw) ? raw : resolve(cwd, raw);
 }
 
+export function ensureSharedPiAuth(
+  piAgentDir: string,
+  sharedAuthPath = defaultPiAuthPath(),
+): void {
+  const authDir = dirname(sharedAuthPath);
+  if (!existsSync(authDir)) {
+    mkdirSync(authDir, { recursive: true });
+  }
+  if (!existsSync(sharedAuthPath)) {
+    writeFileSync(sharedAuthPath, "", UTF8_ENCODING);
+  }
+
+  const childAuthPath = join(piAgentDir, "auth.json");
+  if (existsSync(childAuthPath)) {
+    try {
+      const stats = lstatSync(childAuthPath);
+      if (stats.isSymbolicLink()) return;
+      unlinkSync(childAuthPath);
+    } catch {
+      return;
+    }
+  }
+
+  try {
+    symlinkSync(sharedAuthPath, childAuthPath);
+  } catch {
+    if (!existsSync(childAuthPath)) {
+      copyFileSync(sharedAuthPath, childAuthPath);
+    }
+  }
+}
+
 /**
  * Build the `--model` argument value from a resolved ModelConfig.
  *
@@ -465,4 +510,6 @@ export function initRalpixHome(): void {
     };
     writeFileSync(settingsPath, JSON.stringify(settings, null, 2), UTF8_ENCODING);
   }
+
+  ensureSharedPiAuth(piAgentDir);
 }

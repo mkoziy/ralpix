@@ -193,7 +193,7 @@ What happens:
 5. After all tasks: review pipeline runs (first pass → second pass)
 6. Plan checkboxes are updated automatically
 
-`/ralpix init` also bootstraps a dedicated Pi profile for ralpix child sessions at `~/.ralpix/pi-agent/`, including `AGENTS.md` and `settings.json`, so isolated task/review/plan sessions prefer `rg`, can use `fzf`, and load this ralpix package without extra setup.
+`/ralpix init` also bootstraps a dedicated Pi profile for ralpix child sessions at `~/.ralpix/pi-agent/`, including `AGENTS.md` and `settings.json`, so isolated task/review/plan sessions prefer `rg`, can use `fzf`, and load this ralpix package without extra setup. That profile shares `auth.json` with the main Pi profile by default, so `/login` credentials work in both places.
 
 ## Plan Creation
 
@@ -317,6 +317,7 @@ Default layout created by `/ralpix init`:
 ├── agents/
 └── pi-agent/
     ├── AGENTS.md
+    ├── auth.json -> ~/.pi/agent/auth.json
     └── settings.json
 ```
 

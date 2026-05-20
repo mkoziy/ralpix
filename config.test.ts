@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   applyModelConfigToSession,
   buildSessionModelChange,
+  ensureSharedPiAuth,
   mergeConfig,
   resolveModel,
   resolvePiAgentDir,
@@ -386,6 +390,24 @@ void test("mergeConfig preserves higher-precedence piAgentDir", () => {
 void test("resolvePiAgentDir falls back to the default ralpix pi-agent profile", () => {
   const resolved = resolvePiAgentDir("/tmp/project", makeConfig({}));
   assert.match(resolved ?? "", /\/\.ralpix\/pi-agent$/);
+});
+
+void test("ensureSharedPiAuth links child auth.json to the default Pi auth file", () => {
+  const root = mkdtempSync(join(tmpdir(), "ralpix-auth-"));
+  const sharedDir = join(root, ".pi", "agent");
+  const childDir = join(root, ".ralpix", "pi-agent");
+  mkdirSync(sharedDir, { recursive: true });
+  mkdirSync(childDir, { recursive: true });
+
+  const sharedAuthPath = join(sharedDir, "auth.json");
+  writeFileSync(sharedAuthPath, "{\"token\":\"shared\"}\n");
+
+  ensureSharedPiAuth(childDir, sharedAuthPath);
+
+  const childAuthPath = join(childDir, "auth.json");
+  assert.equal(existsSync(childAuthPath), true);
+  assert.equal(lstatSync(childAuthPath).isSymbolicLink(), true);
+  assert.equal(readFileSync(childAuthPath, "utf-8"), "{\"token\":\"shared\"}\n");
 });
 
 void test("mergeConfig override with only models but no base models uses override models", () => {
