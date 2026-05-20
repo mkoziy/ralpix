@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyModelConfigToSession, buildSessionModelChange, mergeConfig, resolveModel } from "./config.js";
+import {
+  applyModelConfigToSession,
+  buildSessionModelChange,
+  mergeConfig,
+  resolveModel,
+  resolvePiAgentDir,
+} from "./config.js";
 
 import type { ModelConfig, RalpixConfig } from "./types.js";
 
@@ -41,6 +47,7 @@ function makeConfig(overrides: Partial<RalpixConfig>): RalpixConfig {
     planModel: null,
     planEffort: null,
     plansDir: "docs/plans",
+    piAgentDir: null,
     models: {},
     ...overrides,
   };
@@ -359,6 +366,26 @@ void test("mergeConfig override with no models preserves base models untouched",
     provider: ANTHROPIC,
     effort: "medium",
   });
+});
+
+void test("mergeConfig preserves higher-precedence piAgentDir", () => {
+  const merged = mergeConfig(
+    makeConfig({
+      piAgentDir: "~/.pi/agent-ralpix",
+    }),
+    {
+      reviewMaxIterations: 9,
+      piAgentDir: ".ralpix/pi-agent",
+    },
+  );
+
+  assert.equal(merged.piAgentDir, ".ralpix/pi-agent");
+  assert.equal(merged.reviewMaxIterations, 9);
+});
+
+void test("resolvePiAgentDir falls back to the default ralpix pi-agent profile", () => {
+  const resolved = resolvePiAgentDir("/tmp/project", makeConfig({}));
+  assert.match(resolved ?? "", /\/\.ralpix\/pi-agent$/);
 });
 
 void test("mergeConfig override with only models but no base models uses override models", () => {

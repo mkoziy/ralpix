@@ -2,6 +2,7 @@
   "defaultModel": "opencode-go/deepseek-v4-flash",
   "defaultProvider": null,
   "defaultEffort": "low",
+  "piAgentDir": null,
   "commitEnabled": true,
   "commitMessageTemplate": "ralpix: {{taskTitle}}",
   "reviewEnabled": true,

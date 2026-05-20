@@ -193,6 +193,8 @@ What happens:
 5. After all tasks: review pipeline runs (first pass → second pass)
 6. Plan checkboxes are updated automatically
 
+`/ralpix init` also bootstraps a dedicated Pi profile for ralpix child sessions at `~/.ralpix/pi-agent/`, including `AGENTS.md` and `settings.json`, so isolated task/review/plan sessions prefer `rg`, can use `fzf`, and load this ralpix package without extra setup.
+
 ## Plan Creation
 
 Don't want to write plans manually? Use interactive plan creation:
@@ -257,6 +259,7 @@ ralpix uses a three-layer config merge:
   "defaultModel": "opencode-go/deepseek-v4-flash", // Task execution default
   "defaultProvider": null,        // e.g. "anthropic"
   "defaultEffort": "low",         // Executor reasoning effort; kept low because the default executor uses a flash-tier model
+  "piAgentDir": null,             // Optional override for the default ~/.ralpix/pi-agent child-session profile
   "commitEnabled": true,          // Auto-commit after each task
   "commitMessageTemplate": "ralpix: {{taskTitle}}",
   "reviewEnabled": true,          // Run review pipeline after tasks
@@ -287,7 +290,49 @@ Create `./.ralpix/config.json` in your project root to override settings for tha
 {
   "commitEnabled": false,         // Don't auto-commit in this project
   "reviewEnabled": false,         // Skip review pipeline
-  "defaultModel": "openai/gpt-5"  // Use GPT-5 for this project
+  "defaultModel": "openai/gpt-5", // Use GPT-5 for this project
+  "piAgentDir": ".ralpix/pi-agent" // Override the default child-session Pi profile
+}
+```
+
+### Separate Pi profile for ralpix subprocesses
+
+By default, `ralpix` runs its child `pi` sessions with the Pi profile created by `/ralpix init` at `~/.ralpix/pi-agent`. `ralpix` exports that directory as `PI_CODING_AGENT_DIR` for task execution, review, and plan creation subprocesses only.
+
+Set `piAgentDir` only when you want to override that default profile. Paths resolve relative to the project root unless they are absolute or start with `~/`.
+
+```jsonc
+// .ralpix/config.json
+{
+  "piAgentDir": ".ralpix/pi-agent"
+}
+```
+
+Default layout created by `/ralpix init`:
+
+```text
+~/.ralpix/
+├── config.json
+├── prompts/
+├── agents/
+└── pi-agent/
+    ├── AGENTS.md
+    └── settings.json
+```
+
+Bundled `AGENTS.md` for child sessions:
+
+```md
+Prefer `rg` and `rg --files` over slower alternatives.
+Use `fzf` when interactive file or text selection is helpful.
+Assume the `ralpix` workflow is active and keep changes scoped to the current task.
+```
+
+Bundled `settings.json` for child sessions:
+
+```json
+{
+  "packages": ["/absolute/path/to/this/ralpix/checkout"]
 }
 ```
 

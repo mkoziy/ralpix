@@ -4,7 +4,7 @@
 
 import { execSync } from "node:child_process";
 
-import { buildSessionModelChange, resolveModel } from "./config.js";
+import { buildSessionModelChange, resolveModel, resolvePiAgentDir } from "./config.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
@@ -114,6 +114,7 @@ async function runReviewSession(
   promptContent: string,
   phase: "first" | "second" | "external" | "eval",
   modelCfg: ModelConfig,
+  piAgentDir: string | null,
   includeEffort = true,
   onProgress?: (detail: string) => void,
 ): Promise<ReviewSessionReport> {
@@ -124,6 +125,7 @@ async function runReviewSession(
     includeEffort,
     30 * 60 * 1000,
     createPiProgressHooks(onProgress),
+    piAgentDir,
   );
   const report = parseReviewSessionReport(result.lastAssistantText);
   if (report !== null) return report;
@@ -166,7 +168,8 @@ async function runReviewProcess(
     eval: "external-eval",
   } as const;
   const modelCfg = resolveModel(config, phaseToModelKey[phase]);
-  return runReviewSession(ctx, prompt, phase, modelCfg, includeEffort, (detail) => {
+  const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
+  return runReviewSession(ctx, prompt, phase, modelCfg, piAgentDir, includeEffort, (detail) => {
     logger.logReview("loop", `${phase}: ${detail}`);
   });
 }
@@ -271,6 +274,7 @@ async function runExternalReviewLoop(
     return msg;
   }
   const reviewerName = reviewerLabel ?? "(default)";
+  const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
 
   logger.logExternalReview(
     "loop",
@@ -307,7 +311,13 @@ async function runExternalReviewLoop(
 
     logger.logExternalReview("review", `Iteration ${i + 1}/${maxIterations} — running external reviewer...`);
 
-    const reviewResult = await runReviewSession(ctx, reviewPrompt, "external", externalModelCfg);
+    const reviewResult = await runReviewSession(
+      ctx,
+      reviewPrompt,
+      "external",
+      externalModelCfg,
+      piAgentDir,
+    );
     if (!reviewResult.success) {
       const msg = `ERROR: ${reviewResult.summary.slice(0, 200)}`;
       logger.logExternalReview("review", msg);

@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { THINKING_LEVELS } from "./types.js";
 
@@ -37,6 +37,7 @@ const UTF8_ENCODING = "utf-8";
 const CONFIG_FILE = "config.json";
 
 export const RALPIX_HOME = join(homedir(), ".ralpix");
+const DEFAULT_PI_AGENT_DIR_NAME = "pi-agent";
 
 export function ralpixHomeDir(): string {
   return RALPIX_HOME;
@@ -44,6 +45,10 @@ export function ralpixHomeDir(): string {
 
 export function ralpixProjectDir(cwd: string): string {
   return join(cwd, ".ralpix");
+}
+
+export function defaultPiAgentDir(): string {
+  return join(RALPIX_HOME, DEFAULT_PI_AGENT_DIR_NAME);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +322,14 @@ function resolveDefaultProvider(config: RalpixConfig): string | null {
   return config.defaultProvider ?? null;
 }
 
+export function resolvePiAgentDir(cwd: string, config: RalpixConfig): string | null {
+  const raw = config.piAgentDir?.trim();
+  if (raw == null || raw.length === 0) return defaultPiAgentDir();
+  if (raw === "~") return homedir();
+  if (raw.startsWith("~/")) return join(homedir(), raw.slice(2));
+  return isAbsolute(raw) ? raw : resolve(cwd, raw);
+}
+
 /**
  * Build the `--model` argument value from a resolved ModelConfig.
  *
@@ -392,7 +405,7 @@ export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): 
  * Idempotent — does not overwrite existing files.
  */
 export function initRalpixHome(): void {
-  const dirs = ["prompts", "agents", "progress"];
+  const dirs = ["prompts", "agents", "progress", DEFAULT_PI_AGENT_DIR_NAME];
   for (const dirName of dirs) {
     const dirPath = join(RALPIX_HOME, dirName);
     if (!existsSync(dirPath)) mkdirSync(dirPath, { recursive: true });
@@ -427,5 +440,29 @@ export function initRalpixHome(): void {
     if (!existsSync(dest)) {
       writeFileSync(dest, readFileSync(join(bundledAgentsDir, `${name}.md`), UTF8_ENCODING), UTF8_ENCODING);
     }
+  }
+
+  // Copy default pi-agent profile used by ralpix child sessions
+  const bundledPiAgentDir = join(__dirname, "bundled", DEFAULT_PI_AGENT_DIR_NAME);
+  const piAgentDir = defaultPiAgentDir();
+  const agentInstructionsPath = join(piAgentDir, "AGENTS.md");
+  if (!existsSync(agentInstructionsPath)) {
+    writeFileSync(
+      agentInstructionsPath,
+      readFileSync(join(bundledPiAgentDir, "AGENTS.md"), UTF8_ENCODING),
+      UTF8_ENCODING,
+    );
+  }
+
+  const settingsPath = join(piAgentDir, "settings.json");
+  if (!existsSync(settingsPath)) {
+    const bundledSettings = JSON.parse(
+      readFileSync(join(bundledPiAgentDir, "settings.json"), UTF8_ENCODING),
+    ) as { packages?: string[] };
+    const settings = {
+      ...bundledSettings,
+      packages: [__dirname],
+    };
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), UTF8_ENCODING);
   }
 }

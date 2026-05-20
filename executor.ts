@@ -4,7 +4,7 @@
 
 import { execSync } from "node:child_process";
 
-import { buildModelArg, resolveModel } from "./config.js";
+import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
 import { updatePlanTaskStatus } from "./parser.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
@@ -60,6 +60,7 @@ async function runTaskSession(
   ctx: ExtensionCommandContext,
   promptContent: string,
   modelCfg: ModelConfig,
+  piAgentDir: string | null,
   onProgress?: (detail: string) => void,
 ): Promise<TaskSessionReport> {
   const result = await runPiSubprocessPrompt(
@@ -69,6 +70,7 @@ async function runTaskSession(
     true,
     30 * 60 * 1000,
     createPiProgressHooks(onProgress),
+    piAgentDir,
   );
   const report = parseTaskSessionReport(result.lastAssistantText);
   if (report !== null) return report;
@@ -134,6 +136,7 @@ export async function executeTask(
   updatePlanTaskStatus(plan.path, task.id, task.title, "in-progress");
 
   const modelCfg = resolveModel(config, "task");
+  const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   let lastError: string | undefined;
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
@@ -141,7 +144,7 @@ export async function executeTask(
       const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
       logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
       ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
-      const result = await runTaskSession(ctx, prompt, modelCfg, (detail) => {
+      const result = await runTaskSession(ctx, prompt, modelCfg, piAgentDir, (detail) => {
         logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
       });
 

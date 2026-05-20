@@ -27,6 +27,8 @@ interface PiInvocation {
   args: string[];
 }
 
+const DEFAULT_FZF_COMMAND = "rg --files --hidden --follow --glob '!.git'";
+
 export interface PiSubprocessResult {
   exitCode: number;
   output: string;
@@ -216,6 +218,16 @@ function extractLastAssistantText(lines: string[]): string {
   return parts.join("\n").trim();
 }
 
+function buildPiSubprocessEnv(piAgentDir?: string | null): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (piAgentDir != null) {
+    env["PI_CODING_AGENT_DIR"] = piAgentDir;
+  }
+  env["FZF_DEFAULT_COMMAND"] ??= DEFAULT_FZF_COMMAND;
+  env["FZF_CTRL_T_COMMAND"] ??= DEFAULT_FZF_COMMAND;
+  return env;
+}
+
 export async function runPiSubprocessPrompt(
   cwd: string,
   promptContent: string,
@@ -223,6 +235,7 @@ export async function runPiSubprocessPrompt(
   includeEffort = true,
   timeoutMs = 30 * 60 * 1000,
   hooks?: PiSubprocessHooks,
+  piAgentDir?: string | null,
 ): Promise<PiSubprocessResult> {
   const invocation = getPiExecutable();
   const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
@@ -245,6 +258,7 @@ export async function runPiSubprocessPrompt(
     hooks?.onLifecycle?.("pi subprocess started");
     const proc = spawn(invocation.command, args, {
       cwd,
+      env: buildPiSubprocessEnv(piAgentDir),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });

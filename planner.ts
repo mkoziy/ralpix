@@ -12,7 +12,7 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { buildModelArg, resolveModel } from "./config.js";
+import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
 import { parsePlan } from "./parser.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { plannerLaunchConfigs } from "./planner-prompt.js";
@@ -20,6 +20,8 @@ import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+
+const DEFAULT_FZF_COMMAND = "rg --files --hidden --follow --glob '!.git'";
 
 function slugify(text: string): string {
   const slug = text
@@ -57,6 +59,16 @@ function getPiExecutable(): { command: string; args: string[] } {
     return { command: process.execPath, args: [currentScript] };
   }
   return { command: "pi", args: [] };
+}
+
+function buildPlannerEnv(piAgentDir: string | null): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (piAgentDir != null) {
+    env["PI_CODING_AGENT_DIR"] = piAgentDir;
+  }
+  env["FZF_DEFAULT_COMMAND"] ??= DEFAULT_FZF_COMMAND;
+  env["FZF_CTRL_T_COMMAND"] ??= DEFAULT_FZF_COMMAND;
+  return env;
 }
 
 async function writeTempFile(prefix: string, content: string): Promise<{ dir: string; filePath: string }> {
@@ -308,8 +320,10 @@ async function runPlannerProcess(
   appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared model=${modelLabel} effort=${effortLabel}`);
 
   return new Promise((resolvePromise) => {
+    const piAgentDir = resolvePiAgentDir(cwd, config);
     const proc = spawn(invocation.command, args, {
       cwd,
+      env: buildPlannerEnv(piAgentDir),
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });

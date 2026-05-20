@@ -39,6 +39,8 @@ export interface RalpixConfig {
   defaultModel: string | null;
   defaultProvider: string | null;
   defaultEffort: ThinkingLevel | null;
+  /** Optional Pi config dir for ralpix child sessions; mapped to PI_CODING_AGENT_DIR */
+  piAgentDir: string | null;
   commitEnabled: boolean;
   commitMessageTemplate: string;
   reviewEnabled: boolean;
