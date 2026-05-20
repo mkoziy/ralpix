@@ -3,7 +3,6 @@ set -euo pipefail
 
 PI_AGENT_DIR="${PI_AGENT_DIR:-$HOME/.pi/agent}"
 PI_KNOWLEDGE_CUTOFF="${PI_KNOWLEDGE_CUTOFF:-2025-01-01}"
-REVDIFF_AUTO_UPDATE="${REVDIFF_AUTO_UPDATE:-1}"
 CURRENT_DATE="$(date -u +%F)"
 CURRENT_DATETIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -19,12 +18,6 @@ BEGIN {
 )"
 
 mkdir -p "$PI_AGENT_DIR"
-
-if [ "${REVDIFF_AUTO_UPDATE}" = "1" ]; then
-  if ! /opt/ralpix/docker/pi-agent/update-revdiff.sh; then
-    printf 'revdiff: update failed, continuing startup\n' >&2
-  fi
-fi
 
 cat > "$PI_AGENT_DIR/APPEND_SYSTEM.md" <<EOF
 ## Temporal Context
