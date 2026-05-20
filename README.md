@@ -36,6 +36,9 @@ Recommended setup: run `pi` and `ralpix` inside your project's dev container, us
     "RALPIX_HOST_DOCKER_BIN": "docker",
     "RALPIX_HOST_BUN_MODE": "host",
     "RALPIX_HOST_DOCKER_MODE": "host",
+    "RALPIX_HOST_SSH_TARGET": "${localEnv:USER}@host.docker.internal",
+    "RALPIX_HOST_WORKDIR": "${localWorkspaceFolder}",
+    "RALPIX_HOST_ALLOWED_ROOT": "${localWorkspaceFolder}",
     "RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE": "1",
     "RALPIX_WRAPPER_LOCAL_OVERRIDE_DIR": "/workspace/.devcontainer/bin",
     "RALPIX_WRAPPER_DEBUG": "0"
@@ -43,7 +46,7 @@ Recommended setup: run `pi` and `ralpix` inside your project's dev container, us
 }
 ```
 
-The published image now provides host-forwarding `bun` and `docker` wrappers on `PATH` by default. A project `Makefile` can keep using host-oriented commands such as `bun run --cwd api ...` and `docker compose ...` from inside the dev container, without rewriting paths or changing `localhost`-based service URLs.
+The published image now provides `bun` and `docker` wrappers on `PATH` by default. In host mode, those wrappers execute on the host through SSH while staying pinned to one configured host project root, so host-oriented commands such as `bun run --cwd api ...` and `docker compose ...` can keep using bind mounts and `localhost` service URLs without giving the agent arbitrary access to the rest of the host filesystem.
 
 Default wrapper environment:
 
@@ -51,6 +54,11 @@ Default wrapper environment:
 - `RALPIX_HOST_DOCKER_BIN=docker`
 - `RALPIX_HOST_BUN_MODE=host`
 - `RALPIX_HOST_DOCKER_MODE=host`
+- `RALPIX_HOST_SSH_BIN=ssh`
+- `RALPIX_HOST_SSH_TARGET=host.docker.internal`
+- `RALPIX_HOST_WORKDIR=` host absolute project path, set per devcontainer
+- `RALPIX_HOST_ALLOWED_ROOT=` host absolute root allowed for execution, defaults to `RALPIX_HOST_WORKDIR`
+- `RALPIX_HOST_PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`
 - `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1`
 - `RALPIX_WRAPPER_LOCAL_OVERRIDE_DIR=/workspace/.devcontainer/bin`
 - `RALPIX_WRAPPER_DEBUG=0`
@@ -59,7 +67,9 @@ Optional project-local overrides:
 
 - If `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1` and `/workspace/.devcontainer/bin/bun` exists, that project-local wrapper takes precedence over the image default.
 - If `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1` and `/workspace/.devcontainer/bin/docker` exists, that project-local wrapper takes precedence over the image default.
-- If no project-local override exists, the image defaults run `pi --host bun "$@"` and `pi --host docker "$@"`.
+- If no project-local override exists, the image defaults SSH to `RALPIX_HOST_SSH_TARGET`, canonicalize `RALPIX_HOST_WORKDIR`, verify it is inside `RALPIX_HOST_ALLOWED_ROOT`, and then run the requested host `bun` or `docker` binary there.
+- If `RALPIX_HOST_WORKDIR` is missing or points outside `RALPIX_HOST_ALLOWED_ROOT`, the wrappers fail before running the host command.
+- If you want container-local execution instead, set `RALPIX_HOST_BUN_MODE=container` or `RALPIX_HOST_DOCKER_MODE=container`.
 
 ### LLM setup flow
 
@@ -69,14 +79,15 @@ If you want an LLM to bootstrap `ralpix` in another project, give it these instr
 2. Keep the target project's workspace mounted at `/workspace`.
 3. Create the host auth file if it does not exist: `mkdir -p "$HOME/.pi/agent" && touch "$HOME/.pi/agent/auth.json"`.
 4. Rebuild or reopen the target project in the dev container.
-5. Inside the dev container, run `/login` in `pi` if OAuth auth is needed.
-6. Verify that `bun` and `docker` resolve on `PATH` before running project `make` targets.
-7. Only create `.devcontainer/bin/` if that project needs to override the image-provided wrappers.
+5. Enable SSH access on the host and make sure the container user can authenticate to `RALPIX_HOST_SSH_TARGET` without prompts.
+6. Inside the dev container, run `/login` in `pi` if OAuth auth is needed.
+7. Verify that `bun` and `docker` resolve on `PATH` before running project `make` targets.
+8. Only create `.devcontainer/bin/` if that project needs to override the image-provided wrappers.
 
 The intended outcome is:
 
 - `pi` and `ralpix` run inside the dev container
-- `bun ...` and `docker compose ...` invoked by the project's `Makefile` execute on the host through `pi --host`
+- `bun ...` and `docker compose ...` invoked by the project's `Makefile` execute on the host through SSH while staying inside the configured host project root
 - the project can keep its existing `Makefile`, bind mounts, and `localhost` service URLs unchanged
 - the published `ghcr.io/mkoziy/ralpix` image prepends its built-in wrapper directory to `PATH`, and interactive login shells also restore `/workspace/.devcontainer/bin` from `/etc/profile.d` when a project-local override directory exists
 
@@ -443,19 +454,19 @@ Started: 2026-05-12T14:30:00.000Z
 
 [2026-05-12T14:30:00.001Z] PLAN_START  My Feature (3 tasks)
 [2026-05-12T14:30:05.123Z] TASK_START  Task 1: Set up the foundation
-[2026-05-12T14:30:05.124Z] TASK_INFO   Task 1: Set up the foundation  attempt 1 launched (openai-codex/gpt-5.5)
+[2026-05-12T14:30:05.124Z] TASK_INFO   Task 1: Set up the foundation  attempt 1 launched (provider=openai-codex model=gpt-5.5 thinking=high)
 [2026-05-12T14:30:09.870Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: tool started: exec_command rg -n "health" src
 [2026-05-12T14:30:10.401Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: tool finished in 1s: exec_command rg -n "health" src
 [2026-05-12T14:30:12.208Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: assistant: Audited the existing health-check wiring and test coverage.
 [2026-05-12T14:32:10.456Z] TASK_END    Task 1: Set up the foundation  ✓ SUCCESS — commit a1b2c3d
 [2026-05-12T14:32:10.457Z] TASK_START  Task 2: Implement core logic
 ...
-[2026-05-12T14:45:00.000Z] REVIEW_FIRST   COMPLETE (iteration 1)
-[2026-05-12T14:48:00.000Z] REVIEW_SECOND  COMPLETE (iteration 1)
+[2026-05-12T14:45:00.000Z] REVIEW_FIRST   STARTED (5 agents, comprehensive, provider=opencode-go model=glm-5.1 thinking=high)
+[2026-05-12T14:48:00.000Z] REVIEW_LOOP    STARTED (max 5 iterations, 2 agents: quality + implementation, provider=opencode-go model=kimi-k2.6 thinking=medium)
 [2026-05-12T14:48:00.001Z] PLAN_COMPLETE  All tasks finished
 ```
 
-`TASK_INFO` lines are live subprocess summaries. They show attempt starts, compact tool/command previews, short assistant status notes, and idle heartbeats when a task stops producing output for a while.
+`TASK_INFO` and review start lines show the configured `provider`, `model`, and `thinking` mode used for that run, followed by live subprocess summaries, compact tool/command previews, short assistant status notes, and idle heartbeats when a task stops producing output for a while.
 
 ## Directory Structure
 

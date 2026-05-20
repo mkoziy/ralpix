@@ -6,10 +6,27 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { EOL } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import type { Plan, PlanTask } from "./types.js";
+import type { ModelConfig, Plan, PlanTask } from "./types.js";
 
 export function progressDirForCwd(cwd: string): string {
   return resolve(cwd, ".ralpix", "progress");
+}
+
+export function formatModelConfigForProgress(cfg: ModelConfig): string {
+  if (cfg.model?.includes("/") === true) {
+    const slash = cfg.model.indexOf("/");
+    return [
+      `provider=${cfg.model.slice(0, slash)}`,
+      `model=${cfg.model.slice(slash + 1)}`,
+      `thinking=${cfg.effort ?? "default"}`,
+    ].join(" ");
+  }
+
+  return [
+    `provider=${cfg.provider ?? "default"}`,
+    `model=${cfg.model ?? (cfg.provider === null ? "session default" : "provider default")}`,
+    `thinking=${cfg.effort ?? "default"}`,
+  ].join(" ");
 }
 
 export class ProgressLogger {
