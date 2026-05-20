@@ -74,12 +74,6 @@ function existingSubpath(base: string, child?: string): string | null {
   return existingPath(target);
 }
 
-function existingDirForFile(path: string | undefined): string | null {
-  if (path == null || path.length === 0) return null;
-  if (!existsSync(path)) return null;
-  return canonicalPath(dirname(path));
-}
-
 function workspaceRootFor(rootOrCwd: string): string {
   const resolved = resolve(rootOrCwd);
   if (!existsSync(resolved)) {
@@ -195,7 +189,6 @@ function sandboxProfilePath(rootOrCwd: string): string {
 function sandboxRuntimeReadRoots(root: string): string[] {
   const home = homedir();
   const execVersionRoot = existingPath(dirname(dirname(process.execPath)));
-  const currentScriptRoot = existingDirForFile(process.argv[1]);
   const piAgentDir = existingSubpath(home, ".pi");
   const ralpixHomeDir = existingSubpath(home, ".ralpix");
   const nvmDir = existingSubpath(home, ".nvm");
@@ -213,7 +206,6 @@ function sandboxRuntimeReadRoots(root: string): string[] {
     existingPath("/private/var/run"),
     existingPath("/opt/homebrew"),
     execVersionRoot,
-    currentScriptRoot,
     nvmDir,
     piAgentDir,
     ralpixHomeDir,
