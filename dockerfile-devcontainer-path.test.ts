@@ -123,9 +123,10 @@ void test("Docker image installs revdiff helpers and bootstraps the pinned binar
 
   assert.match(dockerfile, /curl/);
   assert.match(dockerfile, /ARG TARGETARCH/);
-  assert.match(dockerfile, /revdiff-common\.sh/);
-  assert.match(dockerfile, /install-revdiff\.sh/);
-  assert.match(dockerfile, /update-revdiff\.sh/);
+  assert.doesNotMatch(dockerfile, /cp docker\/pi-agent\/host-wrapper\.sh \/opt\/ralpix\/docker\/pi-agent\/host-wrapper\.sh/);
+  assert.doesNotMatch(dockerfile, /cp docker\/pi-agent\/revdiff-common\.sh \/opt\/ralpix\/docker\/pi-agent\/revdiff-common\.sh/);
+  assert.doesNotMatch(dockerfile, /cp docker\/pi-agent\/install-revdiff\.sh \/opt\/ralpix\/docker\/pi-agent\/install-revdiff\.sh/);
+  assert.doesNotMatch(dockerfile, /cp docker\/pi-agent\/update-revdiff\.sh \/opt\/ralpix\/docker\/pi-agent\/update-revdiff\.sh/);
   assert.match(dockerfile, /\/opt\/ralpix\/docker\/pi-agent\/install-revdiff\.sh/);
 });
 
