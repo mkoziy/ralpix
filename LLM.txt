@@ -29,7 +29,10 @@ Requirements for the copied devcontainer.json
 
 - The workspace must be mounted at `/workspace`.
 - `remoteEnv.PATH` must prepend `/workspace/.devcontainer/bin`.
-- The container should mount `${localEnv:HOME}/.pi/agent/auth.json` to `/home/pi/.pi/agent/auth.json`.
+- The container must mount a host auth file to `/home/pi/.pi/agent/auth.json`.
+- Prefer an absolute host path for the auth mount source if the devcontainer runner does not reliably expand `${localEnv:HOME}`.
+- When preparing the target project, detect the user's home directory on the host and write the auth mount source accordingly, for example `/Users/<user>/.pi/agent/auth.json` on macOS.
+- If absolute host home paths are undesirable, create a repo-local symlink such as `.devcontainer/host/pi-auth.json` pointing to the real host auth file and mount that stable repo-local path instead.
 
 Wrapper behavior
 
@@ -38,10 +41,14 @@ Wrapper behavior
 
 Host preparation
 
-1. Ensure the host auth file exists:
+1. Detect the host home directory path.
+2. Ensure the host auth file exists:
    `mkdir -p "$HOME/.pi/agent" && touch "$HOME/.pi/agent/auth.json"`
-2. Rebuild or reopen the target project in the devcontainer after copying the files.
-3. Inside the devcontainer, run `/login` in pi if OAuth auth is needed.
+3. Write the auth mount in `.devcontainer/devcontainer.json` using either:
+   - the detected absolute host path, or
+   - a repo-local symlink path that points at the host auth file
+4. Rebuild or reopen the target project in the devcontainer after copying the files.
+5. Inside the devcontainer, run `/login` in pi if OAuth auth is needed.
 
 Verification
 
@@ -54,3 +61,4 @@ Important behavior
 - `make` may run inside the devcontainer.
 - `bun` and `docker compose` invoked by the Makefile should run on the host through the wrapper scripts.
 - Do not rewrite project `Makefile` service URLs from `localhost` to `host.docker.internal` for this setup.
+- The published `ghcr.io/mkoziy/ralpix` image also restores `/workspace/.devcontainer/bin` from `/etc/profile.d` for login shells, so wrapper resolution survives devcontainer clients that do not apply `remoteEnv`.
