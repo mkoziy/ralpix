@@ -224,111 +224,100 @@ export async function runPiSubprocessPrompt(
   timeoutMs = 30 * 60 * 1000,
   hooks?: PiSubprocessHooks,
 ): Promise<PiSubprocessResult> {
-  try {
-    const invocation = getPiExecutable();
-    const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
-    const modelArg = buildModelArg(modelCfg);
+  const invocation = getPiExecutable();
+  const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
+  const modelArg = buildModelArg(modelCfg);
 
-    if (modelArg !== null) {
-      args.push("--model", modelArg);
-    } else if (modelCfg.provider !== null && modelCfg.provider.length > 0) {
-      args.push("--provider", modelCfg.provider);
-    }
-
-    if (includeEffort && modelCfg.effort !== null) {
-      args.push("--thinking", modelCfg.effort);
-    }
-
-    const { dir, filePath } = await writeTempPrompt(cwd, promptContent);
-    args.push(`@${filePath}`);
-    const sandboxed = sandboxPiInvocation(cwd, {
-      command: invocation.command,
-      args,
-    });
-
-    return await new Promise((resolvePromise) => {
-      hooks?.onLifecycle?.("pi subprocess started");
-      const proc = spawn(sandboxed.command, sandboxed.args, {
-        cwd,
-        env: sandboxed.env,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      let lastActivity = Date.now();
-      const timeout = setTimeout(() => {
-        hooks?.onLifecycle?.(`timeout after ${String(Math.round(timeoutMs / 1000))}s; terminating subprocess`);
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          if (!proc.killed) proc.kill("SIGKILL");
-        }, 5000);
-      }, timeoutMs);
-
-      const heartbeat = setInterval(() => {
-        const seconds = Math.round((Date.now() - lastActivity) / 1000);
-        if (seconds < 15) return;
-        hooks?.onLifecycle?.(`idle for ${String(seconds)}s waiting for subprocess output`);
-      }, 30000);
-
-      let stdout = "";
-      let stderr = "";
-      let stdoutBuffer = "";
-
-      proc.stdout.on("data", (data: Buffer) => {
-        const chunk = data.toString();
-        stdout += chunk;
-        stdoutBuffer += chunk;
-        lastActivity = Date.now();
-
-        const lines = stdoutBuffer.split("\n");
-        stdoutBuffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const event = parseJsonEvent(line);
-          if (event !== null) hooks?.onEvent?.(event);
-        }
-      });
-
-      proc.stderr.on("data", (data: Buffer) => {
-        stderr += data.toString();
-        lastActivity = Date.now();
-      });
-
-      proc.on("close", (code) => {
-        void cleanupTempDir(dir).finally(() => {
-          clearTimeout(timeout);
-          clearInterval(heartbeat);
-          hooks?.onLifecycle?.(`pi subprocess exited with code ${String(code ?? 1)}`);
-          resolvePromise({
-            exitCode: code ?? 1,
-            output: stdout,
-            error: stderr,
-            lastAssistantText: extractLastAssistantText(stdout.split("\n")),
-          });
-        });
-      });
-
-      proc.on("error", (error) => {
-        void cleanupTempDir(dir).finally(() => {
-          clearTimeout(timeout);
-          clearInterval(heartbeat);
-          hooks?.onLifecycle?.(`pi subprocess error: ${error.message}`);
-          resolvePromise({
-            exitCode: 1,
-            output: stdout,
-            error: error.message,
-            lastAssistantText: extractLastAssistantText(stdout.split("\n")),
-          });
-        });
-      });
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    hooks?.onLifecycle?.(`pi subprocess launcher error: ${message}`);
-    return {
-      exitCode: 1,
-      output: "",
-      error: message,
-      lastAssistantText: "",
-    };
+  if (modelArg !== null) {
+    args.push("--model", modelArg);
+  } else if (modelCfg.provider !== null && modelCfg.provider.length > 0) {
+    args.push("--provider", modelCfg.provider);
   }
+
+  if (includeEffort && modelCfg.effort !== null) {
+    args.push("--thinking", modelCfg.effort);
+  }
+
+  const { dir, filePath } = await writeTempPrompt(cwd, promptContent);
+  args.push(`@${filePath}`);
+  const sandboxed = sandboxPiInvocation(cwd, {
+    command: invocation.command,
+    args,
+  });
+
+  return await new Promise((resolvePromise) => {
+    hooks?.onLifecycle?.("pi subprocess started");
+    const proc = spawn(sandboxed.command, sandboxed.args, {
+      cwd,
+      env: sandboxed.env,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let lastActivity = Date.now();
+    const timeout = setTimeout(() => {
+      hooks?.onLifecycle?.(`timeout after ${String(Math.round(timeoutMs / 1000))}s; terminating subprocess`);
+      proc.kill("SIGTERM");
+      setTimeout(() => {
+        if (!proc.killed) proc.kill("SIGKILL");
+      }, 5000);
+    }, timeoutMs);
+
+    const heartbeat = setInterval(() => {
+      const seconds = Math.round((Date.now() - lastActivity) / 1000);
+      if (seconds < 15) return;
+      hooks?.onLifecycle?.(`idle for ${String(seconds)}s waiting for subprocess output`);
+    }, 30000);
+
+    let stdout = "";
+    let stderr = "";
+    let stdoutBuffer = "";
+
+    proc.stdout.on("data", (data: Buffer) => {
+      const chunk = data.toString();
+      stdout += chunk;
+      stdoutBuffer += chunk;
+      lastActivity = Date.now();
+
+      const lines = stdoutBuffer.split("\n");
+      stdoutBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const event = parseJsonEvent(line);
+        if (event !== null) hooks?.onEvent?.(event);
+      }
+    });
+
+    proc.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+      lastActivity = Date.now();
+    });
+
+    proc.on("close", (code) => {
+      void cleanupTempDir(dir).finally(() => {
+        clearTimeout(timeout);
+        clearInterval(heartbeat);
+        hooks?.onLifecycle?.(`pi subprocess exited with code ${String(code ?? 1)}`);
+        resolvePromise({
+          exitCode: code ?? 1,
+          output: stdout,
+          error: stderr,
+          lastAssistantText: extractLastAssistantText(stdout.split("\n")),
+        });
+      });
+    });
+
+    proc.on("error", (error) => {
+      void cleanupTempDir(dir).finally(() => {
+        clearTimeout(timeout);
+        clearInterval(heartbeat);
+        hooks?.onLifecycle?.(`pi subprocess error: ${error.message}`);
+        resolvePromise({
+          exitCode: 1,
+          output: stdout,
+          error: error.message,
+          lastAssistantText: extractLastAssistantText(stdout.split("\n")),
+        });
+      });
+    });
+  });
 }

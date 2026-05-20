@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -21,8 +20,6 @@ interface SandboxedInvocation {
   args: string[];
   env: NodeJS.ProcessEnv;
 }
-
-let cachedSandboxAvailabilityFailure: string | null | undefined;
 
 function canonicalPath(path: string): string {
   return realpathSync.native(path);
@@ -141,44 +138,6 @@ export function workspaceSandboxEnv(rootOrCwd: string): NodeJS.ProcessEnv {
   };
 }
 
-function firstNonEmptyLine(text: string): string | null {
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length > 0) return trimmed;
-  }
-  return null;
-}
-
-export function workspaceSandboxFailureDetail(input: unknown): string | null {
-  let text = "";
-  if (input instanceof Error) {
-    text = input.message;
-  } else if (typeof input === "string") {
-    text = input;
-  }
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return null;
-
-  if (trimmed.includes("workspace sandboxing currently requires macOS sandbox-exec")) {
-    return "workspace sandboxing currently requires macOS sandbox-exec";
-  }
-
-  if (trimmed.includes("sandbox-exec is required for workspace sandboxing")) {
-    return "sandbox-exec is required for workspace sandboxing";
-  }
-
-  if ((/sandbox_apply:\s*operation not permitted/i).test(trimmed)) {
-    return "workspace sandbox could not start because the host runtime denied sandbox-exec";
-  }
-
-  const firstLine = firstNonEmptyLine(trimmed);
-  if (firstLine !== null && (/^sandbox-exec:/i).test(firstLine)) {
-    return firstLine;
-  }
-
-  return null;
-}
-
 function sandboxProfilePath(rootOrCwd: string): string {
   return resolveWorkspacePath(rootOrCwd, join(...WORKSPACE_TMP_PARTS, SANDBOX_PROFILE_NAME), {
     kind: "create",
@@ -257,37 +216,6 @@ function ensureSandboxProfile(rootOrCwd: string): string {
   return profilePath;
 }
 
-function sandboxAvailabilityFailure(): string | null {
-  if (cachedSandboxAvailabilityFailure !== undefined) return cachedSandboxAvailabilityFailure;
-
-  if (process.platform !== "darwin") {
-    cachedSandboxAvailabilityFailure = "workspace sandboxing currently requires macOS sandbox-exec";
-    return cachedSandboxAvailabilityFailure;
-  }
-
-  const sandboxExec = "/usr/bin/sandbox-exec";
-  if (!existsSync(sandboxExec)) {
-    cachedSandboxAvailabilityFailure = "sandbox-exec is required for workspace sandboxing";
-    return cachedSandboxAvailabilityFailure;
-  }
-
-  const probe = spawnSync(sandboxExec, ["-p", "(version 1)\n(allow default)\n", "/usr/bin/true"], {
-    encoding: "utf-8",
-  });
-  if (probe.error instanceof Error) {
-    cachedSandboxAvailabilityFailure = workspaceSandboxFailureDetail(probe.error) ?? probe.error.message;
-    return cachedSandboxAvailabilityFailure;
-  }
-  if (probe.status !== 0) {
-    const detail = workspaceSandboxFailureDetail(probe.stderr) ?? workspaceSandboxFailureDetail(probe.stdout);
-    cachedSandboxAvailabilityFailure = detail ?? `sandbox-exec probe failed with exit code ${String(probe.status)}`;
-    return cachedSandboxAvailabilityFailure;
-  }
-
-  cachedSandboxAvailabilityFailure = null;
-  return null;
-}
-
 export function sandboxPiInvocation(
   rootOrCwd: string,
   invocation: PiInvocation,
@@ -298,14 +226,19 @@ export function sandboxPiInvocation(
     ...baseEnv,
     ...workspaceSandboxEnv(root),
   };
-  const availabilityFailure = sandboxAvailabilityFailure();
-  if (availabilityFailure !== null) {
-    throw new Error(`ralpix: ${availabilityFailure}`);
+
+  if (process.platform !== "darwin") {
+    throw new Error("ralpix: workspace sandboxing currently requires macOS sandbox-exec");
+  }
+
+  const sandboxExec = "/usr/bin/sandbox-exec";
+  if (!existsSync(sandboxExec)) {
+    throw new Error("ralpix: sandbox-exec is required for workspace sandboxing");
   }
 
   const profilePath = ensureSandboxProfile(root);
   return {
-    command: "/usr/bin/sandbox-exec",
+    command: sandboxExec,
     args: ["-f", profilePath, invocation.command, ...invocation.args],
     env,
   };

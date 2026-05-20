@@ -9,7 +9,6 @@ import { formatModelConfigForProgress } from "./logger.js";
 import { updatePlanTaskStatus } from "./parser.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
-import { workspaceSandboxFailureDetail } from "./workspace.js";
 
 import type { ProgressLogger } from "./logger.js";
 import type { ModelConfig, Plan, PlanTask, RalpixConfig, TaskResult } from "./types.js";
@@ -167,9 +166,6 @@ export async function executeTask(
       }
 
       lastError = result.summary;
-      if (workspaceSandboxFailureDetail(lastError) !== null) {
-        break;
-      }
       if (attempt <= config.maxRetries) {
         logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying (${lastError})`);
       }
