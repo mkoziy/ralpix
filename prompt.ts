@@ -8,8 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { ralpixHomeDir } from "./config.js";
-import { resolveWorkspacePath } from "./workspace.js";
+import { ralpixHomeDir, ralpixProjectDir } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Prompt resolution
@@ -25,10 +24,7 @@ const BUNDLED_DIR = join(__dirname, "bundled");
  */
 export function loadPrompt(name: string, cwd: string): string {
   const paths = [
-    resolveWorkspacePath(cwd, join(".ralpix", "prompts", `${name}.md`), {
-      kind: "create",
-      label: `project prompt ${name}`,
-    }),
+    join(ralpixProjectDir(cwd), "prompts", `${name}.md`),
     join(ralpixHomeDir(), "prompts", `${name}.md`),
     join(BUNDLED_DIR, "prompts", `${name}.md`),
   ];

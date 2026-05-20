@@ -4,17 +4,12 @@
 
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { EOL } from "node:os";
-import { dirname, join } from "node:path";
-
-import { resolveWorkspacePath } from "./workspace.js";
+import { dirname, join, resolve } from "node:path";
 
 import type { ModelConfig, Plan, PlanTask } from "./types.js";
 
 export function progressDirForCwd(cwd: string): string {
-  return resolveWorkspacePath(cwd, join(".ralpix", "progress"), {
-    kind: "create",
-    label: "progress directory",
-  });
+  return resolve(cwd, ".ralpix", "progress");
 }
 
 export function formatModelConfigForProgress(cfg: ModelConfig): string {

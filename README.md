@@ -14,6 +14,92 @@ ln -s $(pwd) ~/.pi/agent/extensions/ralpix
 pi install git:github.com/mkoziy/ralpix
 ```
 
+## Dev Container
+
+Recommended setup: run `pi` and `ralpix` inside your project's dev container, using the published `ralpix` image as the base. This repo ships a minimal example at `.devcontainer/devcontainer.json`:
+
+```json
+{
+  "name": "ralpix project",
+  "image": "ghcr.io/mkoziy/ralpix:latest",
+  "remoteUser": "pi",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/pi/.pi/agent/auth.json,type=bind"
+  ],
+  "runArgs": [
+    "--init"
+  ],
+  "remoteEnv": {
+    "RALPIX_HOST_BUN_BIN": "bun",
+    "RALPIX_HOST_DOCKER_BIN": "docker",
+    "RALPIX_HOST_BUN_MODE": "host",
+    "RALPIX_HOST_DOCKER_MODE": "host",
+    "RALPIX_HOST_SSH_TARGET": "${localEnv:USER}@host.docker.internal",
+    "RALPIX_HOST_WORKDIR": "${localWorkspaceFolder}",
+    "RALPIX_HOST_ALLOWED_ROOT": "${localWorkspaceFolder}",
+    "RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE": "1",
+    "RALPIX_WRAPPER_LOCAL_OVERRIDE_DIR": "/workspace/.devcontainer/bin",
+    "RALPIX_WRAPPER_DEBUG": "0"
+  }
+}
+```
+
+The published image now provides `bun` and `docker` wrappers on `PATH` by default. In host mode, those wrappers execute on the host through SSH while staying pinned to one configured host project root, so host-oriented commands such as `bun run --cwd api ...` and `docker compose ...` can keep using bind mounts and `localhost` service URLs without giving the agent arbitrary access to the rest of the host filesystem.
+
+Default wrapper environment:
+
+- `RALPIX_HOST_BUN_BIN=bun`
+- `RALPIX_HOST_DOCKER_BIN=docker`
+- `RALPIX_HOST_BUN_MODE=host`
+- `RALPIX_HOST_DOCKER_MODE=host`
+- `RALPIX_HOST_SSH_BIN=ssh`
+- `RALPIX_HOST_SSH_TARGET=host.docker.internal`
+- `RALPIX_HOST_WORKDIR=` host absolute project path, set per devcontainer
+- `RALPIX_HOST_ALLOWED_ROOT=` host absolute root allowed for execution, defaults to `RALPIX_HOST_WORKDIR`
+- `RALPIX_HOST_PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`
+- `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1`
+- `RALPIX_WRAPPER_LOCAL_OVERRIDE_DIR=/workspace/.devcontainer/bin`
+- `RALPIX_WRAPPER_DEBUG=0`
+
+Optional project-local overrides:
+
+- If `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1` and `/workspace/.devcontainer/bin/bun` exists, that project-local wrapper takes precedence over the image default.
+- If `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1` and `/workspace/.devcontainer/bin/docker` exists, that project-local wrapper takes precedence over the image default.
+- If no project-local override exists, the image defaults SSH to `RALPIX_HOST_SSH_TARGET`, canonicalize `RALPIX_HOST_WORKDIR`, verify it is inside `RALPIX_HOST_ALLOWED_ROOT`, and then run the requested host `bun` or `docker` binary there.
+- If `RALPIX_HOST_WORKDIR` is missing or points outside `RALPIX_HOST_ALLOWED_ROOT`, the wrappers fail before running the host command.
+- If you want container-local execution instead, set `RALPIX_HOST_BUN_MODE=container` or `RALPIX_HOST_DOCKER_MODE=container`.
+
+### LLM setup flow
+
+If you want an LLM to bootstrap `ralpix` in another project, give it these instructions:
+
+1. Copy `.devcontainer/devcontainer.json` from this repo into the target project's `.devcontainer/devcontainer.json`.
+2. Keep the target project's workspace mounted at `/workspace`.
+3. Create the host auth file if it does not exist: `mkdir -p "$HOME/.pi/agent" && touch "$HOME/.pi/agent/auth.json"`.
+4. Rebuild or reopen the target project in the dev container.
+5. Enable SSH access on the host and make sure the container user can authenticate to `RALPIX_HOST_SSH_TARGET` without prompts.
+6. Inside the dev container, run `/login` in `pi` if OAuth auth is needed.
+7. Verify that `bun` and `docker` resolve on `PATH` before running project `make` targets.
+8. Only create `.devcontainer/bin/` if that project needs to override the image-provided wrappers.
+
+The intended outcome is:
+
+- `pi` and `ralpix` run inside the dev container
+- `bun ...` and `docker compose ...` invoked by the project's `Makefile` execute on the host through SSH while staying inside the configured host project root
+- the project can keep its existing `Makefile`, bind mounts, and `localhost` service URLs unchanged
+- the published `ghcr.io/mkoziy/ralpix` image prepends its built-in wrapper directory to `PATH`, and interactive login shells also restore `/workspace/.devcontainer/bin` from `/etc/profile.d` when a project-local override directory exists
+
+Create the Pi auth file on the host before starting the container:
+
+```bash
+mkdir -p "$HOME/.pi/agent"
+touch "$HOME/.pi/agent/auth.json"
+```
+
+Then open the repo in a dev container and run `/login` inside `pi` if you need ChatGPT Plus/Pro OAuth for `openai-codex/...` models. Mounting only `auth.json` preserves the image's bundled `AGENTS.md` and `settings.json`.
+
 ## Docker
 
 Build an end-user image with `pi`, `ralpix`, `revdiff`, `ripgrep`, `fd`, and `fzf` installed:
@@ -612,9 +698,10 @@ ln -s $(pwd) ~/.pi/agent/extensions/ralpix
 ```
 
 ### Plan not found
-Use paths that stay inside the current workspace:
+Use absolute or relative paths from the current working directory:
 ```bash
 /ralpix docs/plans/my-plan.md
+/ralpix /absolute/path/to/plan.md
 ```
 
 ### Task execution hangs
