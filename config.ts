@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { THINKING_LEVELS } from "./types.js";
+import { resolveWorkspacePath } from "./workspace.js";
 
 import type { ModelConfig, ModelPhase, RalpixConfig, ThinkingLevel } from "./types.js";
 
@@ -43,7 +44,7 @@ export function ralpixHomeDir(): string {
 }
 
 export function ralpixProjectDir(cwd: string): string {
-  return join(cwd, ".ralpix");
+  return resolveWorkspacePath(cwd, ".ralpix", { kind: "create", label: "project config directory" });
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +197,10 @@ export function loadConfig(cwd: string): RalpixConfig {
   }
 
   // Merge project-local
-  const projectPath = join(ralpixProjectDir(cwd), CONFIG_FILE);
+  const projectPath = resolveWorkspacePath(cwd, join(".ralpix", CONFIG_FILE), {
+    kind: "create",
+    label: "project config",
+  });
   const projectOverrides = readConfigFile(projectPath);
   if (projectOverrides !== null) {
     config = mergeConfig(config, projectOverrides);
@@ -381,7 +385,10 @@ export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): 
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  const configPath = join(dir, CONFIG_FILE);
+  const configPath = resolveWorkspacePath(cwd, join(".ralpix", CONFIG_FILE), {
+    kind: "create",
+    label: "project config",
+  });
   const existing = (readConfigFile(configPath) ?? {}) as Record<string, unknown>;
   const merged = { ...existing, ...updates } as Record<string, unknown>;
   writeFileSync(configPath, JSON.stringify(merged, null, 2), UTF8_ENCODING);

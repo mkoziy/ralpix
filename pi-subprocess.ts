@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildModelArg } from "./config.js";
+import { sandboxPiInvocation, workspaceTempDir } from "./workspace.js";
 
 import type { ModelConfig } from "./types.js";
 
@@ -177,8 +177,8 @@ function getPiExecutable(): PiInvocation {
   return { command: "pi", args: [] };
 }
 
-async function writeTempPrompt(content: string): Promise<{ dir: string; filePath: string }> {
-  const dir = await fs.mkdtemp(join(tmpdir(), "ralpix-prompt-"));
+async function writeTempPrompt(cwd: string, content: string): Promise<{ dir: string; filePath: string }> {
+  const dir = await fs.mkdtemp(join(workspaceTempDir(cwd), "prompt-"));
   const filePath = join(dir, "prompt.md");
   await fs.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
   return { dir, filePath };
@@ -238,13 +238,18 @@ export async function runPiSubprocessPrompt(
     args.push("--thinking", modelCfg.effort);
   }
 
-  const { dir, filePath } = await writeTempPrompt(promptContent);
+  const { dir, filePath } = await writeTempPrompt(cwd, promptContent);
   args.push(`@${filePath}`);
+  const sandboxed = sandboxPiInvocation(cwd, {
+    command: invocation.command,
+    args,
+  });
 
   return await new Promise((resolvePromise) => {
     hooks?.onLifecycle?.("pi subprocess started");
-    const proc = spawn(invocation.command, args, {
+    const proc = spawn(sandboxed.command, sandboxed.args, {
       cwd,
+      env: sandboxed.env,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });

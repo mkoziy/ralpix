@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-TOOL_NAME="docker"
-DEFAULT_HOST_BIN="docker"
-
-source "/opt/ralpix/docker/pi-agent/host-wrapper.sh"

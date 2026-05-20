@@ -24,6 +24,7 @@ import { ProgressLogger } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
+import { resolveWorkspacePath } from "./workspace.js";
 
 import type { RalpixState } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -263,7 +264,10 @@ async function runPlan(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  const planPath = resolve(ctx.cwd, normalizePlanPathArg(rawPath));
+  const planPath = resolveWorkspacePath(ctx.cwd, normalizePlanPathArg(rawPath), {
+    kind: "read",
+    label: "plan",
+  });
 
   if (!existsSync(planPath)) {
     ctx.ui.notify(`Plan file not found: ${planPath}`, "error");

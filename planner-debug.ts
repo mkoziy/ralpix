@@ -3,9 +3,13 @@ import { EOL } from "node:os";
 import { join } from "node:path";
 
 import { progressDirForCwd } from "./logger.js";
+import { resolveWorkspacePath } from "./workspace.js";
 
 export function planCreationDebugFilePath(cwd: string): string {
-  return join(progressDirForCwd(cwd), "plan-creation-debug.txt");
+  return resolveWorkspacePath(cwd, join(".ralpix", "progress", "plan-creation-debug.txt"), {
+    kind: "create",
+    label: "plan creation debug log",
+  });
 }
 
 export function appendPlanCreationDebug(cwd: string, entry: string): void {

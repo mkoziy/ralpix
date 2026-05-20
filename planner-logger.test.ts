@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { formatModelConfigForProgress, progressDirForCwd } from "./logger.js";
@@ -10,16 +13,18 @@ import {
 } from "./planner-prompt.js";
 
 void test("progressDirForCwd uses project-local .ralpix/progress", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ralpix-progress-")));
   assert.equal(
-    progressDirForCwd("/tmp/example"),
-    "/tmp/example/.ralpix/progress",
+    progressDirForCwd(root),
+    join(root, ".ralpix", "progress"),
   );
 });
 
 void test("planCreationDebugFilePath uses project-local progress directory", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ralpix-progress-")));
   assert.equal(
-    planCreationDebugFilePath("/tmp/example"),
-    "/tmp/example/.ralpix/progress/plan-creation-debug.txt",
+    planCreationDebugFilePath(root),
+    join(root, ".ralpix", "progress", "plan-creation-debug.txt"),
   );
 });
 

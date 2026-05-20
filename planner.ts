@@ -9,14 +9,14 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync, rmdirSync } from "node:fs";
 import * as fs from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { buildModelArg, resolveModel } from "./config.js";
 import { parsePlan } from "./parser.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { plannerLaunchConfigs } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
+import { resolveWorkspacePath, sandboxPiInvocation, workspaceTempDir } from "./workspace.js";
 
 import type { RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -59,8 +59,12 @@ function getPiExecutable(): { command: string; args: string[] } {
   return { command: "pi", args: [] };
 }
 
-async function writeTempFile(prefix: string, content: string): Promise<{ dir: string; filePath: string }> {
-  const dir = await fs.mkdtemp(join(tmpdir(), "ralpix-plan-"));
+async function writeTempFile(
+  cwd: string,
+  prefix: string,
+  content: string,
+): Promise<{ dir: string; filePath: string }> {
+  const dir = await fs.mkdtemp(join(workspaceTempDir(cwd), "plan-"));
   const filePath = join(dir, `${prefix}.md`);
   await fs.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
   return { dir, filePath };
@@ -187,7 +191,7 @@ function stripMarkdownFence(text: string): string {
   return fenceMatch?.[1]?.trim() ?? trimmed;
 }
 
-function validatePlanDraft(content: string): { ok: true } | { ok: false; reason: string } {
+function validatePlanDraft(cwd: string, content: string): { ok: true } | { ok: false; reason: string } {
   if (!(/^#\s+plan:\s+/im).test(content)) {
     return { ok: false, reason: "missing `# Plan:` title" };
   }
@@ -201,7 +205,7 @@ function validatePlanDraft(content: string): { ok: true } | { ok: false; reason:
     return { ok: false, reason: "missing `### Task N:` sections" };
   }
 
-  const tempDir = mkdtempSync(join(tmpdir(), "ralpix-plan-validate-"));
+  const tempDir = mkdtempSync(join(workspaceTempDir(cwd), "plan-validate-"));
   const tempPath = join(tempDir, "draft.md");
 
   try {
@@ -301,15 +305,20 @@ async function runPlannerProcess(
   if (launchConfig.includeEffort && modelCfg.effort !== null) {
     args.push("--thinking", modelCfg.effort);
   }
-  const { dir, filePath } = await writeTempFile(`plan-round-${round}`, promptContent);
+  const { dir, filePath } = await writeTempFile(cwd, `plan-round-${round}`, promptContent);
   args.push(`@${filePath}`);
   const modelLabel = launchConfig.modelPhase === null ? "default" : (modelArg ?? modelCfg.provider ?? "default");
   const effortLabel = launchConfig.includeEffort ? (modelCfg.effort ?? "default") : "default";
   appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared model=${modelLabel} effort=${effortLabel}`);
+  const sandboxed = sandboxPiInvocation(cwd, {
+    command: invocation.command,
+    args,
+  });
 
   return new Promise((resolvePromise) => {
-    const proc = spawn(invocation.command, args, {
+    const proc = spawn(sandboxed.command, sandboxed.args, {
       cwd,
+      env: sandboxed.env,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -438,7 +447,10 @@ export async function runPlanCreation(
   let feedback: string | undefined;
   const clarifications: Array<{ question: string; answer: string }> = [];
   const launchConfigs = plannerLaunchConfigs();
-  const plansDir = resolve(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans");
+  const plansDir = resolveWorkspacePath(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans", {
+    kind: "create",
+    label: "plans directory",
+  });
   const createdAt = new Date();
   if (!existsSync(plansDir)) {
     mkdirSync(plansDir, { recursive: true });
@@ -493,7 +505,7 @@ export async function runPlanCreation(
       return null;
     }
 
-    const draftValidation = validatePlanDraft(draft);
+    const draftValidation = validatePlanDraft(ctx.cwd, draft);
     if (!draftValidation.ok) {
       appendPlanCreationDebug(ctx.cwd, `round ${round}: invalid draft ${draftValidation.reason}`);
       previousDraft = draft;
@@ -515,7 +527,7 @@ export async function runPlanCreation(
       }
       if (review.action === "reload") {
         const currentDraft = readFileSync(draftPath, "utf-8");
-        const validation = validatePlanDraft(currentDraft);
+        const validation = validatePlanDraft(ctx.cwd, currentDraft);
         if (!validation.ok) {
           ctx.ui.notify(`Plan file is invalid: ${validation.reason}`, "error");
           continue;
@@ -525,7 +537,7 @@ export async function runPlanCreation(
       }
       if (review.action === "accept") {
         const currentDraft = readFileSync(draftPath, "utf-8");
-        const validation = validatePlanDraft(currentDraft);
+        const validation = validatePlanDraft(ctx.cwd, currentDraft);
         if (!validation.ok) {
           ctx.ui.notify(`Plan file is invalid: ${validation.reason}`, "error");
           continue;
