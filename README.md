@@ -32,58 +32,53 @@ Recommended setup: run `pi` and `ralpix` inside your project's dev container, us
     "--init"
   ],
   "remoteEnv": {
-    "PATH": "/workspace/.devcontainer/bin:${containerEnv:PATH}"
+    "RALPIX_HOST_BUN_BIN": "bun",
+    "RALPIX_HOST_DOCKER_BIN": "docker",
+    "RALPIX_HOST_BUN_MODE": "host",
+    "RALPIX_HOST_DOCKER_MODE": "host",
+    "RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE": "1",
+    "RALPIX_WRAPPER_LOCAL_OVERRIDE_DIR": "/workspace/.devcontainer/bin",
+    "RALPIX_WRAPPER_DEBUG": "0"
   }
 }
 ```
 
-Add lightweight host-forwarding wrappers at `.devcontainer/bin/bun` and `.devcontainer/bin/docker` when you want `make` to run in the dev container but `bun ...` and `docker compose ...` to execute on the host:
+The published image now provides host-forwarding `bun` and `docker` wrappers on `PATH` by default. A project `Makefile` can keep using host-oriented commands such as `bun run --cwd api ...` and `docker compose ...` from inside the dev container, without rewriting paths or changing `localhost`-based service URLs.
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+Default wrapper environment:
 
-exec pi --host bun "$@"
-```
+- `RALPIX_HOST_BUN_BIN=bun`
+- `RALPIX_HOST_DOCKER_BIN=docker`
+- `RALPIX_HOST_BUN_MODE=host`
+- `RALPIX_HOST_DOCKER_MODE=host`
+- `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1`
+- `RALPIX_WRAPPER_LOCAL_OVERRIDE_DIR=/workspace/.devcontainer/bin`
+- `RALPIX_WRAPPER_DEBUG=0`
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
+Optional project-local overrides:
 
-exec pi --host docker "$@"
-```
-
-With that setup, a project `Makefile` can keep using host-oriented commands such as `bun run --cwd api ...` and `docker compose ...` from inside the dev container, without rewriting paths or changing `localhost`-based service URLs.
+- If `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1` and `/workspace/.devcontainer/bin/bun` exists, that project-local wrapper takes precedence over the image default.
+- If `RALPIX_WRAPPER_ENABLE_LOCAL_OVERRIDE=1` and `/workspace/.devcontainer/bin/docker` exists, that project-local wrapper takes precedence over the image default.
+- If no project-local override exists, the image defaults run `pi --host bun "$@"` and `pi --host docker "$@"`.
 
 ### LLM setup flow
 
 If you want an LLM to bootstrap `ralpix` in another project, give it these instructions:
 
 1. Copy `.devcontainer/devcontainer.json` from this repo into the target project's `.devcontainer/devcontainer.json`.
-2. Copy `.devcontainer/bin/bun` and `.devcontainer/bin/docker` from this repo into the target project's `.devcontainer/bin/`.
-3. Preserve executable bits on both wrapper scripts.
-4. Keep the target project's workspace mounted at `/workspace`.
-5. Create the host auth file if it does not exist: `mkdir -p "$HOME/.pi/agent" && touch "$HOME/.pi/agent/auth.json"`.
-6. Rebuild or reopen the target project in the dev container.
-7. Inside the dev container, run `/login` in `pi` if OAuth auth is needed.
-8. Verify that `bun` and `docker` resolve through `/workspace/.devcontainer/bin/` before running project `make` targets.
+2. Keep the target project's workspace mounted at `/workspace`.
+3. Create the host auth file if it does not exist: `mkdir -p "$HOME/.pi/agent" && touch "$HOME/.pi/agent/auth.json"`.
+4. Rebuild or reopen the target project in the dev container.
+5. Inside the dev container, run `/login` in `pi` if OAuth auth is needed.
+6. Verify that `bun` and `docker` resolve on `PATH` before running project `make` targets.
+7. Only create `.devcontainer/bin/` if that project needs to override the image-provided wrappers.
 
 The intended outcome is:
 
 - `pi` and `ralpix` run inside the dev container
 - `bun ...` and `docker compose ...` invoked by the project's `Makefile` execute on the host through `pi --host`
 - the project can keep its existing `Makefile`, bind mounts, and `localhost` service URLs unchanged
-- the published `ghcr.io/mkoziy/ralpix` image also prepends `/workspace/.devcontainer/bin` from `/etc/profile.d`, so interactive login shells still see the wrappers if a devcontainer client fails to apply `remoteEnv`
-
-For a target project, the copied files should look like this:
-
-```text
-.devcontainer/
-├── bin/
-│   ├── bun
-│   └── docker
-└── devcontainer.json
-```
+- the published `ghcr.io/mkoziy/ralpix` image prepends its built-in wrapper directory to `PATH`, and interactive login shells also restore `/workspace/.devcontainer/bin` from `/etc/profile.d` when a project-local override directory exists
 
 Create the Pi auth file on the host before starting the container:
 
@@ -96,7 +91,7 @@ Then open the repo in a dev container and run `/login` inside `pi` if you need C
 
 ## Docker
 
-Build an end-user image with `pi`, `ralpix`, `ripgrep`, `fd`, and `fzf` installed:
+Build an end-user image with `pi`, `ralpix`, `revdiff`, `ripgrep`, `fd`, and `fzf` installed:
 
 ```bash
 docker build -t ralpix-pi .
@@ -171,6 +166,8 @@ docker run --rm -it \
 
 Notes:
 - The image registers this checkout as a global Pi package via `~/.pi/agent/settings.json`.
+- The image bakes in `revdiff` at `REVDIFF_VERSION` and `start-pi` checks `umputun/revdiff` for a newer release on startup. If an update check or download fails, the error is printed and startup continues.
+- `revdiff` release assets are selected for the image architecture via `TARGETARCH`, and the installed binary lives in `/home/pi/.local/bin` so the `pi` user can replace it during startup updates.
 - `ripgrep`, `fd`, and `fzf` are installed in the container, and the bundled global `~/.pi/agent/AGENTS.md` tells Pi to prefer `rg`/`rg --files`.
 - `FZF_DEFAULT_COMMAND` and `FZF_CTRL_T_COMMAND` are set to use `rg --files --hidden --follow --glob '!.git'`.
 - On container startup, the image generates `~/.pi/agent/APPEND_SYSTEM.md` with the current UTC date, a configurable knowledge cutoff, and a freshness protocol for version/API/current-state questions. This is the Pi equivalent of the temporal-context pattern described in the linked blog post.

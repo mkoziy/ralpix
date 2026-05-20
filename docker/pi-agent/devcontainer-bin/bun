@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TOOL_NAME="bun"
+DEFAULT_HOST_BIN="bun"
+
+source "/opt/ralpix/docker/pi-agent/host-wrapper.sh"
