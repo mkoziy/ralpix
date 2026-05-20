@@ -43,26 +43,6 @@ void test("Docker image installs a shell hook that prepends devcontainer wrapper
   );
   assert.match(
     dockerfile,
-    /ENV RALPIX_HOST_SSH_BIN=ssh/,
-  );
-  assert.match(
-    dockerfile,
-    /ENV RALPIX_HOST_SSH_TARGET=host\.docker\.internal/,
-  );
-  assert.match(
-    dockerfile,
-    /ENV RALPIX_HOST_WORKDIR=/,
-  );
-  assert.match(
-    dockerfile,
-    /ENV RALPIX_HOST_ALLOWED_ROOT=/,
-  );
-  assert.match(
-    dockerfile,
-    /ENV RALPIX_HOST_PATH=\/usr\/local\/bin:\/opt\/homebrew\/bin:\/usr\/bin:\/bin/,
-  );
-  assert.match(
-    dockerfile,
     /ENV REVDIFF_VERSION=v1\.3\.0/,
   );
   assert.match(
@@ -134,14 +114,7 @@ void test("shared host wrapper supports local overrides and env-driven host forw
   assert.match(wrapper, /exec "\${override_path}" "\$@"/);
   assert.match(wrapper, /mode_var="RALPIX_HOST_\${tool_upper}_MODE"/);
   assert.match(wrapper, /bin_var="RALPIX_HOST_\${tool_upper}_BIN"/);
-  assert.match(wrapper, /ssh_bin="\${RALPIX_HOST_SSH_BIN:-ssh}"/);
-  assert.match(wrapper, /ssh_target="\${RALPIX_HOST_SSH_TARGET:-host\.docker\.internal}"/);
-  assert.match(wrapper, /host_workdir="\${RALPIX_HOST_WORKDIR:-}"/);
-  assert.match(wrapper, /allowed_root="\${RALPIX_HOST_ALLOWED_ROOT:-\$host_workdir}"/);
-  assert.match(wrapper, /host_path="\${RALPIX_HOST_PATH:-\/usr\/local\/bin:\/opt\/homebrew\/bin:\/usr\/bin:\/bin}"/);
-  assert.match(wrapper, /exec "\${ssh_bin}"/);
-  assert.match(wrapper, /host workdir is required for host mode/);
-  assert.match(wrapper, /outside allowed root/);
+  assert.match(wrapper, /exec pi --host "\${host_bin}" "\$@"/);
   assert.match(wrapper, /Unsupported %s wrapper mode: %s/);
 });
 

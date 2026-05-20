@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatModelConfigForProgress, progressDirForCwd } from "./logger.js";
+import { progressDirForCwd } from "./logger.js";
 import { planCreationDebugFilePath } from "./planner-debug.js";
 import {
   buildPlanCreationPrompt,
@@ -20,35 +20,6 @@ void test("planCreationDebugFilePath uses project-local progress directory", () 
   assert.equal(
     planCreationDebugFilePath("/tmp/example"),
     "/tmp/example/.ralpix/progress/plan-creation-debug.txt",
-  );
-});
-
-void test("formatModelConfigForProgress prints provider model and thinking", () => {
-  assert.equal(
-    formatModelConfigForProgress({
-      model: "openai-codex/gpt-5.5",
-      provider: null,
-      effort: "high",
-    }),
-    "provider=openai-codex model=gpt-5.5 thinking=high",
-  );
-
-  assert.equal(
-    formatModelConfigForProgress({
-      model: null,
-      provider: "anthropic",
-      effort: null,
-    }),
-    "provider=anthropic model=provider default thinking=default",
-  );
-
-  assert.equal(
-    formatModelConfigForProgress({
-      model: null,
-      provider: null,
-      effort: null,
-    }),
-    "provider=default model=session default thinking=default",
   );
 });
 

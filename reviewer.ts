@@ -5,7 +5,6 @@
 import { execSync } from "node:child_process";
 
 import { buildSessionModelChange, resolveModel } from "./config.js";
-import { formatModelConfigForProgress } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
@@ -180,10 +179,8 @@ async function runFirstReview(
   defaultBranch: string,
 ): Promise<string> {
   const modelCfg = resolveModel(config, "review-first");
-  logger.logReview(
-    "first",
-    `STARTED (5 agents, comprehensive, ${formatModelConfigForProgress(modelCfg)})`,
-  );
+  const effortSuffix = modelCfg.effort === null ? "" : ` — effort: ${modelCfg.effort}`;
+  logger.logReview("first", `STARTED (5 agents, comprehensive)${effortSuffix}`);
 
   const result = await runReviewProcess(
     ctx, "review-first", config, plan, logger, defaultBranch, "first",
@@ -208,12 +205,8 @@ async function runReviewLoop(
   defaultBranch: string,
 ): Promise<string> {
   const maxIterations = config.reviewMaxIterations === 0 ? 5 : config.reviewMaxIterations;
-  const modelCfg = resolveModel(config, "review-second");
 
-  logger.logReview(
-    "loop",
-    `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation, ${formatModelConfigForProgress(modelCfg)})`,
-  );
+  logger.logReview("loop", `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
 
   for (let i = 0; i < maxIterations; i++) {
     const headBefore = getHeadHash(ctx.cwd);
@@ -223,7 +216,9 @@ async function runReviewLoop(
       return msg;
     }
 
-    logger.logReview("loop", `Iteration ${i + 1}/${maxIterations} — running review...`);
+    const modelCfg = resolveModel(config, "review-second");
+    const effortInfo = modelCfg.effort === null ? "" : ` (effort: ${modelCfg.effort})`;
+    logger.logReview("loop", `Iteration ${i + 1}/${maxIterations} — running review...${effortInfo}`);
 
     const result = await runReviewProcess(
       ctx, "review-second", config, plan, logger, defaultBranch, "second",
@@ -279,7 +274,7 @@ async function runExternalReviewLoop(
 
   logger.logExternalReview(
     "loop",
-    `STARTED (reviewer: ${reviewerName}, max ${maxIterations} iterations, patience: ${patience}, ${formatModelConfigForProgress(externalModelCfg)})`,
+    `STARTED (reviewer: ${reviewerName}, max ${maxIterations} iterations, patience: ${patience})`,
   );
 
   let unchangedRounds = 0;
@@ -310,7 +305,6 @@ async function runExternalReviewLoop(
       ].join("\n");
     }
 
-    const evalModelCfg = resolveModel(config, "external-eval");
     logger.logExternalReview("review", `Iteration ${i + 1}/${maxIterations} — running external reviewer...`);
 
     const reviewResult = await runReviewSession(ctx, reviewPrompt, "external", externalModelCfg);
@@ -331,10 +325,7 @@ async function runExternalReviewLoop(
     lastReviewHead = getHeadHash(ctx.cwd);
 
     const headBefore = getHeadHash(ctx.cwd);
-    logger.logExternalReview(
-      "eval",
-      `Iteration ${i + 1} — evaluating findings... (${formatModelConfigForProgress(evalModelCfg)})`,
-    );
+    logger.logExternalReview("eval", `Iteration ${i + 1} — evaluating findings...`);
 
     const evalResult = await runReviewProcess(
       ctx,

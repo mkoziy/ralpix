@@ -4,8 +4,7 @@
 
 import { execSync } from "node:child_process";
 
-import { resolveModel } from "./config.js";
-import { formatModelConfigForProgress } from "./logger.js";
+import { buildModelArg, resolveModel } from "./config.js";
 import { updatePlanTaskStatus } from "./parser.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
@@ -139,8 +138,8 @@ export async function executeTask(
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
-      const progressModelLabel = formatModelConfigForProgress(modelCfg);
-      logger.logTaskInfo(task, `attempt ${attempt} launched (${progressModelLabel})`);
+      const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
+      logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
       ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
       const result = await runTaskSession(ctx, prompt, modelCfg, (detail) => {
         logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
