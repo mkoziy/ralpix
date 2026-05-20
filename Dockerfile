@@ -51,6 +51,10 @@ COPY . .
 RUN printf '{\n  "packages": [\n    "/opt/ralpix"\n  ]\n}\n' > "${PI_AGENT_DIR}/settings.json" \
   && cp docker/pi-agent/AGENTS.md "${PI_AGENT_DIR}/AGENTS.md" \
   && mkdir -p "${RALPIX_DEVCONTAINER_BIN_DIR}" \
+  && cp docker/pi-agent/host-wrapper.sh /opt/ralpix/docker/pi-agent/host-wrapper.sh \
+  && cp docker/pi-agent/revdiff-common.sh /opt/ralpix/docker/pi-agent/revdiff-common.sh \
+  && cp docker/pi-agent/install-revdiff.sh /opt/ralpix/docker/pi-agent/install-revdiff.sh \
+  && cp docker/pi-agent/update-revdiff.sh /opt/ralpix/docker/pi-agent/update-revdiff.sh \
   && cp docker/pi-agent/devcontainer-bin/bun "${RALPIX_DEVCONTAINER_BIN_DIR}/bun" \
   && cp docker/pi-agent/devcontainer-bin/docker "${RALPIX_DEVCONTAINER_BIN_DIR}/docker" \
   && cp docker/pi-agent/devcontainer-path.sh /etc/profile.d/devcontainer-path.sh \
