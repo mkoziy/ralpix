@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   assertWorkspacePath,
   resolveWorkspacePath,
+  workspaceSandboxFailureDetail,
   workspaceSandboxEnv,
 } from "./workspace.js";
 
@@ -62,4 +63,18 @@ void test("workspaceSandboxEnv redirects temporary files into the project", () =
   assert.equal(tempDir, join(canonicalRoot, ".ralpix", "tmp"));
   assert.equal(tmp, join(canonicalRoot, ".ralpix", "tmp"));
   assert.equal(temp, join(canonicalRoot, ".ralpix", "tmp"));
+});
+
+void test("workspaceSandboxFailureDetail detects sandbox-exec host denial", () => {
+  assert.equal(
+    workspaceSandboxFailureDetail("sandbox-exec: sandbox_apply: Operation not permitted"),
+    "workspace sandbox could not start because the host runtime denied sandbox-exec",
+  );
+});
+
+void test("workspaceSandboxFailureDetail detects unsupported platform message", () => {
+  assert.equal(
+    workspaceSandboxFailureDetail("ralpix: workspace sandboxing currently requires macOS sandbox-exec"),
+    "workspace sandboxing currently requires macOS sandbox-exec",
+  );
 });

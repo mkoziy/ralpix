@@ -16,7 +16,7 @@ import { parsePlan } from "./parser.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { plannerLaunchConfigs } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
-import { resolveWorkspacePath, sandboxPiInvocation, workspaceTempDir } from "./workspace.js";
+import { resolveWorkspacePath, sandboxPiInvocation, workspaceSandboxFailureDetail, workspaceTempDir } from "./workspace.js";
 
 import type { RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -291,99 +291,109 @@ async function runPlannerProcess(
   launchConfig: { modelPhase: "plan" | "task" | null; includeEffort: boolean },
 ): Promise<PlannerProcessResult> {
   appendPlanCreationDebug(cwd, `round ${round}: subprocess start`);
-  const invocation = getPiExecutable();
-  const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
-  const modelCfg = launchConfig.modelPhase === null
-    ? { model: null, provider: null, effort: null }
-    : resolveModel(config, launchConfig.modelPhase);
-  const modelArg = buildModelArg(modelCfg);
-  if (launchConfig.modelPhase !== null && modelArg !== null) {
-    args.push("--model", modelArg);
-  } else if (launchConfig.modelPhase !== null && modelCfg.provider !== null && modelCfg.provider.length > 0) {
-    args.push("--provider", modelCfg.provider);
-  }
-  if (launchConfig.includeEffort && modelCfg.effort !== null) {
-    args.push("--thinking", modelCfg.effort);
-  }
-  const { dir, filePath } = await writeTempFile(cwd, `plan-round-${round}`, promptContent);
-  args.push(`@${filePath}`);
-  const modelLabel = launchConfig.modelPhase === null ? "default" : (modelArg ?? modelCfg.provider ?? "default");
-  const effortLabel = launchConfig.includeEffort ? (modelCfg.effort ?? "default") : "default";
-  appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared model=${modelLabel} effort=${effortLabel}`);
-  const sandboxed = sandboxPiInvocation(cwd, {
-    command: invocation.command,
-    args,
-  });
-
-  return new Promise((resolvePromise) => {
-    const proc = spawn(sandboxed.command, sandboxed.args, {
-      cwd,
-      env: sandboxed.env,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const timeout = setTimeout(() => {
-      appendPlanCreationDebug(cwd, `round ${round}: subprocess timeout`);
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        if (!proc.killed) proc.kill("SIGKILL");
-      }, 5000);
-    }, 120000);
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
+  try {
+    const invocation = getPiExecutable();
+    const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
+    const modelCfg = launchConfig.modelPhase === null
+      ? { model: null, provider: null, effort: null }
+      : resolveModel(config, launchConfig.modelPhase);
+    const modelArg = buildModelArg(modelCfg);
+    if (launchConfig.modelPhase !== null && modelArg !== null) {
+      args.push("--model", modelArg);
+    } else if (launchConfig.modelPhase !== null && modelCfg.provider !== null && modelCfg.provider.length > 0) {
+      args.push("--provider", modelCfg.provider);
+    }
+    if (launchConfig.includeEffort && modelCfg.effort !== null) {
+      args.push("--thinking", modelCfg.effort);
+    }
+    const { dir, filePath } = await writeTempFile(cwd, `plan-round-${round}`, promptContent);
+    args.push(`@${filePath}`);
+    const modelLabel = launchConfig.modelPhase === null ? "default" : (modelArg ?? modelCfg.provider ?? "default");
+    const effortLabel = launchConfig.includeEffort ? (modelCfg.effort ?? "default") : "default";
+    appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared model=${modelLabel} effort=${effortLabel}`);
+    const sandboxed = sandboxPiInvocation(cwd, {
+      command: invocation.command,
+      args,
     });
 
-    proc.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
+    return await new Promise((resolvePromise) => {
+      const proc = spawn(sandboxed.command, sandboxed.args, {
+        cwd,
+        env: sandboxed.env,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const timeout = setTimeout(() => {
+        appendPlanCreationDebug(cwd, `round ${round}: subprocess timeout`);
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) proc.kill("SIGKILL");
+        }, 5000);
+      }, 120000);
 
-    proc.on("close", (code) => {
-      try {
-        unlinkSync(filePath);
-      } catch {
-        // ignore
-      }
-      try {
-        rmdirSync(dir);
-      } catch {
-        // ignore
-      }
-      clearTimeout(timeout);
-      appendPlanCreationDebug(cwd, `round ${round}: subprocess close exit=${String(code ?? 1)}`);
-      if (stderr.trim().length > 0) {
-        appendPlanCreationDebug(cwd, `round ${round}: stderr ${JSON.stringify(stderr.trim().slice(0, 2000))}`);
-      }
-      resolvePromise({
-        exitCode: code ?? 1,
-        output: stdout,
-        error: stderr,
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout.on("data", (data: Buffer) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        try {
+          unlinkSync(filePath);
+        } catch {
+          // ignore
+        }
+        try {
+          rmdirSync(dir);
+        } catch {
+          // ignore
+        }
+        clearTimeout(timeout);
+        appendPlanCreationDebug(cwd, `round ${round}: subprocess close exit=${String(code ?? 1)}`);
+        if (stderr.trim().length > 0) {
+          appendPlanCreationDebug(cwd, `round ${round}: stderr ${JSON.stringify(stderr.trim().slice(0, 2000))}`);
+        }
+        resolvePromise({
+          exitCode: code ?? 1,
+          output: stdout,
+          error: stderr,
+        });
+      });
+
+      proc.on("error", (error) => {
+        try {
+          unlinkSync(filePath);
+        } catch {
+          // ignore
+        }
+        try {
+          rmdirSync(dir);
+        } catch {
+          // ignore
+        }
+        clearTimeout(timeout);
+        appendPlanCreationDebug(cwd, `round ${round}: subprocess error ${error.message}`);
+        resolvePromise({
+          exitCode: 1,
+          output: "",
+          error: error.message,
+        });
       });
     });
-
-    proc.on("error", (error) => {
-      try {
-        unlinkSync(filePath);
-      } catch {
-        // ignore
-      }
-      try {
-        rmdirSync(dir);
-      } catch {
-        // ignore
-      }
-      clearTimeout(timeout);
-      appendPlanCreationDebug(cwd, `round ${round}: subprocess error ${error.message}`);
-      resolvePromise({
-        exitCode: 1,
-        output: "",
-        error: error.message,
-      });
-    });
-  });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendPlanCreationDebug(cwd, `round ${round}: launcher error ${message}`);
+    return {
+      exitCode: 1,
+      output: "",
+      error: message,
+    };
+  }
 }
 
 async function reviewDraft(
@@ -467,11 +477,16 @@ export async function runPlanCreation(
         ctx.cwd,
         `round ${round}: launch ${String(launchIndex + 1)} failed exit=${String(result.exitCode)}`,
       );
+      if (workspaceSandboxFailureDetail(result.error) !== null) {
+        appendPlanCreationDebug(ctx.cwd, `round ${round}: aborting retries due to sandbox failure`);
+        break;
+      }
     }
 
     if (result?.exitCode !== 0) {
+      const failureDetail = workspaceSandboxFailureDetail(result?.error) ?? result?.error.trim() ?? "unknown subprocess error";
       ctx.ui.notify(
-        `Plan creation failed in subprocess. See ${planCreationDebugFilePath(ctx.cwd)} and stderr in debug log.`,
+        `Plan creation failed: ${failureDetail}. See ${planCreationDebugFilePath(ctx.cwd)}.`,
         "error",
       );
       return null;
