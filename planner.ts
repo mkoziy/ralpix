@@ -283,6 +283,19 @@ interface PlannerProcessResult {
   error: string;
 }
 
+export function plannerFailureDetail(result: PlannerProcessResult): string {
+  const sandboxDetail = workspaceSandboxFailureDetail(result.error);
+  if (sandboxDetail !== null) return sandboxDetail;
+
+  const stderr = result.error.trim();
+  if (stderr.length > 0) return stderr;
+
+  const stdout = result.output.trim();
+  if (stdout.length > 0) return stdout;
+
+  return `subprocess exited with code ${String(result.exitCode)}`;
+}
+
 async function runPlannerProcess(
   cwd: string,
   promptContent: string,
@@ -355,6 +368,9 @@ async function runPlannerProcess(
         }
         clearTimeout(timeout);
         appendPlanCreationDebug(cwd, `round ${round}: subprocess close exit=${String(code ?? 1)}`);
+        if ((code ?? 1) !== 0 && stdout.trim().length > 0) {
+          appendPlanCreationDebug(cwd, `round ${round}: stdout ${JSON.stringify(stdout.trim().slice(0, 2000))}`);
+        }
         if (stderr.trim().length > 0) {
           appendPlanCreationDebug(cwd, `round ${round}: stderr ${JSON.stringify(stderr.trim().slice(0, 2000))}`);
         }
@@ -484,7 +500,7 @@ export async function runPlanCreation(
     }
 
     if (result?.exitCode !== 0) {
-      const failureDetail = workspaceSandboxFailureDetail(result?.error) ?? result?.error.trim() ?? "unknown subprocess error";
+      const failureDetail = result === null ? "subprocess did not start" : plannerFailureDetail(result);
       ctx.ui.notify(
         `Plan creation failed: ${failureDetail}. See ${planCreationDebugFilePath(ctx.cwd)}.`,
         "error",
