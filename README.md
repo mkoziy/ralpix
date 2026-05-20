@@ -1,219 +1,103 @@
 # ralpix
 
-Autonomous plan execution extension for [pi](https://github.com/earendil-works/pi-coding-agent).
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![npm version](https://img.shields.io/badge/version-0.1.0-green.svg)](package.json)
 
-Inspired by [ralphex](https://github.com/umputun/ralphex) — runs markdown plans hands-off, each task in a fresh pi session to keep the model sharp.
+Autonomous plan execution extension for [pi](https://github.com/earendil-works/pi-coding-agent). Write a markdown plan — ralpix executes every task hands-off, each in a fresh `pi` session, then runs a multi-model review pipeline before it calls it done.
 
-## Installation
+Inspired by [ralphex](https://github.com/umputun/ralphex).
 
-```bash
-# Option 1: link from source
-ln -s $(pwd) ~/.pi/agent/extensions/ralpix
+---
 
-# Option 2: pi install (coming soon)
-pi install git:github.com/mkoziy/ralpix
-```
+## Features
 
-## Dev Container
+- **Isolated task execution** — each task gets a clean `pi` session; no context bleed between tasks
+- **Auto-commit** — commits after every successful task with a configurable message template
+- **Interactive plan creation** — describe a feature in one line, get a validated markdown plan back
+- **Multi-model review pipeline** — first pass (5 parallel agents) → optional external review (different provider) → second pass (critical issues only)
+- **Stalemate detection** — exits the external review loop when two models keep disagreeing, saving tokens
+- **Three-layer config** — bundled defaults → `~/.ralpix/config.json` → `./.ralpix/config.json`
+- **Prompt customization** — override any prompt globally or per-project
+- **Progress logs** — structured, timestamped log of every step written to `.ralpix/progress/`
 
-Recommended setup: run `pi` and `ralpix` inside your project's dev container, using the published `ralpix` image as the base. This repo ships a minimal example at `.devcontainer/devcontainer.json`:
+---
 
-```json
-{
-  "name": "ralpix project",
-  "image": "ghcr.io/mkoziy/ralpix:latest",
-  "remoteUser": "pi",
-  "workspaceFolder": "/workspace",
-  "mounts": [
-    "source=${localWorkspaceFolder},target=/workspace,type=bind",
-    "source=${localEnv:HOME}/.pi/agent/auth.json,target=/home/pi/.pi/agent/auth.json,type=bind"
-  ],
-  "runArgs": [
-    "--init"
-  ]
-}
-```
+## Table of Contents
 
-Create the Pi auth file on the host before starting the container:
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Plan Format](#plan-format)
+- [Plan Creation](#plan-creation)
+- [Configuration](#configuration)
+  - [Config reference](#config-reference)
+  - [Per-project config](#per-project-config)
+  - [Pi profile for subprocesses](#pi-profile-for-subprocesses)
+- [Prompt Customization](#prompt-customization)
+  - [Template variables](#template-variables)
+  - [External review phase](#external-review-phase)
+  - [Choosing review models](#choosing-review-models)
+- [Progress Logs](#progress-logs)
+- [Directory Structure](#directory-structure)
+- [Examples](#examples)
+- [Architecture](#architecture)
+- [Release](#release)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
 
-```bash
-mkdir -p "$HOME/.pi/agent"
-touch "$HOME/.pi/agent/auth.json"
-```
-
-Then open the repo in a dev container and run `/login` inside `pi` if you need ChatGPT Plus/Pro OAuth for `openai-codex/...` models. Mounting only `auth.json` preserves the image's bundled `AGENTS.md` and `settings.json`.
-
-## Docker
-
-Build an end-user image with `pi`, `ralpix`, `ripgrep`, `fd`, and `fzf` installed:
-
-```bash
-docker build -t ralpix-pi .
-```
-
-Run `pi` in a mounted workspace:
-
-```bash
-docker run --rm -it \
-  -v "$(pwd)":/workspace \
-  -e OPENAI_API_KEY \
-  ralpix-pi
-```
-
-Run the published image from GHCR:
-
-```bash
-docker run --rm -it \
-  -v "$(pwd)":/workspace \
-  -e OPENAI_API_KEY \
-  ghcr.io/mkoziy/ralpix:latest
-```
-
-### Docker credentials
-
-`pi` resolves credentials from `--api-key`, then `~/.pi/agent/auth.json`, then environment variables. In the container, the practical options are:
-
-OpenAI API key for `openai/...` models:
-
-```bash
-docker run --rm -it \
-  -v "$(pwd)":/workspace \
-  -e OPENAI_API_KEY=sk-... \
-  ghcr.io/mkoziy/ralpix:latest
-```
-
-OpenCode Go API key for `opencode-go/...` models:
-
-```bash
-docker run --rm -it \
-  -v "$(pwd)":/workspace \
-  -e OPENCODE_API_KEY=... \
-  ghcr.io/mkoziy/ralpix:latest
-```
-
-OpenAI Codex for `openai-codex/...` models uses Pi's `/login` flow rather than `OPENAI_API_KEY`. To persist that auth across container runs without hiding the image's bundled `AGENTS.md` and `settings.json`, mount only Pi's `auth.json`:
-
-```bash
-mkdir -p "$HOME/.pi/agent"
-touch "$HOME/.pi/agent/auth.json"
-
-docker run --rm -it \
-  -v "$(pwd)":/workspace \
-  -v "$HOME/.pi/agent/auth.json:/home/pi/.pi/agent/auth.json" \
-  ghcr.io/mkoziy/ralpix:latest
-```
-
-Then run `/login` inside `pi` and select ChatGPT Plus/Pro (Codex). Pi stores the OAuth tokens in `/home/pi/.pi/agent/auth.json` inside the container, which persists because that single file is mounted from the host.
-
-If you also want persisted ralpix config/prompts, mount `~/.ralpix` separately:
-
-```bash
-mkdir -p "$HOME/.pi/agent"
-touch "$HOME/.pi/agent/auth.json"
-
-docker run --rm -it \
-  -v "$(pwd)":/workspace \
-  -v "$HOME/.pi/agent/auth.json:/home/pi/.pi/agent/auth.json" \
-  -v "$HOME/.ralpix:/home/pi/.ralpix" \
-  ghcr.io/mkoziy/ralpix:latest
-```
-
-Notes:
-- The image registers this checkout as a global Pi package via `~/.pi/agent/settings.json`.
-- `ripgrep`, `fd`, and `fzf` are installed in the container, and the bundled global `~/.pi/agent/AGENTS.md` tells Pi to prefer `rg`/`rg --files`.
-- `FZF_DEFAULT_COMMAND` and `FZF_CTRL_T_COMMAND` are set to use `rg --files --hidden --follow --glob '!.git'`.
-- On container startup, the image generates `~/.pi/agent/APPEND_SYSTEM.md` with the current UTC date, a configurable knowledge cutoff, and a freshness protocol for version/API/current-state questions. This is the Pi equivalent of the temporal-context pattern described in the linked blog post.
-- The default cutoff is `2025-01-01`. Override it with `-e PI_KNOWLEDGE_CUTOFF=YYYY-MM-DD` if you want a different baseline.
-- Use `make release VERSION=1.2.3` to validate the repo, build and push multi-arch images to `ghcr.io/mkoziy/ralpix`, push the git tag, and create a GitHub release. Stable releases publish `1.2.3`, `1.2`, and `latest`; prereleases publish only the exact tag.
-
-## Release
-
-Release publishing is local, not GitHub Actions based.
-
-Requirements:
-- `docker` with `buildx`
-- `gh` authenticated for the target repository with permission to publish packages
-- `npm`
-- permission to push tags and packages to `ghcr.io/mkoziy/ralpix`
-
-Credential options for GHCR push:
-- `GHCR_TOKEN` with `write:packages` scope and matching `GHCR_USERNAME`
-- `GITHUB_TOKEN` or `GH_TOKEN` with `write:packages` scope
-- fallback: `gh auth token`, if `gh auth status` is valid and that token includes package write access
-
-Run:
-
-```bash
-make release VERSION=1.2.3
-```
-
-If needed, re-authenticate `gh` with package publishing scope before releasing:
-
-```bash
-gh auth refresh -h github.com -s write:packages
-```
-
-Or provide explicit credentials for the release command:
-
-```bash
-GHCR_USERNAME=mkoziy GHCR_TOKEN=... make release VERSION=1.2.3
-```
-
-What it does:
-1. Verifies the working tree is clean and the tag does not already exist
-2. Runs `npm ci` and `npm run check`
-3. Counts commits since the previous semver tag and uses that range in the GitHub release notes
-4. Builds and pushes `linux/amd64` and `linux/arm64` images with Docker Buildx
-5. Pushes the git tag
-6. Creates the GitHub release
-
-Tag behavior:
-- Stable `1.2.3` releases publish `ghcr.io/mkoziy/ralpix:1.2.3`, `ghcr.io/mkoziy/ralpix:1.2`, and `latest`
-- Prereleases like `1.2.3-rc1` publish only `ghcr.io/mkoziy/ralpix:1.2.3-rc1`
+---
 
 ## Quick Start
 
 ```bash
-# 1. Initialize ralpix (creates ~/.ralpix/ with default prompts, agents, and config)
+# 1. Initialize ralpix — creates ~/.ralpix/ with default prompts, agents, and config
 /ralpix init
 
 # 2a. Create a plan interactively (recommended)
 /ralpix plan "add health check endpoint"
 
-# 2b. Or write a plan manually (see Plan Format below)
-# 3. Execute it
+# 2b. Or write a plan manually and execute it directly
 /ralpix docs/plans/my-feature.md
 ```
 
-What happens:
-1. Plan is parsed
+What happens when you execute a plan:
+
+1. Plan is parsed into tasks
 2. Each task runs in an isolated `pi` session seeded from the merged ralpix config
 3. Auto-commit after each successful task
 4. Progress is logged to `./.ralpix/progress/<plan-name>.txt`
-5. After all tasks: review pipeline runs (first pass → second pass)
+5. After all tasks: review pipeline runs (first pass → optional external review → second pass)
 6. Plan checkboxes are updated automatically
 
-`/ralpix init` also bootstraps a dedicated Pi profile for ralpix child sessions at `~/.ralpix/pi-agent/`, including `AGENTS.md` and `settings.json`, so isolated task/review/plan sessions prefer `rg`, can use `fzf`, and load this ralpix package without extra setup. That profile shares `auth.json` with the main Pi profile by default, so `/login` credentials work in both places.
+---
 
-## Plan Creation
+## Installation
 
-Don't want to write plans manually? Use interactive plan creation:
+**Option 1 — symlink from source (recommended for development):**
 
 ```bash
-/ralpix plan "add JWT authentication to the API"
+git clone https://github.com/mkoziy/ralpix
+ln -s "$(pwd)/ralpix" ~/.pi/agent/extensions/ralpix
 ```
 
-The model will:
-1. **Ask clarifying questions** in the UI when needed (with option picker + custom free-form answer)
-2. **Generate a plan draft** in ralpix format
-3. **Validate** the draft structure before saving it
-4. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`
-5. **Pause for review** — you can Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
-6. **Offer execution** only after you explicitly accept the saved plan
+**Option 2 — pi install (coming soon):**
 
-The saved plan file is the review source of truth, so you can inspect or edit it in another tool before continuing.
+```bash
+pi install git:github.com/mkoziy/ralpix
+```
+
+After installing from source, run `npm ci` inside the extension directory:
+
+```bash
+cd ~/.pi/agent/extensions/ralpix
+npm ci
+```
+
+---
 
 ## Plan Format
+
+ralpix plans are plain markdown files:
 
 ```markdown
 # Plan: My Feature
@@ -237,109 +121,141 @@ Description of what needs to be done.
 ```
 
 Rules:
-- `# Plan: <Title>` — Required
-- `## Overview` — Plan description (injected into task prompts)
-- `## Success Criteria` — Overall success checklist
-- `### Task N: <Title>` — Each task, with optional description and `- [ ]` / `- [x]` checkboxes
-- If a task has no checkboxes, the entire task description is treated as one item
+
+| Element | Required | Description |
+|---------|----------|-------------|
+| `# Plan: <Title>` | Yes | Plan title, injected into prompts |
+| `## Overview` | No | Description injected into every task prompt |
+| `## Success Criteria` | No | Overall success checklist |
+| `### Task N: <Title>` | Yes | One section per task |
+| `- [ ]` / `- [x]` | No | Checkboxes; if absent, the entire task description is treated as one item |
+
+---
+
+## Plan Creation
+
+Skip writing plans by hand — describe what you want and ralpix creates the plan for you:
+
+```bash
+/ralpix plan "add JWT authentication to the API"
+```
+
+The model will:
+
+1. **Ask clarifying questions** in the UI when needed (option picker + free-form answer)
+2. **Generate a plan draft** in ralpix format
+3. **Validate** the draft structure before saving
+4. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`
+5. **Pause for review** — Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
+6. **Offer execution** only after you explicitly accept
+
+The saved file is the source of truth, so you can inspect or edit it in any editor before continuing.
+
+---
 
 ## Configuration
 
-ralpix uses a three-layer config merge:
+ralpix uses a three-layer merge — each layer overrides the one above:
 
 | Layer | Path | Purpose |
 |-------|------|---------|
-| Bundled | Inside extension | Default values |
-| Global | `~/.ralpix/config.json` | Your defaults |
+| Bundled | Inside extension | Shipped defaults |
+| Global | `~/.ralpix/config.json` | Your personal defaults |
 | Project | `./.ralpix/config.json` | Per-project overrides |
+
+### Config reference
 
 ```jsonc
 // ~/.ralpix/config.json
 {
-  "defaultModel": "opencode-go/deepseek-v4-flash", // Task execution default
-  "defaultProvider": null,        // e.g. "anthropic"
-  "defaultEffort": "low",         // Executor reasoning effort; kept low because the default executor uses a flash-tier model
-  "piAgentDir": null,             // Optional override for the default ~/.ralpix/pi-agent child-session profile
-  "commitEnabled": true,          // Auto-commit after each task
+  "defaultModel": "opencode-go/deepseek-v4-flash",  // Task execution model
+  "defaultProvider": null,                            // e.g. "anthropic"
+  "defaultEffort": "low",          // Reasoning effort (low/medium/high)
+  "piAgentDir": null,              // Override default ~/.ralpix/pi-agent profile
+  "commitEnabled": true,           // Auto-commit after each task
   "commitMessageTemplate": "ralpix: {{taskTitle}}",
-  "reviewEnabled": true,          // Run review pipeline after tasks
-  "reviewFirstModel": "opencode-go/glm-5.1",   // First review pass
-  "reviewSecondModel": "opencode-go/kimi-k2.6", // Second review pass
-  "reviewFirstEffort": "high",    // Thinking effort for first review
-  "reviewSecondEffort": "medium", // Thinking effort for second review
-  "maxRetries": 2,                // Max retries per task on failure
-  "reviewMaxIterations": 5,       // Max iterations for review loop
-  "movePlanOnCompletion": false,  // Move plan.md → completed/plan.md when done
-  "externalReviewEnabled": true,  // Enable external review phase (different model)
-  "externalReviewModel": "openai-codex/gpt-5.5", // Independent external reviewer via ChatGPT Plus/Pro OAuth
-  "externalReviewEffort": "medium", // Thinking effort for external review
-  "externalReviewMaxIterations": 5, // Max iterations in external review loop
-  "externalReviewPatience": 3,    // Stalemate: exit after N unchanged rounds
-  "planModel": "openai-codex/gpt-5.5",  // Interactive plan creation via ChatGPT Plus/Pro OAuth
-  "planEffort": "medium"          // Plan generation effort
+  "reviewEnabled": true,           // Run review pipeline after tasks
+  "reviewFirstModel": "opencode-go/glm-5.1",
+  "reviewSecondModel": "opencode-go/kimi-k2.6",
+  "reviewFirstEffort": "high",
+  "reviewSecondEffort": "medium",
+  "maxRetries": 2,                 // Max retries per task on failure
+  "reviewMaxIterations": 5,
+  "movePlanOnCompletion": false,   // Move plan.md → completed/plan.md when done
+  "externalReviewEnabled": true,
+  "externalReviewModel": "openai-codex/gpt-5.5",
+  "externalReviewEffort": "medium",
+  "externalReviewMaxIterations": 5,
+  "externalReviewPatience": 3,     // Exit after N unchanged rounds (stalemate)
+  "planModel": "openai-codex/gpt-5.5",
+  "planEffort": "medium"
 }
 ```
 
-`openai/...` uses the plain OpenAI provider and expects an API key. `openai-codex/...` uses the ChatGPT Plus/Pro Codex OAuth provider from `/login`.
+Provider notes:
+
+- `openai/...` — plain OpenAI provider, requires `OPENAI_API_KEY`
+- `openai-codex/...` — ChatGPT Plus/Pro Codex OAuth, requires `/login` inside `pi`
+- `opencode-go/...` — OpenCode Go provider, requires `OPENCODE_API_KEY`
 
 ### Per-project config
 
-Create `./.ralpix/config.json` in your project root to override settings for that project:
+Create `./.ralpix/config.json` at your project root:
 
 ```jsonc
 {
-  "commitEnabled": false,         // Don't auto-commit in this project
-  "reviewEnabled": false,         // Skip review pipeline
-  "defaultModel": "openai/gpt-5", // Use GPT-5 for this project
-  "piAgentDir": ".ralpix/pi-agent" // Override the default child-session Pi profile
+  "commitEnabled": false,
+  "reviewEnabled": false,
+  "defaultModel": "openai/gpt-5",
+  "piAgentDir": ".ralpix/pi-agent"  // Relative to project root
 }
 ```
 
-### Separate Pi profile for ralpix subprocesses
+### Pi profile for subprocesses
 
-By default, `ralpix` runs its child `pi` sessions with the Pi profile created by `/ralpix init` at `~/.ralpix/pi-agent`. `ralpix` exports that directory as `PI_CODING_AGENT_DIR` for task execution, review, and plan creation subprocesses only.
+`/ralpix init` creates a dedicated Pi profile for child sessions at `~/.ralpix/pi-agent/`. ralpix exports this directory as `PI_CODING_AGENT_DIR` for task, review, and plan subprocesses.
 
-Set `piAgentDir` only when you want to override that default profile. Paths resolve relative to the project root unless they are absolute or start with `~/`.
+Set `piAgentDir` only when you want to override the default. Paths resolve relative to the project root unless absolute or starting with `~/`.
 
-```jsonc
-// .ralpix/config.json
-{
-  "piAgentDir": ".ralpix/pi-agent"
-}
+Default layout after `/ralpix init`:
+
 ```
-
-Default layout created by `/ralpix init`:
-
-```text
 ~/.ralpix/
 ├── config.json
 ├── prompts/
 ├── agents/
 └── pi-agent/
     ├── AGENTS.md
-    ├── auth.json -> ~/.pi/agent/auth.json
+    ├── auth.json -> ~/.pi/agent/auth.json   # Symlink — shares credentials
     └── settings.json
 ```
 
-Bundled `AGENTS.md` for child sessions:
+---
 
-```md
-Prefer `rg` and `rg --files` over slower alternatives.
-Use `fzf` when interactive file or text selection is helpful.
-Assume the `ralpix` workflow is active and keep changes scoped to the current task.
+## Prompt Customization
+
+ralpix ships default prompts that you can override globally or per-project:
+
+```
+~/.ralpix/
+└── prompts/
+    ├── task-default.md      # Runs for each task
+    ├── review-first.md      # First review pass (5 agents)
+    ├── review-second.md     # Second review pass
+    ├── plan-creation.md     # Interactive plan creation
+    ├── external-review.md   # External reviewer prompt
+    ├── external-eval.md     # Main model evaluates external findings
+    └── finalize.md          # Final summary
+
+~/.ralpix/agents/
+    ├── quality.md           # Correctness, security, edge cases
+    ├── implementation.md    # Goal alignment
+    ├── testing.md           # Test coverage
+    ├── simplification.md    # Over-engineering detection
+    └── documentation.md     # Docs review
 ```
 
-Bundled `settings.json` for child sessions:
-
-```json
-{
-  "packages": ["/absolute/path/to/this/ralpix/checkout"]
-}
-```
-
-### Per-project prompts
-
-Override the default task prompt for a specific project:
+To override per-project:
 
 ```bash
 mkdir -p .ralpix/prompts
@@ -347,84 +263,55 @@ cp ~/.ralpix/prompts/task-default.md .ralpix/prompts/task-default.md
 # Edit .ralpix/prompts/task-default.md
 ```
 
-## Prompt Customization
-
-ralpix ships with default prompts you can customize:
-
-```
-~/.ralpix/
-├── prompts/
-│   ├── task-default.md      # Used for each task execution
-│   ├── review-first.md      # First review pass (5 agents)
-│   ├── review-second.md     # Second review pass (2 agents)
-│   ├── plan-creation.md     # Interactive plan creation
-│   ├── external-review.md   # External review (different model finds issues)
-│   ├── external-eval.md     # External review eval (main model fixes issues)
-│   └── finalize.md          # Final summary
-├── agents/
-│   ├── quality.md           # Correctness, security, edge cases
-│   ├── implementation.md    # Goal alignment verification
-│   ├── testing.md           # Test coverage review
-│   ├── simplification.md    # Over-engineering detection
-│   └── documentation.md     # Documentation review
-```
-
-### Template Variables
-
-Prompts support `{{VARIABLE}}` expansion:
+### Template variables
 
 | Variable | Description |
 |----------|-------------|
 | `{{OVERVIEW}}` | Plan overview text |
 | `{{TASK_TITLE}}` | Current task title |
 | `{{TASK_DESCRIPTION}}` | Task description + checklist |
-| `{{GOAL}}` | Plan title (review) |
+| `{{GOAL}}` | Plan title (review prompts) |
 | `{{PROGRESS_FILE}}` | Path to progress log |
 | `{{DEFAULT_BRANCH}}` | Main/master branch name |
 | `{{DIFF_INSTRUCTION}}` | Git diff command for external reviewer |
 | `{{FINDINGS}}` | External reviewer findings (for eval prompt) |
-| `{{agent:name}}` | Inline agent content (e.g. `{{agent:quality}}`) |
+| `{{agent:name}}` | Inline agent content, e.g. `{{agent:quality}}` |
 
-### External Review Phase
+### External review phase
 
-Between the first and second review, ralpix can run an **external review** — an independent code review by a different AI model/provider. This catches blind spots that single-model review misses.
+Between first and second review, ralpix can run an **external review** — an independent pass by a different model/provider, catching blind spots that single-model review misses.
 
-**How it works:**
-1. A different model (configured via `externalReviewModel`) reviews the diff and reports findings
-2. Your main model (`defaultModel`) evaluates each finding, fixes confirmed issues, and commits
-3. The loop repeats until clean, stalemate, or max iterations
+How it works:
 
-**Example config** for external review with OpenAI:
+1. The `externalReviewModel` reviews the diff and reports findings
+2. Your `defaultModel` evaluates each finding, fixes confirmed issues, and commits
+3. The loop repeats until clean, stalemate (`externalReviewPatience` consecutive unchanged rounds), or `externalReviewMaxIterations`
+
+Diff scope: first iteration reviews the full branch diff (`git diff main...HEAD`); subsequent iterations review only uncommitted changes from the previous fix round.
+
+Example config:
 
 ```jsonc
 {
-  "defaultModel": "anthropic/claude-sonnet-4-5",  // Main model for tasks and fixes
+  "defaultModel": "anthropic/claude-sonnet-4-5",
   "externalReviewEnabled": true,
-  "externalReviewModel": "openai/gpt-5.2",         // Different model for review
+  "externalReviewModel": "openai/gpt-5.2",
   "externalReviewMaxIterations": 5,
   "externalReviewPatience": 3
 }
 ```
 
-**Stalemate detection:** If `externalReviewPatience` consecutive rounds produce no changes (models disagree on findings), the loop exits to save tokens.
-
-**Diff scope:** First iteration reviews the full branch diff (`git diff main...HEAD`). Subsequent iterations review only uncommitted changes from the previous fix round.
-
-**Prompts:**
-- `~/.ralpix/prompts/external-review.md` — prompt sent to the external reviewer model
-- `~/.ralpix/prompts/external-eval.md` — prompt sent to the main model for evaluation/fixing
-
-### Choosing Review Models
-
-Set `reviewFirstModel` and `reviewSecondModel` to use different models for review:
+### Choosing review models
 
 ```jsonc
 {
   "defaultModel": "anthropic/claude-sonnet-4-5",
-  "reviewFirstModel": "openai/gpt-5",    // Better at broad analysis
-  "reviewSecondModel": "anthropic/claude-sonnet-4-5"  // Better at focused review
+  "reviewFirstModel": "openai/gpt-5",           // Broad analysis
+  "reviewSecondModel": "anthropic/claude-sonnet-4-5"  // Focused review
 }
 ```
+
+---
 
 ## Progress Logs
 
@@ -453,7 +340,9 @@ Started: 2026-05-12T14:30:00.000Z
 [2026-05-12T14:48:00.001Z] PLAN_COMPLETE  All tasks finished
 ```
 
-`TASK_INFO` lines are live subprocess summaries. They show attempt starts, compact tool/command previews, short assistant status notes, and idle heartbeats when a task stops producing output for a while.
+`TASK_INFO` lines show live subprocess summaries: attempt starts, tool/command previews, short assistant status notes, and idle heartbeats.
+
+---
 
 ## Directory Structure
 
@@ -461,14 +350,18 @@ Started: 2026-05-12T14:30:00.000Z
 ~/.pi/agent/extensions/ralpix/      # Extension (read-only bundled defaults)
 ├── bundled/
 │   ├── config.json
-│   ├── prompts/                     # Default prompt templates
-│   └── agents/                      # Default agent definitions
+│   ├── prompts/
+│   └── agents/
 
 ~/.ralpix/                           # Global config (created by /ralpix init)
 ├── config.json
-├── prompts/                         # Custom prompt overrides
-├── agents/                          # Custom agent overrides
-└── progress/                        # Execution logs
+├── prompts/
+├── agents/
+├── progress/
+└── pi-agent/
+    ├── AGENTS.md
+    ├── auth.json -> ~/.pi/agent/auth.json
+    └── settings.json
 
 ./.ralpix/                           # Project-local overrides
 ├── config.json
@@ -476,17 +369,15 @@ Started: 2026-05-12T14:30:00.000Z
     └── task-default.md
 ```
 
-## Real-World Examples
+---
 
-### Example 1: From idea to merged feature
+## Examples
+
+### From idea to merged feature
 
 ```bash
-# 1. Generate a plan from a one-line description
 /ralpix plan "add rate limiting middleware for Express API"
-# → Plan draft generated and validated
-# → Saved to docs/plans/YYYYMMDD-add-rate-limiting-middleware-for-express-api.md
-# → You review it, edit elsewhere if needed, then accept
-# → Choose "Execute plan now"
+# → Clarifying questions → plan draft → you review → accept → execute
 
 # ralpix takes over:
 # Task 1: Create Redis rate limiter module  ✓  commit a1b2c3d
@@ -494,19 +385,14 @@ Started: 2026-05-12T14:30:00.000Z
 # Task 3: Add configuration and tests        ✓  commit g7h8i9j
 #
 # First review: 5 agents check everything
-# External review: GPT-5.2 double-checks Claude's work
+# External review: GPT double-checks the diff
 # Second review: critical issues only → clean
-#
-# Done. 3 tasks, 3 commits, multi-model review completed.
 ```
 
-### Example 2: Review existing changes with a second opinion
+### Review existing changes with a second opinion
 
 ```bash
-# You already made changes manually or with Claude Code
-# Run external review on your branch
-
-# First, configure external review with GPT:
+# Configure external review
 cat > .ralpix/config.json << 'EOF'
 {
   "externalReviewEnabled": true,
@@ -516,7 +402,7 @@ cat > .ralpix/config.json << 'EOF'
 }
 EOF
 
-# Create a minimal plan (needed for review context):
+# Minimal plan (already-done tasks jump straight to review)
 cat > docs/plans/review-changes.md << 'EOF'
 # Plan: Review branch changes
 
@@ -527,19 +413,13 @@ Review and fix issues in the current branch.
 - [x] Changes already made
 EOF
 
-# Execute — tasks are already done, so it jumps to review:
 /ralpix docs/plans/review-changes.md
-# → First review: Claude reviews (5 agents)
-# → External review: GPT-5.2 finds 3 issues Claude missed
-# → Main model fixes, GPT re-checks → clean
-# → Second review: final critical pass
+# → First review → External review finds issues → Main model fixes → Second review
 ```
 
-### Example 3: Fast iteration with tasks-only mode
+### Fast iteration — tasks only, no review
 
 ```bash
-# Skip all reviews, just execute tasks — great for prototypes
-
 cat > .ralpix/config.json << 'EOF'
 {
   "reviewEnabled": false,
@@ -547,43 +427,35 @@ cat > .ralpix/config.json << 'EOF'
 }
 EOF
 
-/ralpix docs/plans/prototype-feature.md
-# → Tasks execute sequentially, commits after each
-# → No review phases — fast feedback loop
+/ralpix docs/plans/prototype.md
 ```
 
-### Example 4: Different models for different phases
+### Full multi-model setup
 
 ```jsonc
-// .ralpix/config.json — full multi-model setup
+// .ralpix/config.json
 {
-  // Execution: powerful model for complex code generation
   "defaultModel": "anthropic/claude-opus-4-5",
   "defaultEffort": "high",
 
-  // First review: broad analysis with a different provider
   "reviewFirstModel": "openai/gpt-5.2",
 
-  // External review: third model for independent audit
   "externalReviewEnabled": true,
   "externalReviewModel": "openai/gpt-5.2",
   "externalReviewMaxIterations": 5,
   "externalReviewPatience": 3,
 
-  // Second review: back to main provider, critical issues only
   "reviewSecondModel": "anthropic/claude-sonnet-4-5",
 
-  // Execution control
   "maxRetries": 2,
   "commitEnabled": true,
   "commitMessageTemplate": "ralpix: {{taskTitle}}"
 }
 ```
 
-### Example 5: Per-project prompt customization
+### Per-project prompt with custom conventions
 
 ```bash
-# Project-specific task prompt that knows your conventions
 mkdir -p .ralpix/prompts
 cat > .ralpix/prompts/task-default.md << 'EOF'
 # Task Execution — MyProject
@@ -610,105 +482,153 @@ You are working on MyProject, a Go microservice.
 - Run `golangci-lint run` before committing
 EOF
 
-# Now ralpix uses your custom prompt for every task in this project
 /ralpix docs/plans/add-grpc-endpoint.md
 ```
 
+---
+
 ## Architecture
 
-### Plan Creation (interactive)
+### Plan creation (interactive)
 
 ```
 ┌─────────────────────────────────────────────┐
 │  /ralpix plan "description"                  │
-│    │                                        │
-│    ├─► ctx.newSession()                     │
-│    │   ├─► Model explores codebase          │
-│    │   ├─► Model calls ralpix_ask_question  │
-│    │   │   └─► User picks answer            │
-│    │   ├─► Model generates plan draft       │
-│    │   └─► Model calls ralpix_submit_plan   │
-│    │       └─► User accepts / revises       │
-│    │                                        │
-│    └─► Plan saved to docs/plans/            │
-│        └─► Option: execute immediately      │
+│    │                                         │
+│    ├─► ctx.newSession()                      │
+│    │   ├─► Model explores codebase           │
+│    │   ├─► Model calls ralpix_ask_question   │
+│    │   │   └─► User picks answer             │
+│    │   ├─► Model generates plan draft        │
+│    │   └─► Model calls ralpix_submit_plan    │
+│    │       └─► User accepts / revises        │
+│    │                                         │
+│    └─► Plan saved to docs/plans/             │
+│        └─► Option: execute immediately       │
 └─────────────────────────────────────────────┘
 ```
 
-### Task Execution
+### Task execution
 
-Each task runs as an isolated pi process:
+Each task runs as an isolated `pi` subprocess — no context contamination between tasks:
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │  /ralpix docs/plans/feature.md                       │
-│    │                                                 │
-│    ├─► spawn pi (task-default)          Task 1       │
-│    │   └─► auto-commit                               │
-│    │                                                 │
-│    ├─► spawn pi (task-default)          Task 2       │
-│    │   └─► auto-commit                               │
-│    │                                                 │
-│    ├─► spawn pi (review-first)          Review 1     │
-│    │   └─► 5 agents, one-shot                       │
-│    │                                                 │
-│    ├─► external review loop (if enabled)             │
-│    │   ├─► spawn pi (external-review)   Find issues  │
-│    │   │   └─► GPT reviews the diff                 │
-│    │   ├─► spawn pi (external-eval)     Fix issues   │
-│    │   │   └─► Claude evaluates & fixes             │
-│    │   └─► loop until clean / stalemate              │
-│    │                                                 │
-│    └─► review loop (iterative)          Review 2     │
-│        ├─► spawn pi (review-second)     Iteration 1  │
-│        │   └─► check HEAD: changed → loop            │
-│        └─► spawn pi (review-second)     Iteration 2  │
-│            └─► check HEAD: unchanged → done          │
-│                                                      │
+│    │                                                  │
+│    ├─► spawn pi (task-default)          Task 1        │
+│    │   └─► auto-commit                                │
+│    │                                                  │
+│    ├─► spawn pi (task-default)          Task 2        │
+│    │   └─► auto-commit                                │
+│    │                                                  │
+│    ├─► spawn pi (review-first)          Review 1      │
+│    │   └─► 5 agents, one-shot                        │
+│    │                                                  │
+│    ├─► external review loop (if enabled)              │
+│    │   ├─► spawn pi (external-review)   Find issues   │
+│    │   ├─► spawn pi (external-eval)     Fix issues    │
+│    │   └─► loop until clean / stalemate               │
+│    │                                                  │
+│    └─► review loop (iterative)          Review 2      │
+│        ├─► spawn pi (review-second)     Iteration 1   │
+│        │   └─► HEAD changed → loop                   │
+│        └─► spawn pi (review-second)     Iteration 2   │
+│            └─► HEAD unchanged → done                  │
+│                                                       │
 │  Progress: ./.ralpix/progress/<plan>.txt              │
 └──────────────────────────────────────────────────────┘
 ```
 
-This ensures each task gets a clean context window — no contamination from previous tasks.
+---
+
+## Release
+
+Releases are published locally, not via GitHub Actions.
+
+**Requirements:**
+
+- `gh` authenticated to the target repository
+- `npm`
+
+```bash
+make release VERSION=1.2.3
+```
+
+**What it does:**
+
+1. Verifies the working tree is clean and the tag does not already exist
+2. Runs `npm ci` and `npm run check`
+3. Counts commits since the previous semver tag and uses that range in release notes
+4. Pushes the git tag
+5. Creates the GitHub release
+
+**Tag behavior:**
+
+- Stable `1.2.3` and prerelease `1.2.3-rc1` are both supported; prereleases are marked as such on GitHub
+
+---
 
 ## Troubleshooting
 
-### Extension not found
-Make sure the extension is linked in the right directory:
+**Extension not found**
+
 ```bash
 ls -la ~/.pi/agent/extensions/ralpix/index.ts
+# Missing? Re-link:
+ln -s "$(pwd)" ~/.pi/agent/extensions/ralpix
 ```
 
-If missing, run:
-```bash
-ln -s $(pwd) ~/.pi/agent/extensions/ralpix
-```
+**Plan not found**
 
-### Plan not found
-Use absolute or relative paths from the current working directory:
+Use a path relative to the current working directory or an absolute path:
+
 ```bash
 /ralpix docs/plans/my-plan.md
 /ralpix /absolute/path/to/plan.md
 ```
 
-### Task execution hangs
-Check if pi is installed and available on PATH:
+**Task execution hangs**
+
 ```bash
-which pi
+which pi   # Verify pi is on PATH
 ```
 
-### Progress log is empty
-Check that `./.ralpix/progress/` exists and is writable:
+**Progress log is empty**
+
 ```bash
-ls -la .ralpix/progress/
+ls -la .ralpix/progress/   # Verify directory exists and is writable
 ```
 
-## v2 Ideas
+---
 
-- **Parallel review**: Run review agents in parallel using `spawn()`
-- **Worktree isolation**: `--worktree` flag for isolated git worktrees
-- **Per-task model override**: YAML frontmatter in plans
-- **Validation commands**: `## Validation` section in plans with auto-run
-- **Web dashboard**: `--serve` flag for progress viewing
-- **Notifications**: Telegram/Slack hooks on completion/failure
-- **fzf plan selector**: Run `/ralpix` without args, pick a plan from the list
+## Contributing
+
+Contributions are welcome. Please open an issue before starting larger changes so we can discuss the approach.
+
+**Development setup:**
+
+```bash
+git clone https://github.com/mkoziy/ralpix
+cd ralpix
+npm ci
+```
+
+**Validation (run before every commit):**
+
+```bash
+npm run check   # lint + typecheck
+```
+
+**Guidelines:**
+
+- Read `AGENTS.md` for the repo map and change guardrails before editing
+- Keep changes scoped to one subsystem; this is a small codebase but each file touches runtime behavior
+- If you change user-visible behavior, update `README.md` and the relevant bundled prompts in the same PR
+- Prefer backward-compatible changes; breaking changes need a version bump and clear migration notes
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
