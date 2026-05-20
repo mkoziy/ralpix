@@ -73,7 +73,6 @@ The intended outcome is:
 - `pi` and `ralpix` run inside the dev container
 - `bun ...` and `docker compose ...` invoked by the project's `Makefile` execute on the host through `pi --host`
 - the project can keep its existing `Makefile`, bind mounts, and `localhost` service URLs unchanged
-- the published `ghcr.io/mkoziy/ralpix` image also prepends `/workspace/.devcontainer/bin` from `/etc/profile.d`, so interactive login shells still see the wrappers if a devcontainer client fails to apply `remoteEnv`
 
 For a target project, the copied files should look like this:
 

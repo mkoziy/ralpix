@@ -32,9 +32,7 @@ COPY . .
 
 RUN printf '{\n  "packages": [\n    "/opt/ralpix"\n  ]\n}\n' > "${PI_AGENT_DIR}/settings.json" \
   && cp docker/pi-agent/AGENTS.md "${PI_AGENT_DIR}/AGENTS.md" \
-  && cp docker/pi-agent/devcontainer-path.sh /etc/profile.d/devcontainer-path.sh \
   && cp docker/pi-agent/start-pi.sh /usr/local/bin/start-pi \
-  && chmod +x /etc/profile.d/devcontainer-path.sh \
   && chmod +x /usr/local/bin/start-pi \
   && chown -R pi:pi "${PI_AGENT_DIR}" "${RALPIX_HOME}"
 
