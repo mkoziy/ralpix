@@ -10,7 +10,7 @@ import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { ProgressLogger } from "./logger.js";
-import type { ModelConfig, Plan, PlanTask, RalpixConfig, TaskResult } from "./types.js";
+import type { ModelConfig, Plan, PlanTask, RalpixConfig, SubprocessUsage, TaskResult } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 interface TaskSessionReport {
@@ -21,6 +21,7 @@ interface TaskSessionReport {
 export interface TaskExecutionHooks {
   onTaskStart?: (task: PlanTask) => void;
   onTaskFinish?: (task: PlanTask, result: TaskResult) => void;
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void;
 }
 
 export function buildTaskPrompt(promptContent: string): string {
@@ -62,6 +63,7 @@ async function runTaskSession(
   modelCfg: ModelConfig,
   piAgentDir: string | null,
   onProgress?: (detail: string) => void,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<TaskSessionReport> {
   const result = await runPiSubprocessPrompt(
     ctx.cwd,
@@ -69,7 +71,7 @@ async function runTaskSession(
     modelCfg,
     true,
     30 * 60 * 1000,
-    createPiProgressHooks(onProgress),
+    createPiProgressHooks(onProgress, onUsage),
     piAgentDir,
   );
   const report = parseTaskSessionReport(result.lastAssistantText);
@@ -146,7 +148,7 @@ export async function executeTask(
       ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
       const result = await runTaskSession(ctx, prompt, modelCfg, piAgentDir, (detail) => {
         logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
-      });
+      }, hooks?.onUsage);
 
       if (result.success) {
         const commitMsg = config.commitMessageTemplate

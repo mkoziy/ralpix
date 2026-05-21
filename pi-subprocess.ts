@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { buildModelArg } from "./config.js";
 
-import type { ModelConfig } from "./types.js";
+import type { ModelConfig, SubprocessUsage } from "./types.js";
 
 interface JsonEvent {
   type: string;
@@ -18,7 +18,16 @@ interface JsonEvent {
   followUp?: readonly string[];
   message?: {
     role: string;
+    provider?: string;
+    model?: string;
     content?: Array<{ type: string; text: string }>;
+    usage?: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      cost?: { total?: number };
+    };
   };
 }
 
@@ -39,6 +48,7 @@ export interface PiSubprocessResult {
 export interface PiSubprocessHooks {
   onEvent?: (event: JsonEvent) => void;
   onLifecycle?: (message: string) => void;
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void;
 }
 
 function compactWhitespace(text: string): string {
@@ -110,7 +120,10 @@ export function summarizeAssistantProgress(text: string): string | null {
   return truncateForLog(compactWhitespace(firstLine));
 }
 
-export function createPiProgressHooks(onProgress?: (detail: string) => void): PiSubprocessHooks {
+export function createPiProgressHooks(
+  onProgress?: (detail: string) => void,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+): PiSubprocessHooks {
   const activeTools = new Map<string, { label: string; startedAt: number }>();
 
   const logToolStart = (event: JsonEvent): void => {
@@ -148,6 +161,7 @@ export function createPiProgressHooks(onProgress?: (detail: string) => void): Pi
     onLifecycle(message) {
       onProgress?.(message);
     },
+    ...(onUsage === undefined ? {} : { onUsage }),
     onEvent(event) {
       if (onProgress == null) return;
 
@@ -292,7 +306,24 @@ export async function runPiSubprocessPrompt(
       stdoutBuffer = lines.pop() ?? "";
       for (const line of lines) {
         const event = parseJsonEvent(line);
-        if (event !== null) hooks?.onEvent?.(event);
+        if (event === null) continue;
+        hooks?.onEvent?.(event);
+        if (
+          event.type === "message_end" &&
+          event.message?.role === "assistant" &&
+          event.message.usage != null &&
+          (event.message.usage.input ?? 0) + (event.message.usage.output ?? 0) > 0 &&
+          hooks?.onUsage != null
+        ) {
+          const { provider = "unknown", model = "unknown", usage } = event.message;
+          hooks.onUsage(provider, model, {
+            input: usage.input ?? 0,
+            output: usage.output ?? 0,
+            cacheRead: usage.cacheRead ?? 0,
+            cacheWrite: usage.cacheWrite ?? 0,
+            cost: usage.cost?.total ?? 0,
+          });
+        }
       }
     });
 

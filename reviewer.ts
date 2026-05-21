@@ -9,7 +9,7 @@ import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { ProgressLogger } from "./logger.js";
-import type { ModelConfig, Plan, RalpixConfig } from "./types.js";
+import type { ModelConfig, Plan, RalpixConfig, SubprocessUsage } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 interface ReviewSessionReport {
@@ -117,6 +117,7 @@ async function runReviewSession(
   piAgentDir: string | null,
   includeEffort = true,
   onProgress?: (detail: string) => void,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<ReviewSessionReport> {
   const result = await runPiSubprocessPrompt(
     ctx.cwd,
@@ -124,7 +125,7 @@ async function runReviewSession(
     modelCfg,
     includeEffort,
     30 * 60 * 1000,
-    createPiProgressHooks(onProgress),
+    createPiProgressHooks(onProgress, onUsage),
     piAgentDir,
   );
   const report = parseReviewSessionReport(result.lastAssistantText);
@@ -152,6 +153,7 @@ async function runReviewProcess(
   phase: "first" | "second" | "external" | "eval",
   includeEffort = true,
   extraVars?: Record<string, string>,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<ReviewSessionReport> {
   const template = loadPrompt(promptName, ctx.cwd);
   const prompt = expandPrompt(template, {
@@ -171,7 +173,7 @@ async function runReviewProcess(
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   return runReviewSession(ctx, prompt, phase, modelCfg, piAgentDir, includeEffort, (detail) => {
     logger.logReview("loop", `${phase}: ${detail}`);
-  });
+  }, onUsage);
 }
 
 async function runFirstReview(
@@ -180,13 +182,14 @@ async function runFirstReview(
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<string> {
   const modelCfg = resolveModel(config, "review-first");
   const effortSuffix = modelCfg.effort === null ? "" : ` — effort: ${modelCfg.effort}`;
   logger.logReview("first", `STARTED (5 agents, comprehensive)${effortSuffix}`);
 
   const result = await runReviewProcess(
-    ctx, "review-first", config, plan, logger, defaultBranch, "first",
+    ctx, "review-first", config, plan, logger, defaultBranch, "first", true, undefined, onUsage,
   );
 
   if (result.success) {
@@ -206,6 +209,7 @@ async function runReviewLoop(
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<string> {
   const maxIterations = config.reviewMaxIterations === 0 ? 5 : config.reviewMaxIterations;
 
@@ -224,7 +228,7 @@ async function runReviewLoop(
     logger.logReview("loop", `Iteration ${i + 1}/${maxIterations} — running review...${effortInfo}`);
 
     const result = await runReviewProcess(
-      ctx, "review-second", config, plan, logger, defaultBranch, "second",
+      ctx, "review-second", config, plan, logger, defaultBranch, "second", true, undefined, onUsage,
     );
 
     if (!result.success) {
@@ -258,6 +262,7 @@ async function runExternalReviewLoop(
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<string> {
   const maxIterations = config.externalReviewMaxIterations === 0 ? 5 : config.externalReviewMaxIterations;
   const patience = config.externalReviewPatience === 0 ? 3 : config.externalReviewPatience;
@@ -317,6 +322,9 @@ async function runExternalReviewLoop(
       "external",
       externalModelCfg,
       piAgentDir,
+      true,
+      undefined,
+      onUsage,
     );
     if (!reviewResult.success) {
       const msg = `ERROR: ${reviewResult.summary.slice(0, 200)}`;
@@ -347,6 +355,7 @@ async function runExternalReviewLoop(
       "eval",
       true,
       { FINDINGS: findings },
+      onUsage,
     );
 
     if (!evalResult.success) {
@@ -388,6 +397,7 @@ export async function runReviewPipeline(
   plan: Plan,
   config: RalpixConfig,
   logger: ProgressLogger,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<{ firstResult: string; externalResult: string; loopResult: string }> {
   if (!config.reviewEnabled) {
     const msg = "SKIPPED (review disabled)";
@@ -398,16 +408,16 @@ export async function runReviewPipeline(
 
   const defaultBranch = detectDefaultBranch(ctx.cwd);
 
-  const firstResult = await runFirstReview(ctx, config, plan, logger, defaultBranch);
+  const firstResult = await runFirstReview(ctx, config, plan, logger, defaultBranch, onUsage);
 
   let externalResult = "SKIPPED (disabled)";
   if (config.externalReviewEnabled) {
-    externalResult = await runExternalReviewLoop(ctx, config, plan, logger, defaultBranch);
+    externalResult = await runExternalReviewLoop(ctx, config, plan, logger, defaultBranch, onUsage);
   } else {
     logger.logExternalReview("loop", "SKIPPED (externalReviewEnabled: false)");
   }
 
-  const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch);
+  const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch, onUsage);
 
   return { firstResult, externalResult, loopResult };
 }

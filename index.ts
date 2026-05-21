@@ -25,7 +25,7 @@ import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
 
-import type { RalpixState } from "./types.js";
+import type { RalpixState, SubprocessUsage } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,74 @@ interface SessionEntry {
 
 type NotifyLevel = "error" | "info" | "success" | "warning";
 type NotifyFn = (message: string, level: NotifyLevel) => void;
+
+// ---------------------------------------------------------------------------
+// Token ledger
+// ---------------------------------------------------------------------------
+
+interface LedgerEntry {
+  input: number;
+  output: number;
+  cost: number;
+}
+
+function fmtTokens(n: number): string {
+  if (n === 0) return "0";
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
+function createTokenLedger() {
+  const map = new Map<string, LedgerEntry>();
+
+  function add(provider: string, model: string, usage: SubprocessUsage): void {
+    const key = `${provider}/${model}`;
+    const e = map.get(key) ?? { input: 0, output: 0, cost: 0 };
+    map.set(key, {
+      input: e.input + usage.input + usage.cacheRead + usage.cacheWrite,
+      output: e.output + usage.output,
+      cost: e.cost + usage.cost,
+    });
+  }
+
+  function totalCost(): number {
+    let total = 0;
+    for (const e of map.values()) total += e.cost;
+    return total;
+  }
+
+  function rows(theme: WidgetUI["theme"]): string[] {
+    if (map.size === 0) return [];
+    const out: string[] = [theme.fg("muted", "── tokens ──────────────────")];
+    let totalIn = 0;
+    let totalOut = 0;
+    let totalC = 0;
+    let hasCost = false;
+
+    for (const [key, e] of map.entries()) {
+      totalIn += e.input;
+      totalOut += e.output;
+      totalC += e.cost;
+      if (e.cost > 0) hasCost = true;
+
+      const label = key.length > 22 ? `…${key.slice(-21)}` : key;
+      const costStr = e.cost > 0 ? `  $${e.cost.toFixed(3)}` : "";
+      out.push(theme.fg("muted", `${label.padEnd(22)} ↑${fmtTokens(e.input)} ↓${fmtTokens(e.output)}${costStr}`));
+    }
+
+    if (map.size > 1) {
+      const totalCostStr = hasCost ? `  $${totalC.toFixed(3)}` : "";
+      out.push(theme.fg("muted", `${"Total".padEnd(22)} ↑${fmtTokens(totalIn)} ↓${fmtTokens(totalOut)}${totalCostStr}`));
+    }
+
+    return out;
+  }
+
+  return { add, totalCost, rows };
+}
+
+type TokenLedger = ReturnType<typeof createTokenLedger>;
 
 export function normalizePlanPathArg(rawPath: string): string {
   if (!rawPath.startsWith("@")) return rawPath;
@@ -290,6 +358,13 @@ async function runPlan(
   const logger = new ProgressLogger(ctx.cwd, planStem);
   logger.logStart(plan);
 
+  // Token ledger — accumulates usage across all subprocess calls
+  const ledger = createTokenLedger();
+  const onUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
+    ledger.add(provider, model, usage);
+    updateStatusWidget(state, ctx, ledger);
+  };
+
   // Initial state
   const state: RalpixState = {
     planPath,
@@ -301,7 +376,7 @@ async function runPlan(
     progressFile: logger.filePath,
   };
   persistState(pi, state);
-  updateStatusWidget(state, ctx);
+  updateStatusWidget(state, ctx, ledger);
 
   // ---- Execute tasks ------------------------------------------------------
   if (pendingCount > 0) {
@@ -312,7 +387,7 @@ async function runPlan(
         const nextState = markTaskExecutionStarted(state, task.id);
         state.currentTaskId = nextState.currentTaskId;
         persistState(pi, state);
-        updateStatusWidget(state, ctx);
+        updateStatusWidget(state, ctx, ledger);
       },
       onTaskFinish(task, result) {
         const nextState = markTaskExecutionFinished(state, task.id, result.success);
@@ -320,8 +395,9 @@ async function runPlan(
         state.completedTasks = nextState.completedTasks;
         state.failedTasks = nextState.failedTasks;
         persistState(pi, state);
-        updateStatusWidget(state, ctx);
+        updateStatusWidget(state, ctx, ledger);
       },
+      onUsage,
     });
 
     const allSuccess = results.every((r) => r.success);
@@ -332,7 +408,7 @@ async function runPlan(
       );
       state.phase = "idle";
       persistState(pi, state);
-      updateStatusWidget(state, ctx);
+      updateStatusWidget(state, ctx, ledger);
       return;
     }
   }
@@ -340,12 +416,12 @@ async function runPlan(
   // ---- Review pipeline ----------------------------------------------------
   state.phase = "reviewing";
   persistState(pi, state);
-  updateStatusWidget(state, ctx);
+  updateStatusWidget(state, ctx, ledger);
 
   ctx.ui.notify("All tasks complete. Starting review pipeline...", "info");
 
   try {
-    await runReviewPipeline(ctx, pi, plan, config, logger);
+    await runReviewPipeline(ctx, pi, plan, config, logger, onUsage);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Review pipeline error: ${msg}`, "warning");
@@ -355,7 +431,7 @@ async function runPlan(
   // ---- Complete -----------------------------------------------------------
   state.phase = "complete";
   persistState(pi, state);
-  updateStatusWidget(state, ctx);
+  updateStatusWidget(state, ctx, ledger);
   logger.logComplete();
 
   const { completedTasks, failedTasks } = state;
@@ -399,6 +475,7 @@ interface WidgetUI {
 function updateStatusWidget(
   state: RalpixState,
   ctx: { ui: WidgetUI },
+  ledger?: TokenLedger,
 ): void {
   const { completedTasks, currentTaskId, failedTasks, planTitle, phase, planPath } = state;
 
@@ -417,7 +494,9 @@ function updateStatusWidget(
 
   const done = completedTasks.length;
 
-  const statusText = `📋 ralpix: ${phase} ${done}/${total}`;
+  const cost = ledger?.totalCost() ?? 0;
+  const costSuffix = cost > 0 ? `  $${cost.toFixed(3)}` : "";
+  const statusText = `📋 ralpix: ${phase} ${done}/${total}${costSuffix}`;
   ctx.ui.setStatus("ralpix", ctx.ui.theme.fg("accent", statusText));
 
   const lines: string[] = [
@@ -442,6 +521,12 @@ function updateStatusWidget(
       color = "muted";
     }
     lines.push(ctx.ui.theme.fg(color, `${icon} ${task.title}`));
+  }
+
+  if (ledger !== undefined) {
+    for (const row of ledger.rows(ctx.ui.theme)) {
+      lines.push(row);
+    }
   }
 
   ctx.ui.setWidget("ralpix", lines);

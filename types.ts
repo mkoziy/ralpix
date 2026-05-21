@@ -114,6 +114,15 @@ export interface RalpixState {
   progressFile: string;
 }
 
+/** Token usage captured from a single pi subprocess call */
+export interface SubprocessUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+}
+
 /** Progress log entry */
 export interface ProgressEntry {
   timestamp: string;
