@@ -23,13 +23,22 @@ void test("planCreationDebugFilePath uses project-local progress directory", () 
   );
 });
 
-void test("formatUsageSummary uses lowercase step and total labels", () => {
+void test("formatUsageSummary formats token counts and costs", () => {
   assert.equal(
     formatUsageSummary(
       { input: 12_300, output: 1_100, cost: 0.084 },
       { input: 24_800, output: 2_000, cost: 0.167 },
     ),
     "step in 12.3k out 1.1k cost $0.084  total in 24.8k out 2.0k cost $0.167",
+  );
+
+  // Values ≥ 100k round to whole k
+  assert.equal(
+    formatUsageSummary(
+      { input: 150_000, output: 9_500, cost: 1.234 },
+      { input: 200_000, output: 10_500, cost: 2.567 },
+    ),
+    "step in 150k out 9.5k cost $1.234  total in 200k out 10.5k cost $2.567",
   );
 });
 

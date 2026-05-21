@@ -20,7 +20,7 @@ import { Type } from "typebox";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
-import { ProgressLogger } from "./logger.js";
+import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
@@ -64,21 +64,8 @@ interface StatusWidgetView {
 // Token ledger
 // ---------------------------------------------------------------------------
 
-interface LedgerEntry {
-  input: number;
-  output: number;
-  cost: number;
-}
-
-function formatTokenCount(n: number): string {
-  if (n === 0) return "0";
-  if (n < 1000) return String(n);
-  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${Math.round(n / 1000)}k`;
-}
-
 function createTokenLedger() {
-  const map = new Map<string, LedgerEntry>();
+  const map = new Map<string, UsageSummary>();
 
   function add(provider: string, model: string, usage: SubprocessUsage): void {
     const key = `${provider}/${model}`;
@@ -96,7 +83,7 @@ function createTokenLedger() {
     return total;
   }
 
-  function snapshot(): LedgerEntry {
+  function snapshot(): UsageSummary {
     let input = 0;
     let output = 0;
     let cost = 0;
@@ -108,7 +95,7 @@ function createTokenLedger() {
     return { input, output, cost };
   }
 
-  function diffSince(previous: LedgerEntry): LedgerEntry {
+  function diffSince(previous: UsageSummary): UsageSummary {
     const current = snapshot();
     return {
       input: current.input - previous.input,
@@ -128,12 +115,12 @@ function createTokenLedger() {
 
       const label = key.length > 22 ? `…${key.slice(-21)}` : key;
       const costStr = e.cost > 0 ? `  $${e.cost.toFixed(3)}` : "";
-      out.push(theme.fg("muted", `${label.padEnd(22)} ↑${formatTokenCount(e.input)} ↓${formatTokenCount(e.output)}${costStr}`));
+      out.push(theme.fg("muted", `${label.padEnd(22)} ↑${fmtTokens(e.input)} ↓${fmtTokens(e.output)}${costStr}`));
     }
 
     if (map.size > 1) {
       const totalCostStr = hasCost ? `  $${totals.cost.toFixed(3)}` : "";
-      out.push(theme.fg("muted", `${"Total".padEnd(22)} ↑${formatTokenCount(totals.input)} ↓${formatTokenCount(totals.output)}${totalCostStr}`));
+      out.push(theme.fg("muted", `${"Total".padEnd(22)} ↑${fmtTokens(totals.input)} ↓${fmtTokens(totals.output)}${totalCostStr}`));
     }
 
     return out;
