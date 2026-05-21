@@ -20,7 +20,7 @@ import { Type } from "typebox";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
-import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
+import { ProgressLogger, fmtTokens, formatUsageSummary, type UsageSummary } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
@@ -29,7 +29,6 @@ import type {
   RalpixState,
   ReviewPipelineState,
   ReviewStageId,
-  ReviewStageState,
   ReviewStageStatus,
   SubprocessUsage,
 } from "./types.js";
@@ -66,11 +65,6 @@ type UsageById = Map<string, UsageByModel>;
 interface CurrentStepView {
   title: string;
   detail?: string;
-  usageLines: string[];
-}
-
-interface HistoryStepView {
-  text: string;
   usageLines: string[];
 }
 
@@ -185,6 +179,44 @@ function updateReviewStage(
   };
 }
 
+function clearStatusWidget(ctx: { ui: WidgetUI }): void {
+  ctx.ui.setWidget("ralpix", undefined);
+  ctx.ui.setStatus("ralpix", undefined);
+}
+
+function notifyTaskUsage(
+  notify: NotifyFn,
+  task: { number: number; title: string },
+  step: UsageSummary,
+  total: UsageSummary,
+): void {
+  notify(
+    `Task ${task.number}: ${task.title}\n${formatUsageSummary(step, total)}`,
+    "info",
+  );
+}
+
+function notifyReviewStepUsage(
+  notify: NotifyFn,
+  stage: ReviewStageId,
+  status: Exclude<ReviewStageStatus, "pending" | "active">,
+  step: UsageSummary | null,
+  total: UsageSummary,
+  detail?: string,
+): void {
+  const suffix = detail === undefined || detail.length === 0 ? "" : ` — ${detail}`;
+  const statusLabel = status === "failed"
+    ? "failed"
+    : (status === "skipped" ? "skipped" : "done");
+  const usageLine = step === null
+    ? `total in ${fmtTokens(total.input)} out ${fmtTokens(total.output)} cost $${total.cost.toFixed(3)}`
+    : formatUsageSummary(step, total);
+  notify(
+    `${REVIEW_STAGE_LABELS[stage]} (${statusLabel})${suffix}\n${usageLine}`,
+    status === "failed" ? "warning" : "info",
+  );
+}
+
 function currentStepView(
   state: RalpixState,
   tasks: Array<{ id: string; title: string }>,
@@ -210,55 +242,6 @@ function currentStepView(
   };
 }
 
-function historyLabelForTask(
-  state: RalpixState,
-  task: { id: string; title: string },
-): string | null {
-  if (state.completedTasks.includes(task.id)) return task.title;
-  if (state.failedTasks.includes(task.id)) return `${task.title} (failed)`;
-  if (state.currentTaskId === task.id) return task.title;
-  return null;
-}
-
-function historyLabelForReviewStage(stage: ReviewStageState): string | null {
-  if (stage.status === "pending") return null;
-  const label = REVIEW_STAGE_LABELS[stage.id];
-  if (stage.status === "failed") return `${label} (failed)`;
-  return label;
-}
-
-function buildHistorySteps(
-  state: RalpixState,
-  tasks: Array<{ id: string; title: string }>,
-  taskUsageById: UsageById,
-  reviewUsageById: UsageById,
-): HistoryStepView[] {
-  const steps: HistoryStepView[] = [];
-
-  for (const task of tasks) {
-    const text = historyLabelForTask(state, task);
-    if (text !== null) {
-      steps.push({
-        text,
-        usageLines: usageLinesFor(task.id, taskUsageById),
-      });
-    }
-  }
-
-  if (state.review !== undefined) {
-    for (const stage of state.review.stages) {
-      const text = historyLabelForReviewStage(stage);
-      if (text === null) continue;
-      steps.push({
-        text,
-        usageLines: usageLinesFor(stage.id, reviewUsageById),
-      });
-    }
-  }
-
-  return steps;
-}
-
 export function buildStatusWidgetView(
   state: RalpixState,
   tasks: Array<{ id: string; title: string }>,
@@ -267,31 +250,15 @@ export function buildStatusWidgetView(
   taskUsageById: UsageById = new Map(),
   reviewUsageById: UsageById = new Map(),
 ): StatusWidgetView {
-  const { completedTasks, planTitle, phase } = state;
+  const { completedTasks, phase } = state;
   const done = completedTasks.length;
   const usage = totalUsage ?? { input: 0, output: 0, cost: 0 };
   const costSuffix = usage.cost > 0 ? `  $${usage.cost.toFixed(3)}` : "";
 
-  const lines: WidgetLine[] = [
-    { color: "accent", text: `Plan: ${planTitle}` },
-    { color: "muted", text: `Phase: ${phase} | ${done}/${total} tasks` },
-  ];
+  const lines: WidgetLine[] = [];
 
   const current = currentStepView(state, tasks, taskUsageById, reviewUsageById);
-  const historySteps = buildHistorySteps(state, tasks, taskUsageById, reviewUsageById);
-  if (historySteps.length > 0) {
-    lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Steps" });
-    for (const step of historySteps) {
-      lines.push({ color: "muted", text: step.text });
-      for (const usageLine of step.usageLines) {
-        lines.push({ color: "muted", text: usageLine });
-      }
-    }
-  }
-
   if (current !== null) {
-    lines.push({ color: "muted", text: "" });
     lines.push({ color: "accent", text: "Now" });
     lines.push({
       color: "accent",
@@ -305,7 +272,7 @@ export function buildStatusWidgetView(
   }
 
   if (usage.input > 0 || usage.output > 0 || usage.cost > 0) {
-    lines.push({ color: "muted", text: "" });
+    if (lines.length > 0) lines.push({ color: "muted", text: "" });
     lines.push({ color: "accent", text: "Total" });
     lines.push({
       color: "muted",
@@ -597,7 +564,7 @@ async function runPlan(
     review: createInitialReviewState(config.externalReviewEnabled),
   };
   persistState(pi, state);
-  updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+  clearStatusWidget(ctx);
 
   // ---- Execute tasks ------------------------------------------------------
   if (pendingCount > 0) {
@@ -609,16 +576,19 @@ async function runPlan(
         const nextState = markTaskExecutionStarted(state, task.id);
         state.currentTaskId = nextState.currentTaskId;
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+        clearStatusWidget(ctx);
       },
       onTaskFinish(task, result) {
-        logger.logTaskUsage(task, ledger.diffSince(taskUsageStart), ledger.snapshot());
+        const stepUsage = ledger.diffSince(taskUsageStart);
+        const totalUsage = ledger.snapshot();
+        logger.logTaskUsage(task, stepUsage, totalUsage);
+        notifyTaskUsage(ctx.ui.notify.bind(ctx.ui), task, stepUsage, totalUsage);
         const nextState = markTaskExecutionFinished(state, task.id, result.success);
         state.currentTaskId = nextState.currentTaskId;
         state.completedTasks = nextState.completedTasks;
         state.failedTasks = nextState.failedTasks;
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+        clearStatusWidget(ctx);
       },
       onUsage,
     });
@@ -631,7 +601,7 @@ async function runPlan(
       );
       state.phase = "idle";
       persistState(pi, state);
-      updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+      clearStatusWidget(ctx);
       return;
     }
   }
@@ -639,7 +609,7 @@ async function runPlan(
   // ---- Review pipeline ----------------------------------------------------
   state.phase = "reviewing";
   persistState(pi, state);
-  updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+  clearStatusWidget(ctx);
 
   ctx.ui.notify("All tasks complete. Starting review pipeline...", "info");
   const reviewUsageStart = ledger.snapshot();
@@ -656,7 +626,7 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+        clearStatusWidget(ctx);
       },
       onStageUpdate(stage, detail) {
         state.review = updateReviewStage(
@@ -666,13 +636,16 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+        clearStatusWidget(ctx);
       },
       onStageFinish(stage, status, detail) {
         const stageUsageStart = reviewUsageStartById.get(stage);
+        const totalUsage = ledger.snapshot();
+        const stepUsage = stageUsageStart === undefined ? null : ledger.diffSince(stageUsageStart);
         if (stageUsageStart !== undefined) {
-          logger.logReviewStepUsage(stage, ledger.diffSince(stageUsageStart), ledger.snapshot());
+          logger.logReviewStepUsage(stage, ledger.diffSince(stageUsageStart), totalUsage);
         }
+        notifyReviewStepUsage(ctx.ui.notify.bind(ctx.ui), stage, status, stepUsage, totalUsage, detail);
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
           stage,
@@ -680,7 +653,7 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+        clearStatusWidget(ctx);
       },
     });
   } catch (error) {
@@ -693,7 +666,7 @@ async function runPlan(
   // ---- Complete -----------------------------------------------------------
   state.phase = "complete";
   persistState(pi, state);
-  updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+  clearStatusWidget(ctx);
   logger.logComplete();
 
   const { completedTasks, failedTasks } = state;
@@ -717,11 +690,7 @@ async function runPlan(
     }
   }
 
-  // Clear widget after a brief pause
-  setTimeout(() => {
-    ctx.ui.setWidget("ralpix", undefined);
-    ctx.ui.setStatus("ralpix", undefined);
-  }, 5000);
+  clearStatusWidget(ctx);
 }
 
 // ---------------------------------------------------------------------------
