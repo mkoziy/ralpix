@@ -112,7 +112,7 @@ void test("markTaskExecutionFinished records failure once and clears the active 
   assert.deepEqual(next.failedTasks, ["task-3", "task-4"]);
 });
 
-void test("buildStatusWidgetView renders review stages with live status detail", () => {
+void test("buildStatusWidgetView renders compact pipeline plus current step panel", () => {
   const state: RalpixState = {
     planPath: "/tmp/plan.md",
     planTitle: "Demo",
@@ -147,12 +147,16 @@ void test("buildStatusWidgetView renders review stages with live status detail",
       "Plan: Demo",
       "Phase: reviewing | 1/1 tasks",
       "✓ Task 1",
-      "  opencode-go/deepseek-v4-pro  in 1.0k  out 2.0k  $0.010",
       "",
       "Review",
       "✓ First pass",
+      "- External review",
+      "- External eval",
       "▶ Second pass — iteration 2/5",
-      "  opencode-go/glm-5.1  in 3.2k  out 800  $0.024",
+      "",
+      "Current",
+      "Second pass — iteration 2/5",
+      "opencode-go/glm-5.1  in 3.2k  out 800  $0.024",
     ],
   );
 });

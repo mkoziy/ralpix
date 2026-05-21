@@ -63,6 +63,12 @@ interface StatusWidgetView {
 type UsageByModel = Map<string, UsageSummary>;
 type UsageById = Map<string, UsageByModel>;
 
+interface CurrentStepView {
+  title: string;
+  detail?: string;
+  usageLines: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Token ledger
 // ---------------------------------------------------------------------------
@@ -176,7 +182,9 @@ function updateReviewStage(
 
 function formatReviewStageLine(stage: ReviewStageState): WidgetLine {
   const label = REVIEW_STAGE_LABELS[stage.id];
-  const suffix = stage.detail === undefined || stage.detail.length === 0 ? "" : ` — ${stage.detail}`;
+  const suffix = stage.status === "active" && stage.detail !== undefined && stage.detail.length > 0
+    ? ` — ${stage.detail}`
+    : "";
 
   switch (stage.status) {
     case "complete": {
@@ -195,6 +203,31 @@ function formatReviewStageLine(stage: ReviewStageState): WidgetLine {
       return { color: "muted", text: `○ ${label}${suffix}` };
     }
   }
+}
+
+function currentStepView(
+  state: RalpixState,
+  tasks: Array<{ id: string; title: string }>,
+  taskUsageById: UsageById,
+  reviewUsageById: UsageById,
+): CurrentStepView | null {
+  if (state.currentTaskId !== null) {
+    const task = tasks.find((entry) => entry.id === state.currentTaskId);
+    if (task === undefined) return null;
+    return {
+      title: task.title,
+      usageLines: usageLinesFor(task.id, taskUsageById),
+    };
+  }
+
+  const activeReviewStage = state.review?.stages.find((stage) => stage.status === "active");
+  if (activeReviewStage === undefined) return null;
+
+  return {
+    title: REVIEW_STAGE_LABELS[activeReviewStage.id],
+    usageLines: usageLinesFor(activeReviewStage.id, reviewUsageById),
+    ...(activeReviewStage.detail === undefined ? {} : { detail: activeReviewStage.detail }),
+  };
 }
 
 export function buildStatusWidgetView(
@@ -224,20 +257,28 @@ export function buildStatusWidgetView(
     } else {
       lines.push({ color: "muted", text: `○ ${task.title}` });
     }
-    for (const usageLine of usageLinesFor(task.id, taskUsageById)) {
-      lines.push({ color: "muted", text: `  ${usageLine}` });
-    }
   }
 
   if (review !== undefined) {
-    const visibleStages = review.stages.filter((stage) => stage.status !== "pending");
     lines.push({ color: "muted", text: "" });
     lines.push({ color: "accent", text: "Review" });
-    for (const stage of visibleStages) {
+    for (const stage of review.stages) {
       lines.push(formatReviewStageLine(stage));
-      for (const usageLine of usageLinesFor(stage.id, reviewUsageById)) {
-        lines.push({ color: "muted", text: `  ${usageLine}` });
-      }
+    }
+  }
+
+  const current = currentStepView(state, tasks, taskUsageById, reviewUsageById);
+  if (current !== null) {
+    lines.push({ color: "muted", text: "" });
+    lines.push({ color: "accent", text: "Current" });
+    lines.push({
+      color: "accent",
+      text: current.detail === undefined || current.detail.length === 0
+        ? current.title
+        : `${current.title} — ${current.detail}`,
+    });
+    for (const usageLine of current.usageLines) {
+      lines.push({ color: "muted", text: usageLine });
     }
   }
 
@@ -498,6 +539,7 @@ async function runPlan(
   const ledger = createTokenLedger();
   const taskUsageById: UsageById = new Map();
   const reviewUsageById: UsageById = new Map();
+  const reviewUsageStartById = new Map<ReviewStageId, UsageSummary>();
   const onUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
     ledger.add(provider, model, usage);
     if (state.currentTaskId === null) {
@@ -575,6 +617,7 @@ async function runPlan(
     await runReviewPipeline(ctx, pi, plan, config, logger, {
       onUsage,
       onStageStart(stage, detail) {
+        reviewUsageStartById.set(stage, ledger.snapshot());
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
           stage,
@@ -595,6 +638,10 @@ async function runPlan(
         updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
       },
       onStageFinish(stage, status, detail) {
+        const stageUsageStart = reviewUsageStartById.get(stage);
+        if (stageUsageStart !== undefined) {
+          logger.logReviewStepUsage(stage, ledger.diffSince(stageUsageStart), ledger.snapshot());
+        }
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
           stage,

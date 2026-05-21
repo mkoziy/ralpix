@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { EOL } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import type { Plan, PlanTask } from "./types.js";
+import type { Plan, PlanTask, ReviewStageId } from "./types.js";
 
 export interface UsageSummary {
   input: number;
@@ -31,6 +31,13 @@ export function formatUsageSummary(step: UsageSummary, total: UsageSummary): str
     `total in ${fmtTokens(total.input)} out ${fmtTokens(total.output)} cost $${total.cost.toFixed(3)}`,
   ].join("  ");
 }
+
+const REVIEW_STAGE_LOG_LABELS: Record<ReviewStageId, string> = {
+  "first-pass": "first pass",
+  "external-review": "external review",
+  "external-eval": "external eval",
+  "second-pass": "second pass",
+};
 
 export class ProgressLogger {
   readonly filePath: string;
@@ -113,6 +120,10 @@ export class ProgressLogger {
 
   logReviewUsage(step: UsageSummary, total: UsageSummary): void {
     this.append(`review_usage review pipeline  ${formatUsageSummary(step, total)}`);
+  }
+
+  logReviewStepUsage(stage: ReviewStageId, step: UsageSummary, total: UsageSummary): void {
+    this.append(`review_usage ${REVIEW_STAGE_LOG_LABELS[stage]}  ${formatUsageSummary(step, total)}`);
   }
 
   logComplete(): void {
