@@ -20,7 +20,7 @@ import { Type } from "typebox";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
-import { ProgressLogger, fmtTokens, formatUsageSummary, type UsageSummary } from "./logger.js";
+import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
@@ -115,8 +115,6 @@ function createTokenLedger() {
   return { add, diffSince, snapshot, totalCost };
 }
 
-type TokenLedger = ReturnType<typeof createTokenLedger>;
-
 function recordUsage(
   usageById: UsageById,
   id: string,
@@ -182,39 +180,6 @@ function updateReviewStage(
 function clearStatusWidget(ctx: { ui: WidgetUI }): void {
   ctx.ui.setWidget("ralpix", undefined);
   ctx.ui.setStatus("ralpix", undefined);
-}
-
-function notifyTaskUsage(
-  notify: NotifyFn,
-  task: { number: number; title: string },
-  step: UsageSummary,
-  total: UsageSummary,
-): void {
-  notify(
-    `Task ${task.number}: ${task.title}\n${formatUsageSummary(step, total)}`,
-    "info",
-  );
-}
-
-function notifyReviewStepUsage(
-  notify: NotifyFn,
-  stage: ReviewStageId,
-  status: Exclude<ReviewStageStatus, "pending" | "active">,
-  step: UsageSummary | null,
-  total: UsageSummary,
-  detail?: string,
-): void {
-  const suffix = detail === undefined || detail.length === 0 ? "" : ` — ${detail}`;
-  const statusLabel = status === "failed"
-    ? "failed"
-    : (status === "skipped" ? "skipped" : "done");
-  const usageLine = step === null
-    ? `total in ${fmtTokens(total.input)} out ${fmtTokens(total.output)} cost $${total.cost.toFixed(3)}`
-    : formatUsageSummary(step, total);
-  notify(
-    `${REVIEW_STAGE_LABELS[stage]} (${statusLabel})${suffix}\n${usageLine}`,
-    status === "failed" ? "warning" : "info",
-  );
 }
 
 function currentStepView(
@@ -488,11 +453,7 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
         `ralpix: previous run of "${state.planTitle}" was interrupted (phase: ${state.phase}).\nResume with: ${resumeCmd}`,
         "warning",
       );
-
-      // Update widget to show last known state
-      if (ctx.hasUI) {
-        updateStatusWidget(state, ctx);
-      }
+      if (ctx.hasUI) clearStatusWidget(ctx);
     }
   });
 }
@@ -548,7 +509,7 @@ async function runPlan(
     } else {
       recordUsage(taskUsageById, state.currentTaskId, provider, model, usage);
     }
-    updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
+    clearStatusWidget(ctx);
   };
   let taskUsageStart = ledger.snapshot();
 
@@ -582,7 +543,6 @@ async function runPlan(
         const stepUsage = ledger.diffSince(taskUsageStart);
         const totalUsage = ledger.snapshot();
         logger.logTaskUsage(task, stepUsage, totalUsage);
-        notifyTaskUsage(ctx.ui.notify.bind(ctx.ui), task, stepUsage, totalUsage);
         const nextState = markTaskExecutionFinished(state, task.id, result.success);
         state.currentTaskId = nextState.currentTaskId;
         state.completedTasks = nextState.completedTasks;
@@ -641,11 +601,9 @@ async function runPlan(
       onStageFinish(stage, status, detail) {
         const stageUsageStart = reviewUsageStartById.get(stage);
         const totalUsage = ledger.snapshot();
-        const stepUsage = stageUsageStart === undefined ? null : ledger.diffSince(stageUsageStart);
         if (stageUsageStart !== undefined) {
           logger.logReviewStepUsage(stage, ledger.diffSince(stageUsageStart), totalUsage);
         }
-        notifyReviewStepUsage(ctx.ui.notify.bind(ctx.ui), stage, status, stepUsage, totalUsage, detail);
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
           stage,
@@ -700,36 +658,4 @@ async function runPlan(
 interface WidgetUI {
   setStatus: (k: string, v: string | undefined) => void;
   setWidget: (k: string, v: string[] | undefined) => void;
-  theme: { fg: (c: string, t: string) => string };
-}
-
-function updateStatusWidget(
-  state: RalpixState,
-  ctx: { ui: WidgetUI },
-  ledger?: TokenLedger,
-  taskUsageById: UsageById = new Map(),
-  reviewUsageById: UsageById = new Map(),
-): void {
-  const { completedTasks, failedTasks, planPath } = state;
-
-  // Try to re-parse plan for fresh task titles
-  let tasks: Array<{ id: string; title: string }> = [];
-  let total = completedTasks.length + failedTasks.length;
-  try {
-    if (existsSync(planPath)) {
-      const plan = parsePlan(planPath);
-      tasks = plan.tasks.map((task) => ({ id: task.id, title: task.title }));
-      total = plan.tasks.length;
-    }
-  } catch {
-    // Plan may have been moved
-  }
-
-  const totalUsage = ledger?.snapshot() ?? { input: 0, output: 0, cost: 0 };
-  const view = buildStatusWidgetView(state, tasks, total, totalUsage, taskUsageById, reviewUsageById);
-  ctx.ui.setStatus("ralpix", ctx.ui.theme.fg("accent", view.statusText));
-
-  const lines = view.lines.map((line) => ctx.ui.theme.fg(line.color, line.text));
-
-  ctx.ui.setWidget("ralpix", lines);
 }
