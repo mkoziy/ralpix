@@ -112,7 +112,6 @@ function createTokenLedger() {
 
 type TokenLedger = ReturnType<typeof createTokenLedger>;
 
-
 function recordUsage(
   usageById: UsageById,
   id: string,
@@ -231,9 +230,10 @@ export function buildStatusWidgetView(
   }
 
   if (review !== undefined) {
+    const visibleStages = review.stages.filter((stage) => stage.status !== "pending");
     lines.push({ color: "muted", text: "" });
     lines.push({ color: "accent", text: "Review" });
-    for (const stage of review.stages) {
+    for (const stage of visibleStages) {
       lines.push(formatReviewStageLine(stage));
       for (const usageLine of usageLinesFor(stage.id, reviewUsageById)) {
         lines.push({ color: "muted", text: `  ${usageLine}` });
