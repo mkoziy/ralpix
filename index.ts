@@ -259,14 +259,6 @@ export function buildStatusWidgetView(
     }
   }
 
-  if (review !== undefined) {
-    lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Review" });
-    for (const stage of review.stages) {
-      lines.push(formatReviewStageLine(stage));
-    }
-  }
-
   const current = currentStepView(state, tasks, taskUsageById, reviewUsageById);
   if (current !== null) {
     lines.push({ color: "muted", text: "" });
@@ -279,6 +271,15 @@ export function buildStatusWidgetView(
     });
     for (const usageLine of current.usageLines) {
       lines.push({ color: "muted", text: usageLine });
+    }
+  }
+
+  if (review !== undefined) {
+    const visibleStages = review.stages.filter((stage) => stage.status !== "pending");
+    lines.push({ color: "muted", text: "" });
+    lines.push({ color: "accent", text: "Review" });
+    for (const stage of visibleStages) {
+      lines.push(formatReviewStageLine(stage));
     }
   }
 
