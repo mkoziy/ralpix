@@ -3,3 +3,6 @@ dist/
 .worktrees/
 .ralpix/*
 .claude/
+dist-test/
+test-widget.mjs
+test-widget-verify.mjs
