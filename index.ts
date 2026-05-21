@@ -20,7 +20,7 @@ import { Type } from "typebox";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
-import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
+import { ProgressLogger, type UsageSummary } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
@@ -104,29 +104,7 @@ function createTokenLedger() {
     };
   }
 
-  function rows(theme: WidgetUI["theme"]): string[] {
-    if (map.size === 0) return [];
-    const out: string[] = [theme.fg("muted", "── tokens ──────────────────")];
-    const totals = snapshot();
-    let hasCost = false;
-
-    for (const [key, e] of map.entries()) {
-      if (e.cost > 0) hasCost = true;
-
-      const label = key.length > 22 ? `…${key.slice(-21)}` : key;
-      const costStr = e.cost > 0 ? `  $${e.cost.toFixed(3)}` : "";
-      out.push(theme.fg("muted", `${label.padEnd(22)} ↑${fmtTokens(e.input)} ↓${fmtTokens(e.output)}${costStr}`));
-    }
-
-    if (map.size > 1) {
-      const totalCostStr = hasCost ? `  $${totals.cost.toFixed(3)}` : "";
-      out.push(theme.fg("muted", `${"Total".padEnd(22)} ↑${fmtTokens(totals.input)} ↓${fmtTokens(totals.output)}${totalCostStr}`));
-    }
-
-    return out;
-  }
-
-  return { add, diffSince, rows, snapshot, totalCost };
+  return { add, diffSince, snapshot, totalCost };
 }
 
 type TokenLedger = ReturnType<typeof createTokenLedger>;
@@ -655,12 +633,6 @@ function updateStatusWidget(
   ctx.ui.setStatus("ralpix", ctx.ui.theme.fg("accent", view.statusText));
 
   const lines = view.lines.map((line) => ctx.ui.theme.fg(line.color, line.text));
-
-  if (ledger !== undefined) {
-    for (const row of ledger.rows(ctx.ui.theme)) {
-      lines.push(row);
-    }
-  }
 
   ctx.ui.setWidget("ralpix", lines);
 }
