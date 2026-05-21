@@ -15,6 +15,7 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 - **Auto-commit** — commits after every successful task with a configurable message template
 - **Interactive plan creation** — describe a feature in one line, get a validated markdown plan back
 - **Multi-model review pipeline** — first pass (5 parallel agents) → optional external review (different provider) → second pass (critical issues only)
+- **Live review stage UI** — the status widget shows review phases and iteration progress, not just task execution
 - **Stalemate detection** — exits the external review loop when two models keep disagreeing, saving tokens
 - **Three-layer config** — bundled defaults → `~/.ralpix/config.json` → `./.ralpix/config.json`
 - **Prompt customization** — override any prompt globally or per-project

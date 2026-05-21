@@ -103,6 +103,20 @@ export interface TaskResult {
   summary?: string;
 }
 
+export type ReviewStageId = "first-pass" | "external-review" | "external-eval" | "second-pass";
+
+export type ReviewStageStatus = "pending" | "active" | "complete" | "failed" | "skipped";
+
+export interface ReviewStageState {
+  id: ReviewStageId;
+  status: ReviewStageStatus;
+  detail?: string;
+}
+
+export interface ReviewPipelineState {
+  stages: ReviewStageState[];
+}
+
 /** Session state persisted via pi.appendEntry */
 export interface RalpixState {
   planPath: string;
@@ -112,6 +126,7 @@ export interface RalpixState {
   completedTasks: string[];
   failedTasks: string[];
   progressFile: string;
+  review?: ReviewPipelineState;
 }
 
 /** Token usage captured from a single pi subprocess call */

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildStatusWidgetView,
   markTaskExecutionFinished,
   markTaskExecutionStarted,
   normalizePlanPathArg,
@@ -109,4 +110,42 @@ void test("markTaskExecutionFinished records failure once and clears the active 
   assert.equal(next.currentTaskId, null);
   assert.deepEqual(next.completedTasks, ["task-1"]);
   assert.deepEqual(next.failedTasks, ["task-3", "task-4"]);
+});
+
+void test("buildStatusWidgetView renders review stages with live status detail", () => {
+  const state: RalpixState = {
+    planPath: "/tmp/plan.md",
+    planTitle: "Demo",
+    currentTaskId: null,
+    phase: "reviewing",
+    completedTasks: ["task-1"],
+    failedTasks: [],
+    progressFile: "/tmp/progress.txt",
+    review: {
+      stages: [
+        { id: "first-pass", status: "complete" },
+        { id: "external-review", status: "skipped" },
+        { id: "external-eval", status: "skipped" },
+        { id: "second-pass", status: "active", detail: "iteration 2/5" },
+      ],
+    },
+  };
+
+  const view = buildStatusWidgetView(state, [{ id: "task-1", title: "Task 1" }], 1);
+
+  assert.equal(view.statusText, "📋 ralpix: reviewing 1/1");
+  assert.deepEqual(
+    view.lines.map((line) => line.text),
+    [
+      "Plan: Demo",
+      "Phase: reviewing | 1/1 tasks",
+      "✓ Task 1",
+      "",
+      "Review",
+      "✓ First pass",
+      "- External review",
+      "- External eval",
+      "▶ Second pass — iteration 2/5",
+    ],
+  );
 });

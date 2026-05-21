@@ -25,7 +25,14 @@ import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
 
-import type { RalpixState, SubprocessUsage } from "./types.js";
+import type {
+  RalpixState,
+  ReviewPipelineState,
+  ReviewStageId,
+  ReviewStageState,
+  ReviewStageStatus,
+  SubprocessUsage,
+} from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +49,16 @@ interface SessionEntry {
 
 type NotifyLevel = "error" | "info" | "success" | "warning";
 type NotifyFn = (message: string, level: NotifyLevel) => void;
+
+interface WidgetLine {
+  color: string;
+  text: string;
+}
+
+interface StatusWidgetView {
+  statusText: string;
+  lines: WidgetLine[];
+}
 
 // ---------------------------------------------------------------------------
 // Token ledger
@@ -110,6 +127,106 @@ function createTokenLedger() {
 }
 
 type TokenLedger = ReturnType<typeof createTokenLedger>;
+
+const REVIEW_STAGE_LABELS: Record<ReviewStageId, string> = {
+  "first-pass": "First pass",
+  "external-review": "External review",
+  "external-eval": "External eval",
+  "second-pass": "Second pass",
+};
+
+function createInitialReviewState(externalReviewEnabled: boolean): ReviewPipelineState {
+  return {
+    stages: [
+      { id: "first-pass", status: "pending" },
+      { id: "external-review", status: externalReviewEnabled ? "pending" : "skipped" },
+      { id: "external-eval", status: externalReviewEnabled ? "pending" : "skipped" },
+      { id: "second-pass", status: "pending" },
+    ],
+  };
+}
+
+function updateReviewStage(
+  review: ReviewPipelineState,
+  stageId: ReviewStageId,
+  status: ReviewStageStatus,
+  detail?: string,
+): ReviewPipelineState {
+  return {
+    stages: review.stages.map((stage) => {
+      if (stage.id !== stageId) return stage;
+      return {
+        ...stage,
+        status,
+        ...(detail === undefined ? {} : { detail }),
+      };
+    }),
+  };
+}
+
+function formatReviewStageLine(stage: ReviewStageState): WidgetLine {
+  const label = REVIEW_STAGE_LABELS[stage.id];
+  const suffix = stage.detail === undefined || stage.detail.length === 0 ? "" : ` — ${stage.detail}`;
+
+  switch (stage.status) {
+    case "complete": {
+      return { color: "success", text: `✓ ${label}${suffix}` };
+    }
+    case "failed": {
+      return { color: "error", text: `✗ ${label}${suffix}` };
+    }
+    case "active": {
+      return { color: "accent", text: `▶ ${label}${suffix}` };
+    }
+    case "skipped": {
+      return { color: "muted", text: `- ${label}${suffix}` };
+    }
+    case "pending": {
+      return { color: "muted", text: `○ ${label}${suffix}` };
+    }
+  }
+}
+
+export function buildStatusWidgetView(
+  state: RalpixState,
+  tasks: Array<{ id: string; title: string }>,
+  total: number,
+  totalCost = 0,
+): StatusWidgetView {
+  const { completedTasks, currentTaskId, failedTasks, planTitle, phase, review } = state;
+  const done = completedTasks.length;
+  const costSuffix = totalCost > 0 ? `  $${totalCost.toFixed(3)}` : "";
+
+  const lines: WidgetLine[] = [
+    { color: "accent", text: `Plan: ${planTitle}` },
+    { color: "muted", text: `Phase: ${phase} | ${done}/${total} tasks` },
+  ];
+
+  for (const task of tasks) {
+    if (completedTasks.includes(task.id)) {
+      lines.push({ color: "success", text: `✓ ${task.title}` });
+    } else if (failedTasks.includes(task.id)) {
+      lines.push({ color: "error", text: `✗ ${task.title}` });
+    } else if (currentTaskId === task.id) {
+      lines.push({ color: "accent", text: `▶ ${task.title}` });
+    } else {
+      lines.push({ color: "muted", text: `○ ${task.title}` });
+    }
+  }
+
+  if (review !== undefined) {
+    lines.push({ color: "muted", text: "" });
+    lines.push({ color: "accent", text: "Review" });
+    for (const stage of review.stages) {
+      lines.push(formatReviewStageLine(stage));
+    }
+  }
+
+  return {
+    statusText: `📋 ralpix: ${phase} ${done}/${total}${costSuffix}`,
+    lines,
+  };
+}
 
 export function normalizePlanPathArg(rawPath: string): string {
   if (!rawPath.startsWith("@")) return rawPath;
@@ -374,6 +491,7 @@ async function runPlan(
     completedTasks: plan.tasks.filter((t) => t.status === "completed").map((t) => t.id),
     failedTasks: plan.tasks.filter((t) => t.status === "failed").map((t) => t.id),
     progressFile: logger.filePath,
+    review: createInitialReviewState(config.externalReviewEnabled),
   };
   persistState(pi, state);
   updateStatusWidget(state, ctx, ledger);
@@ -421,7 +539,39 @@ async function runPlan(
   ctx.ui.notify("All tasks complete. Starting review pipeline...", "info");
 
   try {
-    await runReviewPipeline(ctx, pi, plan, config, logger, onUsage);
+    await runReviewPipeline(ctx, pi, plan, config, logger, {
+      onUsage,
+      onStageStart(stage, detail) {
+        state.review = updateReviewStage(
+          state.review ?? createInitialReviewState(config.externalReviewEnabled),
+          stage,
+          "active",
+          detail,
+        );
+        persistState(pi, state);
+        updateStatusWidget(state, ctx, ledger);
+      },
+      onStageUpdate(stage, detail) {
+        state.review = updateReviewStage(
+          state.review ?? createInitialReviewState(config.externalReviewEnabled),
+          stage,
+          "active",
+          detail,
+        );
+        persistState(pi, state);
+        updateStatusWidget(state, ctx, ledger);
+      },
+      onStageFinish(stage, status, detail) {
+        state.review = updateReviewStage(
+          state.review ?? createInitialReviewState(config.externalReviewEnabled),
+          stage,
+          status,
+          detail,
+        );
+        persistState(pi, state);
+        updateStatusWidget(state, ctx, ledger);
+      },
+    });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Review pipeline error: ${msg}`, "warning");
@@ -477,7 +627,7 @@ function updateStatusWidget(
   ctx: { ui: WidgetUI },
   ledger?: TokenLedger,
 ): void {
-  const { completedTasks, currentTaskId, failedTasks, planTitle, phase, planPath } = state;
+  const { completedTasks, failedTasks, planPath } = state;
 
   // Try to re-parse plan for fresh task titles
   let tasks: Array<{ id: string; title: string }> = [];
@@ -492,36 +642,11 @@ function updateStatusWidget(
     // Plan may have been moved
   }
 
-  const done = completedTasks.length;
-
   const cost = ledger?.totalCost() ?? 0;
-  const costSuffix = cost > 0 ? `  $${cost.toFixed(3)}` : "";
-  const statusText = `📋 ralpix: ${phase} ${done}/${total}${costSuffix}`;
-  ctx.ui.setStatus("ralpix", ctx.ui.theme.fg("accent", statusText));
+  const view = buildStatusWidgetView(state, tasks, total, cost);
+  ctx.ui.setStatus("ralpix", ctx.ui.theme.fg("accent", view.statusText));
 
-  const lines: string[] = [
-    ctx.ui.theme.fg("accent", `Plan: ${planTitle}`),
-    ctx.ui.theme.fg("muted", `Phase: ${phase} | ${done}/${total} tasks`),
-  ];
-
-  for (const task of tasks) {
-    let icon: string;
-    let color: string;
-    if (completedTasks.includes(task.id)) {
-      icon = "✓";
-      color = "success";
-    } else if (failedTasks.includes(task.id)) {
-      icon = "✗";
-      color = "error";
-    } else if (currentTaskId === task.id) {
-      icon = "▶";
-      color = "accent";
-    } else {
-      icon = "○";
-      color = "muted";
-    }
-    lines.push(ctx.ui.theme.fg(color, `${icon} ${task.title}`));
-  }
+  const lines = view.lines.map((line) => ctx.ui.theme.fg(line.color, line.text));
 
   if (ledger !== undefined) {
     for (const row of ledger.rows(ctx.ui.theme)) {

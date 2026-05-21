@@ -9,13 +9,38 @@ import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { ProgressLogger } from "./logger.js";
-import type { ModelConfig, Plan, RalpixConfig, SubprocessUsage } from "./types.js";
+import type {
+  ModelConfig,
+  Plan,
+  RalpixConfig,
+  ReviewStageId,
+  ReviewStageStatus,
+  SubprocessUsage,
+} from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 interface ReviewSessionReport {
   success: boolean;
   summary: string;
 }
+
+export interface ReviewPipelineHooks {
+  onStageStart?: (stage: ReviewStageId, detail?: string) => void;
+  onStageUpdate?: (stage: ReviewStageId, detail: string) => void;
+  onStageFinish?: (
+    stage: ReviewStageId,
+    status: Exclude<ReviewStageStatus, "pending" | "active">,
+    detail?: string,
+  ) => void;
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void;
+}
+
+const REVIEW_STAGES = {
+  firstPass: "first-pass",
+  secondPass: "second-pass",
+  externalReview: "external-review",
+  externalEval: "external-eval",
+} as const;
 
 function detectDefaultBranch(cwd: string): string {
   try {
@@ -166,8 +191,8 @@ async function runReviewProcess(
   const phaseToModelKey = {
     first: "review-first",
     second: "review-second",
-    external: "external-review",
-    eval: "external-eval",
+    external: REVIEW_STAGES.externalReview,
+    eval: REVIEW_STAGES.externalEval,
   } as const;
   const modelCfg = resolveModel(config, phaseToModelKey[phase]);
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
@@ -182,24 +207,27 @@ async function runFirstReview(
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
-  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  hooks?: ReviewPipelineHooks,
 ): Promise<string> {
   const modelCfg = resolveModel(config, "review-first");
   const effortSuffix = modelCfg.effort === null ? "" : ` — effort: ${modelCfg.effort}`;
+  hooks?.onStageStart?.(REVIEW_STAGES.firstPass, "running comprehensive review");
   logger.logReview("first", `STARTED (5 agents, comprehensive)${effortSuffix}`);
 
   const result = await runReviewProcess(
-    ctx, "review-first", config, plan, logger, defaultBranch, "first", true, undefined, onUsage,
+    ctx, "review-first", config, plan, logger, defaultBranch, "first", true, undefined, hooks?.onUsage,
   );
 
   if (result.success) {
     const msg = "COMPLETE";
     logger.logReview("first", msg);
+    hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "complete");
     return msg;
   }
 
   const msg = `ERROR: ${result.summary.slice(0, 200)}`;
   logger.logReview("first", msg);
+  hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "failed", result.summary.slice(0, 120));
   return msg;
 }
 
@@ -209,17 +237,20 @@ async function runReviewLoop(
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
-  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  hooks?: ReviewPipelineHooks,
 ): Promise<string> {
   const maxIterations = config.reviewMaxIterations === 0 ? 5 : config.reviewMaxIterations;
 
+  hooks?.onStageStart?.(REVIEW_STAGES.secondPass, `iteration 1/${maxIterations}`);
   logger.logReview("loop", `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
 
   for (let i = 0; i < maxIterations; i++) {
+    hooks?.onStageUpdate?.(REVIEW_STAGES.secondPass, `iteration ${i + 1}/${maxIterations}`);
     const headBefore = getHeadHash(ctx.cwd);
     if (headBefore.length === 0) {
       const msg = "ERROR: cannot determine HEAD hash (not a git repo?)";
       logger.logReview("loop", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "failed", "cannot determine git HEAD");
       return msg;
     }
 
@@ -228,12 +259,13 @@ async function runReviewLoop(
     logger.logReview("loop", `Iteration ${i + 1}/${maxIterations} — running review...${effortInfo}`);
 
     const result = await runReviewProcess(
-      ctx, "review-second", config, plan, logger, defaultBranch, "second", true, undefined, onUsage,
+      ctx, "review-second", config, plan, logger, defaultBranch, "second", true, undefined, hooks?.onUsage,
     );
 
     if (!result.success) {
       const msg = `ERROR: ${result.summary.slice(0, 200)}`;
       logger.logReview("loop", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "failed", result.summary.slice(0, 120));
       return msg;
     }
 
@@ -241,9 +273,11 @@ async function runReviewLoop(
     if (headAfter === headBefore) {
       const msg = `COMPLETE (iteration ${i + 1}) — no changes, review clean`;
       logger.logReview("loop", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "complete", `review clean at iteration ${i + 1}`);
       return msg;
     }
 
+    hooks?.onStageUpdate?.(REVIEW_STAGES.secondPass, `fixes applied in iteration ${i + 1}`);
     logger.logReview(
       "loop",
       `Iteration ${i + 1}: fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}), continuing...`,
@@ -252,6 +286,7 @@ async function runReviewLoop(
 
   const msg = `MAX_ITERATIONS (${maxIterations}) — review loop exhausted`;
   logger.logReview("loop", msg);
+  hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "complete", `max iterations reached (${maxIterations})`);
   return msg;
 }
 
@@ -262,7 +297,7 @@ async function runExternalReviewLoop(
   plan: Plan,
   logger: ProgressLogger,
   defaultBranch: string,
-  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  hooks?: ReviewPipelineHooks,
 ): Promise<string> {
   const maxIterations = config.externalReviewMaxIterations === 0 ? 5 : config.externalReviewMaxIterations;
   const patience = config.externalReviewPatience === 0 ? 3 : config.externalReviewPatience;
@@ -276,6 +311,8 @@ async function runExternalReviewLoop(
   if ((reviewerLabel ?? "").length === 0) {
     const msg = "SKIPPED — no model configured (externalReviewModel/defaultModel)";
     logger.logExternalReview("loop", msg);
+    hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "skipped", "no external model configured");
+    hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "no findings to evaluate");
     return msg;
   }
   const reviewerName = reviewerLabel ?? "(default)";
@@ -291,6 +328,7 @@ async function runExternalReviewLoop(
   let lastReviewHead = "";
 
   for (let i = 0; i < maxIterations; i++) {
+    hooks?.onStageStart?.(REVIEW_STAGES.externalReview, `iteration ${i + 1}/${maxIterations}`);
     const diffInstruction = lastReviewHead.length > 0
       ? `Run: \`git diff ${lastReviewHead}..HEAD\` to see the latest fix changes.`
       : `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`;
@@ -324,11 +362,13 @@ async function runExternalReviewLoop(
       piAgentDir,
       true,
       undefined,
-      onUsage,
+      hooks?.onUsage,
     );
     if (!reviewResult.success) {
       const msg = `ERROR: ${reviewResult.summary.slice(0, 200)}`;
       logger.logExternalReview("review", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "failed", reviewResult.summary.slice(0, 120));
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "failed", "external reviewer failed");
       return msg;
     }
 
@@ -336,13 +376,17 @@ async function runExternalReviewLoop(
     if (findings.length === 0 || (/^no issues found$/i).test(findings) || findings.length < 10) {
       const msg = `COMPLETE (iteration ${i + 1}) — no issues found`;
       logger.logExternalReview("review", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", "no issues found");
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "no findings to evaluate");
       return msg;
     }
 
+    hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", `findings reported in iteration ${i + 1}`);
     previousFindings = findings;
     lastReviewHead = getHeadHash(ctx.cwd);
 
     const headBefore = getHeadHash(ctx.cwd);
+    hooks?.onStageStart?.(REVIEW_STAGES.externalEval, `iteration ${i + 1}/${maxIterations}`);
     logger.logExternalReview("eval", `Iteration ${i + 1} — evaluating findings...`);
 
     const evalResult = await runReviewProcess(
@@ -355,18 +399,20 @@ async function runExternalReviewLoop(
       "eval",
       true,
       { FINDINGS: findings },
-      onUsage,
+      hooks?.onUsage,
     );
 
     if (!evalResult.success) {
       const msg = `ERROR: ${evalResult.summary.slice(0, 200)}`;
       logger.logExternalReview("eval", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "failed", evalResult.summary.slice(0, 120));
       return msg;
     }
 
     if (evalResult.summary.includes("EXTERNAL_REVIEW_DONE")) {
       const msg = `COMPLETE (iteration ${i + 1}) — all findings resolved`;
       logger.logExternalReview("eval", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", "all findings resolved");
       return msg;
     }
 
@@ -374,20 +420,25 @@ async function runExternalReviewLoop(
     if (headAfter === headBefore) {
       unchangedRounds++;
       logger.logExternalReview("eval", `no changes (${unchangedRounds}/${patience} stalemate rounds)`);
+      hooks?.onStageUpdate?.(REVIEW_STAGES.externalEval, `stalemate ${unchangedRounds}/${patience}`);
 
       if (unchangedRounds >= patience) {
         const msg = `STALEMATE — ${patience} rounds without changes`;
         logger.logExternalReview("eval", msg);
+        hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", `stalemate after ${patience} rounds`);
         return msg;
       }
     } else {
       unchangedRounds = 0;
       logger.logExternalReview("eval", `fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)})`);
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", `fixes applied in iteration ${i + 1}`);
     }
   }
 
   const msg = `MAX_ITERATIONS (${maxIterations})`;
   logger.logExternalReview("loop", msg);
+  hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", `max iterations reached (${maxIterations})`);
+  hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", `max iterations reached (${maxIterations})`);
   return msg;
 }
 
@@ -397,27 +448,33 @@ export async function runReviewPipeline(
   plan: Plan,
   config: RalpixConfig,
   logger: ProgressLogger,
-  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  hooks?: ReviewPipelineHooks,
 ): Promise<{ firstResult: string; externalResult: string; loopResult: string }> {
   if (!config.reviewEnabled) {
     const msg = "SKIPPED (review disabled)";
     logger.logReview("first", msg);
     logger.logReview("loop", msg);
+    hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "skipped", "review disabled");
+    hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "skipped", "review disabled");
+    hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "review disabled");
+    hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "skipped", "review disabled");
     return { firstResult: msg, externalResult: msg, loopResult: msg };
   }
 
   const defaultBranch = detectDefaultBranch(ctx.cwd);
 
-  const firstResult = await runFirstReview(ctx, config, plan, logger, defaultBranch, onUsage);
+  const firstResult = await runFirstReview(ctx, config, plan, logger, defaultBranch, hooks);
 
   let externalResult = "SKIPPED (disabled)";
   if (config.externalReviewEnabled) {
-    externalResult = await runExternalReviewLoop(ctx, config, plan, logger, defaultBranch, onUsage);
+    externalResult = await runExternalReviewLoop(ctx, config, plan, logger, defaultBranch, hooks);
   } else {
     logger.logExternalReview("loop", "SKIPPED (externalReviewEnabled: false)");
+    hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "skipped", "external review disabled");
+    hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "external review disabled");
   }
 
-  const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch, onUsage);
+  const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch, hooks);
 
   return { firstResult, externalResult, loopResult };
 }
