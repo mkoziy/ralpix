@@ -131,21 +131,30 @@ void test("buildStatusWidgetView renders review stages with live status detail",
     },
   };
 
-  const view = buildStatusWidgetView(state, [{ id: "task-1", title: "Task 1" }], 1);
+  const view = buildStatusWidgetView(
+    state,
+    [{ id: "task-1", title: "Task 1" }],
+    1,
+    0.034,
+    new Map([["task-1", new Map([["opencode-go/deepseek-v4-pro", { input: 1000, output: 2000, cost: 0.01 }]])]]),
+    new Map([["second-pass", new Map([["opencode-go/glm-5.1", { input: 3200, output: 800, cost: 0.024 }]])]]),
+  );
 
-  assert.equal(view.statusText, "📋 ralpix: reviewing 1/1");
+  assert.equal(view.statusText, "📋 ralpix: reviewing 1/1  $0.034");
   assert.deepEqual(
     view.lines.map((line) => line.text),
     [
       "Plan: Demo",
       "Phase: reviewing | 1/1 tasks",
       "✓ Task 1",
+      "  opencode-go/deepseek-v4-pro  in 1.0k  out 2.0k  $0.010",
       "",
       "Review",
       "✓ First pass",
       "- External review",
       "- External eval",
       "▶ Second pass — iteration 2/5",
+      "  opencode-go/glm-5.1  in 3.2k  out 800  $0.024",
     ],
   );
 });

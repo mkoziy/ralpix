@@ -20,7 +20,7 @@ import { Type } from "typebox";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
-import { ProgressLogger, type UsageSummary } from "./logger.js";
+import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline } from "./reviewer.js";
@@ -59,6 +59,9 @@ interface StatusWidgetView {
   statusText: string;
   lines: WidgetLine[];
 }
+
+type UsageByModel = Map<string, UsageSummary>;
+type UsageById = Map<string, UsageByModel>;
 
 // ---------------------------------------------------------------------------
 // Token ledger
@@ -108,6 +111,33 @@ function createTokenLedger() {
 }
 
 type TokenLedger = ReturnType<typeof createTokenLedger>;
+
+
+function recordUsage(
+  usageById: UsageById,
+  id: string,
+  provider: string,
+  model: string,
+  usage: SubprocessUsage,
+): void {
+  const key = `${provider}/${model}`;
+  const perModel = usageById.get(id) ?? new Map<string, UsageSummary>();
+  const previous = perModel.get(key) ?? { input: 0, output: 0, cost: 0 };
+  perModel.set(key, {
+    input: previous.input + usage.input + usage.cacheRead + usage.cacheWrite,
+    output: previous.output + usage.output,
+    cost: previous.cost + usage.cost,
+  });
+  usageById.set(id, perModel);
+}
+
+function usageLinesFor(id: string, usageById: UsageById): string[] {
+  const perModel = usageById.get(id);
+  if (perModel === undefined) return [];
+  return [...perModel.entries()].map(
+    ([key, usage]) => `${key}  in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`,
+  );
+}
 
 const REVIEW_STAGE_LABELS: Record<ReviewStageId, string> = {
   "first-pass": "First pass",
@@ -173,6 +203,8 @@ export function buildStatusWidgetView(
   tasks: Array<{ id: string; title: string }>,
   total: number,
   totalCost = 0,
+  taskUsageById: UsageById = new Map(),
+  reviewUsageById: UsageById = new Map(),
 ): StatusWidgetView {
   const { completedTasks, currentTaskId, failedTasks, planTitle, phase, review } = state;
   const done = completedTasks.length;
@@ -193,6 +225,9 @@ export function buildStatusWidgetView(
     } else {
       lines.push({ color: "muted", text: `○ ${task.title}` });
     }
+    for (const usageLine of usageLinesFor(task.id, taskUsageById)) {
+      lines.push({ color: "muted", text: `  ${usageLine}` });
+    }
   }
 
   if (review !== undefined) {
@@ -200,6 +235,9 @@ export function buildStatusWidgetView(
     lines.push({ color: "accent", text: "Review" });
     for (const stage of review.stages) {
       lines.push(formatReviewStageLine(stage));
+      for (const usageLine of usageLinesFor(stage.id, reviewUsageById)) {
+        lines.push({ color: "muted", text: `  ${usageLine}` });
+      }
     }
   }
 
@@ -458,9 +496,19 @@ async function runPlan(
 
   // Token ledger — accumulates usage across all subprocess calls
   const ledger = createTokenLedger();
+  const taskUsageById: UsageById = new Map();
+  const reviewUsageById: UsageById = new Map();
   const onUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
     ledger.add(provider, model, usage);
-    updateStatusWidget(state, ctx, ledger);
+    if (state.currentTaskId === null) {
+      const activeReviewStage = state.review?.stages.find((stage) => stage.status === "active");
+      if (activeReviewStage !== undefined) {
+        recordUsage(reviewUsageById, activeReviewStage.id, provider, model, usage);
+      }
+    } else {
+      recordUsage(taskUsageById, state.currentTaskId, provider, model, usage);
+    }
+    updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
   };
   let taskUsageStart = ledger.snapshot();
 
@@ -476,7 +524,7 @@ async function runPlan(
     review: createInitialReviewState(config.externalReviewEnabled),
   };
   persistState(pi, state);
-  updateStatusWidget(state, ctx, ledger);
+  updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
 
   // ---- Execute tasks ------------------------------------------------------
   if (pendingCount > 0) {
@@ -488,7 +536,7 @@ async function runPlan(
         const nextState = markTaskExecutionStarted(state, task.id);
         state.currentTaskId = nextState.currentTaskId;
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger);
+        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
       },
       onTaskFinish(task, result) {
         logger.logTaskUsage(task, ledger.diffSince(taskUsageStart), ledger.snapshot());
@@ -497,7 +545,7 @@ async function runPlan(
         state.completedTasks = nextState.completedTasks;
         state.failedTasks = nextState.failedTasks;
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger);
+        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
       },
       onUsage,
     });
@@ -510,7 +558,7 @@ async function runPlan(
       );
       state.phase = "idle";
       persistState(pi, state);
-      updateStatusWidget(state, ctx, ledger);
+      updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
       return;
     }
   }
@@ -518,7 +566,7 @@ async function runPlan(
   // ---- Review pipeline ----------------------------------------------------
   state.phase = "reviewing";
   persistState(pi, state);
-  updateStatusWidget(state, ctx, ledger);
+  updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
 
   ctx.ui.notify("All tasks complete. Starting review pipeline...", "info");
   const reviewUsageStart = ledger.snapshot();
@@ -534,7 +582,7 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger);
+        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
       },
       onStageUpdate(stage, detail) {
         state.review = updateReviewStage(
@@ -544,7 +592,7 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger);
+        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
       },
       onStageFinish(stage, status, detail) {
         state.review = updateReviewStage(
@@ -554,7 +602,7 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        updateStatusWidget(state, ctx, ledger);
+        updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
       },
     });
   } catch (error) {
@@ -567,7 +615,7 @@ async function runPlan(
   // ---- Complete -----------------------------------------------------------
   state.phase = "complete";
   persistState(pi, state);
-  updateStatusWidget(state, ctx, ledger);
+  updateStatusWidget(state, ctx, ledger, taskUsageById, reviewUsageById);
   logger.logComplete();
 
   const { completedTasks, failedTasks } = state;
@@ -612,6 +660,8 @@ function updateStatusWidget(
   state: RalpixState,
   ctx: { ui: WidgetUI },
   ledger?: TokenLedger,
+  taskUsageById: UsageById = new Map(),
+  reviewUsageById: UsageById = new Map(),
 ): void {
   const { completedTasks, failedTasks, planPath } = state;
 
@@ -629,7 +679,7 @@ function updateStatusWidget(
   }
 
   const cost = ledger?.totalCost() ?? 0;
-  const view = buildStatusWidgetView(state, tasks, total, cost);
+  const view = buildStatusWidgetView(state, tasks, total, cost, taskUsageById, reviewUsageById);
   ctx.ui.setStatus("ralpix", ctx.ui.theme.fg("accent", view.statusText));
 
   const lines = view.lines.map((line) => ctx.ui.theme.fg(line.color, line.text));

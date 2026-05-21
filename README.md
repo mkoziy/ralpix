@@ -334,14 +334,25 @@ Started: 2026-05-12T14:30:00.000Z
 [2026-05-12T14:30:10.401Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: tool finished in 1s: exec_command rg -n "health" src
 [2026-05-12T14:30:12.208Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: assistant: Audited the existing health-check wiring and test coverage.
 [2026-05-12T14:32:10.456Z] TASK_END    Task 1: Set up the foundation  ✓ SUCCESS — commit a1b2c3d
-[2026-05-12T14:32:10.457Z] TASK_START  Task 2: Implement core logic
+[2026-05-12T14:32:10.457Z] task_usage  Task 1: Set up the foundation  step in 12.3k out 1.1k cost $0.084  total in 24.8k out 2.0k cost $0.167
+[2026-05-12T14:32:10.458Z] TASK_START  Task 2: Implement core logic
 ...
 [2026-05-12T14:45:00.000Z] REVIEW_FIRST   COMPLETE (iteration 1)
 [2026-05-12T14:48:00.000Z] REVIEW_SECOND  COMPLETE (iteration 1)
-[2026-05-12T14:48:00.001Z] PLAN_COMPLETE  All tasks finished
+[2026-05-12T14:48:00.001Z] review_usage review pipeline  step in 8.2k out 900 cost $0.052  total in 33.0k out 2.9k cost $0.219
+[2026-05-12T14:48:00.002Z] PLAN_COMPLETE  All tasks finished
 ```
 
 `TASK_INFO` lines show live subprocess summaries: attempt starts, tool/command previews, short assistant status notes, and idle heartbeats.
+
+`task_usage` and `review_usage` lines report per-step and cumulative token counts with cost, using the format:
+
+```
+task_usage  Task N: <title>  step in <input> out <output> cost $<cost>  total in <input> out <output> cost $<cost>
+review_usage review pipeline  step in <input> out <output> cost $<cost>  total in <input> out <output> cost $<cost>
+```
+
+Token counts are abbreviated (e.g. `12.3k`, `150k`).
 
 ---
 

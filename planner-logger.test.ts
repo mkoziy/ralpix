@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatUsageSummary, progressDirForCwd } from "./logger.js";
+import { fmtTokens, formatUsageSummary, progressDirForCwd } from "./logger.js";
 import { planCreationDebugFilePath } from "./planner-debug.js";
 import {
   buildPlanCreationPrompt,
@@ -40,6 +40,19 @@ void test("formatUsageSummary formats token counts and costs", () => {
     ),
     "step in 150k out 9.5k cost $1.234  total in 200k out 10.5k cost $2.567",
   );
+});
+
+void test("fmtTokens formats token counts with k suffix", () => {
+  assert.equal(fmtTokens(0), "0");
+  assert.equal(fmtTokens(1), "1");
+  assert.equal(fmtTokens(999), "999");
+  assert.equal(fmtTokens(1000), "1.0k");
+  assert.equal(fmtTokens(9999), "10.0k");
+  assert.equal(fmtTokens(10_000), "10.0k");
+  assert.equal(fmtTokens(99_999), "100.0k");
+  assert.equal(fmtTokens(100_000), "100k");
+  assert.equal(fmtTokens(150_000), "150k");
+  assert.equal(fmtTokens(999_999), "1000k");
 });
 
 void test("buildPlanCreationPrompt requires draft submission before session ends", () => {
