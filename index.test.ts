@@ -135,9 +135,12 @@ void test("buildStatusWidgetView renders compact pipeline plus current step pane
     state,
     [{ id: "task-1", title: "Task 1" }],
     1,
-    0.034,
+    { input: 4200, output: 2800, cost: 0.034 },
     new Map([["task-1", new Map([["opencode-go/deepseek-v4-pro", { input: 1000, output: 2000, cost: 0.01 }]])]]),
-    new Map([["second-pass", new Map([["opencode-go/glm-5.1", { input: 3200, output: 800, cost: 0.024 }]])]]),
+    new Map([
+      ["first-pass", new Map([["opencode-go/glm-5.1", { input: 1000, output: 1200, cost: 0.01 }]])],
+      ["second-pass", new Map([["opencode-go/glm-5.1", { input: 3200, output: 800, cost: 0.024 }]])],
+    ]),
   );
 
   assert.equal(view.statusText, "📋 ralpix: reviewing 1/1  $0.034");
@@ -146,15 +149,21 @@ void test("buildStatusWidgetView renders compact pipeline plus current step pane
     [
       "Plan: Demo",
       "Phase: reviewing | 1/1 tasks",
-      "✓ Task 1",
       "",
-      "Current",
+      "Now current",
       "Second pass — iteration 2/5",
       "opencode-go/glm-5.1  in 3.2k  out 800  $0.024",
       "",
-      "Review",
+      "Steps",
+      "✓ Task 1",
+      "opencode-go/deepseek-v4-pro  in 1.0k  out 2.0k  $0.010",
       "✓ First pass",
+      "opencode-go/glm-5.1  in 1.0k  out 1.2k  $0.010",
       "▶ Second pass — iteration 2/5",
+      "opencode-go/glm-5.1  in 3.2k  out 800  $0.024",
+      "",
+      "Total usage",
+      "in 4.2k  out 2.8k  $0.034",
     ],
   );
 });

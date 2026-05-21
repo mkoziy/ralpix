@@ -69,6 +69,11 @@ interface CurrentStepView {
   usageLines: string[];
 }
 
+interface HistoryStepView {
+  line: WidgetLine;
+  usageLines: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Token ledger
 // ---------------------------------------------------------------------------
@@ -230,39 +235,67 @@ function currentStepView(
   };
 }
 
+function buildHistorySteps(
+  state: RalpixState,
+  tasks: Array<{ id: string; title: string }>,
+  taskUsageById: UsageById,
+  reviewUsageById: UsageById,
+): HistoryStepView[] {
+  const steps: HistoryStepView[] = [];
+
+  for (const task of tasks) {
+    let line: WidgetLine | null = null;
+    if (state.completedTasks.includes(task.id)) {
+      line = { color: "success", text: `✓ ${task.title}` };
+    } else if (state.failedTasks.includes(task.id)) {
+      line = { color: "error", text: `✗ ${task.title}` };
+    } else if (state.currentTaskId === task.id) {
+      line = { color: "accent", text: `▶ ${task.title}` };
+    }
+
+    if (line !== null) {
+      steps.push({
+        line,
+        usageLines: usageLinesFor(task.id, taskUsageById),
+      });
+    }
+  }
+
+  if (state.review !== undefined) {
+    for (const stage of state.review.stages) {
+      if (stage.status === "pending") continue;
+      steps.push({
+        line: formatReviewStageLine(stage),
+        usageLines: usageLinesFor(stage.id, reviewUsageById),
+      });
+    }
+  }
+
+  return steps;
+}
+
 export function buildStatusWidgetView(
   state: RalpixState,
   tasks: Array<{ id: string; title: string }>,
   total: number,
-  totalCost = 0,
+  totalUsage?: UsageSummary,
   taskUsageById: UsageById = new Map(),
   reviewUsageById: UsageById = new Map(),
 ): StatusWidgetView {
-  const { completedTasks, currentTaskId, failedTasks, planTitle, phase, review } = state;
+  const { completedTasks, planTitle, phase } = state;
   const done = completedTasks.length;
-  const costSuffix = totalCost > 0 ? `  $${totalCost.toFixed(3)}` : "";
+  const usage = totalUsage ?? { input: 0, output: 0, cost: 0 };
+  const costSuffix = usage.cost > 0 ? `  $${usage.cost.toFixed(3)}` : "";
 
   const lines: WidgetLine[] = [
     { color: "accent", text: `Plan: ${planTitle}` },
     { color: "muted", text: `Phase: ${phase} | ${done}/${total} tasks` },
   ];
 
-  for (const task of tasks) {
-    if (completedTasks.includes(task.id)) {
-      lines.push({ color: "success", text: `✓ ${task.title}` });
-    } else if (failedTasks.includes(task.id)) {
-      lines.push({ color: "error", text: `✗ ${task.title}` });
-    } else if (currentTaskId === task.id) {
-      lines.push({ color: "accent", text: `▶ ${task.title}` });
-    } else {
-      lines.push({ color: "muted", text: `○ ${task.title}` });
-    }
-  }
-
   const current = currentStepView(state, tasks, taskUsageById, reviewUsageById);
   if (current !== null) {
     lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Current" });
+    lines.push({ color: "accent", text: "Now current" });
     lines.push({
       color: "accent",
       text: current.detail === undefined || current.detail.length === 0
@@ -274,13 +307,25 @@ export function buildStatusWidgetView(
     }
   }
 
-  if (review !== undefined) {
-    const visibleStages = review.stages.filter((stage) => stage.status !== "pending");
+  const historySteps = buildHistorySteps(state, tasks, taskUsageById, reviewUsageById);
+  if (historySteps.length > 0) {
     lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Review" });
-    for (const stage of visibleStages) {
-      lines.push(formatReviewStageLine(stage));
+    lines.push({ color: "accent", text: "Steps" });
+    for (const step of historySteps) {
+      lines.push(step.line);
+      for (const usageLine of step.usageLines) {
+        lines.push({ color: "muted", text: usageLine });
+      }
     }
+  }
+
+  if (usage.input > 0 || usage.output > 0 || usage.cost > 0) {
+    lines.push({ color: "muted", text: "" });
+    lines.push({ color: "accent", text: "Total usage" });
+    lines.push({
+      color: "muted",
+      text: `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`,
+    });
   }
 
   return {
@@ -726,8 +771,8 @@ function updateStatusWidget(
     // Plan may have been moved
   }
 
-  const cost = ledger?.totalCost() ?? 0;
-  const view = buildStatusWidgetView(state, tasks, total, cost, taskUsageById, reviewUsageById);
+  const totalUsage = ledger?.snapshot() ?? { input: 0, output: 0, cost: 0 };
+  const view = buildStatusWidgetView(state, tasks, total, totalUsage, taskUsageById, reviewUsageById);
   ctx.ui.setStatus("ralpix", ctx.ui.theme.fg("accent", view.statusText));
 
   const lines = view.lines.map((line) => ctx.ui.theme.fg(line.color, line.text));
