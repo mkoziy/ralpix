@@ -8,8 +8,28 @@ import { dirname, join, resolve } from "node:path";
 
 import type { Plan, PlanTask } from "./types.js";
 
+export interface UsageSummary {
+  input: number;
+  output: number;
+  cost: number;
+}
+
 export function progressDirForCwd(cwd: string): string {
   return resolve(cwd, ".ralpix", "progress");
+}
+
+function fmtTokens(n: number): string {
+  if (n === 0) return "0";
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
+export function formatUsageSummary(step: UsageSummary, total: UsageSummary): string {
+  return [
+    `step in ${fmtTokens(step.input)} out ${fmtTokens(step.output)} cost $${step.cost.toFixed(3)}`,
+    `total in ${fmtTokens(total.input)} out ${fmtTokens(total.output)} cost $${total.cost.toFixed(3)}`,
+  ].join("  ");
 }
 
 export class ProgressLogger {
@@ -74,6 +94,10 @@ export class ProgressLogger {
     this.append(`TASK_INFO   Task ${task.number}: ${task.title}  ${detail}`);
   }
 
+  logTaskUsage(task: PlanTask, step: UsageSummary, total: UsageSummary): void {
+    this.append(`task_usage  Task ${task.number}: ${task.title}  ${formatUsageSummary(step, total)}`);
+  }
+
   logExternalReview(phase: string, result: string): void {
     this.append(`REVIEW_XTRNL ${phase.padEnd(8)} ${result}`);
   }
@@ -85,6 +109,10 @@ export class ProgressLogger {
       loop: "REVIEW_LOOP",
     };
     this.append(`${PHASE_LABELS[phase].padEnd(14)} ${result}`);
+  }
+
+  logReviewUsage(step: UsageSummary, total: UsageSummary): void {
+    this.append(`review_usage review pipeline  ${formatUsageSummary(step, total)}`);
   }
 
   logComplete(): void {

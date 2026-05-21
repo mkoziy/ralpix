@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { progressDirForCwd } from "./logger.js";
+import { formatUsageSummary, progressDirForCwd } from "./logger.js";
 import { planCreationDebugFilePath } from "./planner-debug.js";
 import {
   buildPlanCreationPrompt,
@@ -20,6 +20,16 @@ void test("planCreationDebugFilePath uses project-local progress directory", () 
   assert.equal(
     planCreationDebugFilePath("/tmp/example"),
     "/tmp/example/.ralpix/progress/plan-creation-debug.txt",
+  );
+});
+
+void test("formatUsageSummary uses lowercase step and total labels", () => {
+  assert.equal(
+    formatUsageSummary(
+      { input: 12_300, output: 1_100, cost: 0.084 },
+      { input: 24_800, output: 2_000, cost: 0.167 },
+    ),
+    "step in 12.3k out 1.1k cost $0.084  total in 24.8k out 2.0k cost $0.167",
   );
 });
 

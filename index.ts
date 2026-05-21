@@ -70,7 +70,7 @@ interface LedgerEntry {
   cost: number;
 }
 
-function fmtTokens(n: number): string {
+function formatTokenCount(n: number): string {
   if (n === 0) return "0";
   if (n < 1000) return String(n);
   if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
@@ -96,34 +96,50 @@ function createTokenLedger() {
     return total;
   }
 
+  function snapshot(): LedgerEntry {
+    let input = 0;
+    let output = 0;
+    let cost = 0;
+    for (const e of map.values()) {
+      input += e.input;
+      output += e.output;
+      cost += e.cost;
+    }
+    return { input, output, cost };
+  }
+
+  function diffSince(previous: LedgerEntry): LedgerEntry {
+    const current = snapshot();
+    return {
+      input: current.input - previous.input,
+      output: current.output - previous.output,
+      cost: current.cost - previous.cost,
+    };
+  }
+
   function rows(theme: WidgetUI["theme"]): string[] {
     if (map.size === 0) return [];
     const out: string[] = [theme.fg("muted", "── tokens ──────────────────")];
-    let totalIn = 0;
-    let totalOut = 0;
-    let totalC = 0;
+    const totals = snapshot();
     let hasCost = false;
 
     for (const [key, e] of map.entries()) {
-      totalIn += e.input;
-      totalOut += e.output;
-      totalC += e.cost;
       if (e.cost > 0) hasCost = true;
 
       const label = key.length > 22 ? `…${key.slice(-21)}` : key;
       const costStr = e.cost > 0 ? `  $${e.cost.toFixed(3)}` : "";
-      out.push(theme.fg("muted", `${label.padEnd(22)} ↑${fmtTokens(e.input)} ↓${fmtTokens(e.output)}${costStr}`));
+      out.push(theme.fg("muted", `${label.padEnd(22)} ↑${formatTokenCount(e.input)} ↓${formatTokenCount(e.output)}${costStr}`));
     }
 
     if (map.size > 1) {
-      const totalCostStr = hasCost ? `  $${totalC.toFixed(3)}` : "";
-      out.push(theme.fg("muted", `${"Total".padEnd(22)} ↑${fmtTokens(totalIn)} ↓${fmtTokens(totalOut)}${totalCostStr}`));
+      const totalCostStr = hasCost ? `  $${totals.cost.toFixed(3)}` : "";
+      out.push(theme.fg("muted", `${"Total".padEnd(22)} ↑${formatTokenCount(totals.input)} ↓${formatTokenCount(totals.output)}${totalCostStr}`));
     }
 
     return out;
   }
 
-  return { add, totalCost, rows };
+  return { add, diffSince, rows, snapshot, totalCost };
 }
 
 type TokenLedger = ReturnType<typeof createTokenLedger>;
@@ -481,6 +497,7 @@ async function runPlan(
     ledger.add(provider, model, usage);
     updateStatusWidget(state, ctx, ledger);
   };
+  let taskUsageStart = ledger.snapshot();
 
   // Initial state
   const state: RalpixState = {
@@ -502,12 +519,14 @@ async function runPlan(
 
     const results = await executeAllTasks(ctx, pi, plan, config, logger, {
       onTaskStart(task) {
+        taskUsageStart = ledger.snapshot();
         const nextState = markTaskExecutionStarted(state, task.id);
         state.currentTaskId = nextState.currentTaskId;
         persistState(pi, state);
         updateStatusWidget(state, ctx, ledger);
       },
       onTaskFinish(task, result) {
+        logger.logTaskUsage(task, ledger.diffSince(taskUsageStart), ledger.snapshot());
         const nextState = markTaskExecutionFinished(state, task.id, result.success);
         state.currentTaskId = nextState.currentTaskId;
         state.completedTasks = nextState.completedTasks;
@@ -537,6 +556,7 @@ async function runPlan(
   updateStatusWidget(state, ctx, ledger);
 
   ctx.ui.notify("All tasks complete. Starting review pipeline...", "info");
+  const reviewUsageStart = ledger.snapshot();
 
   try {
     await runReviewPipeline(ctx, pi, plan, config, logger, {
@@ -577,6 +597,7 @@ async function runPlan(
     ctx.ui.notify(`Review pipeline error: ${msg}`, "warning");
     logger.logReview("first", `ERROR: ${msg}`);
   }
+  logger.logReviewUsage(ledger.diffSince(reviewUsageStart), ledger.snapshot());
 
   // ---- Complete -----------------------------------------------------------
   state.phase = "complete";
