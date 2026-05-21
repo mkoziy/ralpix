@@ -70,7 +70,7 @@ interface CurrentStepView {
 }
 
 interface HistoryStepView {
-  line: WidgetLine;
+  text: string;
   usageLines: string[];
 }
 
@@ -185,31 +185,6 @@ function updateReviewStage(
   };
 }
 
-function formatReviewStageLine(stage: ReviewStageState): WidgetLine {
-  const label = REVIEW_STAGE_LABELS[stage.id];
-  const suffix = stage.status === "active" && stage.detail !== undefined && stage.detail.length > 0
-    ? ` — ${stage.detail}`
-    : "";
-
-  switch (stage.status) {
-    case "complete": {
-      return { color: "success", text: `✓ ${label}${suffix}` };
-    }
-    case "failed": {
-      return { color: "error", text: `✗ ${label}${suffix}` };
-    }
-    case "active": {
-      return { color: "accent", text: `▶ ${label}${suffix}` };
-    }
-    case "skipped": {
-      return { color: "muted", text: `- ${label}${suffix}` };
-    }
-    case "pending": {
-      return { color: "muted", text: `○ ${label}${suffix}` };
-    }
-  }
-}
-
 function currentStepView(
   state: RalpixState,
   tasks: Array<{ id: string; title: string }>,
@@ -235,6 +210,23 @@ function currentStepView(
   };
 }
 
+function historyLabelForTask(
+  state: RalpixState,
+  task: { id: string; title: string },
+): string | null {
+  if (state.completedTasks.includes(task.id)) return task.title;
+  if (state.failedTasks.includes(task.id)) return `${task.title} (failed)`;
+  if (state.currentTaskId === task.id) return task.title;
+  return null;
+}
+
+function historyLabelForReviewStage(stage: ReviewStageState): string | null {
+  if (stage.status === "pending") return null;
+  const label = REVIEW_STAGE_LABELS[stage.id];
+  if (stage.status === "failed") return `${label} (failed)`;
+  return label;
+}
+
 function buildHistorySteps(
   state: RalpixState,
   tasks: Array<{ id: string; title: string }>,
@@ -244,18 +236,10 @@ function buildHistorySteps(
   const steps: HistoryStepView[] = [];
 
   for (const task of tasks) {
-    let line: WidgetLine | null = null;
-    if (state.completedTasks.includes(task.id)) {
-      line = { color: "success", text: `✓ ${task.title}` };
-    } else if (state.failedTasks.includes(task.id)) {
-      line = { color: "error", text: `✗ ${task.title}` };
-    } else if (state.currentTaskId === task.id) {
-      line = { color: "accent", text: `▶ ${task.title}` };
-    }
-
-    if (line !== null) {
+    const text = historyLabelForTask(state, task);
+    if (text !== null) {
       steps.push({
-        line,
+        text,
         usageLines: usageLinesFor(task.id, taskUsageById),
       });
     }
@@ -263,9 +247,10 @@ function buildHistorySteps(
 
   if (state.review !== undefined) {
     for (const stage of state.review.stages) {
-      if (stage.status === "pending") continue;
+      const text = historyLabelForReviewStage(stage);
+      if (text === null) continue;
       steps.push({
-        line: formatReviewStageLine(stage),
+        text,
         usageLines: usageLinesFor(stage.id, reviewUsageById),
       });
     }
@@ -293,9 +278,21 @@ export function buildStatusWidgetView(
   ];
 
   const current = currentStepView(state, tasks, taskUsageById, reviewUsageById);
+  const historySteps = buildHistorySteps(state, tasks, taskUsageById, reviewUsageById);
+  if (historySteps.length > 0) {
+    lines.push({ color: "muted", text: "" });
+    lines.push({ color: "accent", text: "Steps" });
+    for (const step of historySteps) {
+      lines.push({ color: "muted", text: step.text });
+      for (const usageLine of step.usageLines) {
+        lines.push({ color: "muted", text: usageLine });
+      }
+    }
+  }
+
   if (current !== null) {
     lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Now current" });
+    lines.push({ color: "accent", text: "Now" });
     lines.push({
       color: "accent",
       text: current.detail === undefined || current.detail.length === 0
@@ -307,21 +304,9 @@ export function buildStatusWidgetView(
     }
   }
 
-  const historySteps = buildHistorySteps(state, tasks, taskUsageById, reviewUsageById);
-  if (historySteps.length > 0) {
-    lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Steps" });
-    for (const step of historySteps) {
-      lines.push(step.line);
-      for (const usageLine of step.usageLines) {
-        lines.push({ color: "muted", text: usageLine });
-      }
-    }
-  }
-
   if (usage.input > 0 || usage.output > 0 || usage.cost > 0) {
     lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Total usage" });
+    lines.push({ color: "accent", text: "Total" });
     lines.push({
       color: "muted",
       text: `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`,
