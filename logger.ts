@@ -18,6 +18,13 @@ export function progressDirForCwd(cwd: string): string {
   return resolve(cwd, ".ralpix", "progress");
 }
 
+/** Format a token count for human display.
+ *
+ * - 0 → "0"
+ * - 1–999 → literal number
+ * - 1,000–99,999 → one decimal + "k" (e.g. "12.3k", "99.9k")
+ * - 100,000+ → rounded whole "k"   (e.g. "150k")
+ */
 export function fmtTokens(n: number): string {
   if (n === 0) return "0";
   if (n < 1000) return String(n);
