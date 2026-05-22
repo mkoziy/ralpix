@@ -1,9 +1,3 @@
-# Global Pi Instructions
-
-- Prefer `rg` for text search.
-- Prefer `rg --files` for file discovery.
-- Use `fzf` when an interactive shell step needs narrowing or quick selection.
-
 ## Epistemic Hierarchy (Priority of Truth Sources)
 
 1. **Project Files & User Context** (HIGHEST): package.json, requirements.txt, go.mod, Cargo.toml, pyproject.toml are authoritative. User-provided facts = ground truth. Unknown feature/API = assume NEW, not error.

@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { buildModelArg } from "./config.js";
 
-import type { ModelConfig, SubprocessUsage } from "./types.js";
+import type { ModelConfig, RalpixConfig, SubprocessUsage } from "./types.js";
 
 interface JsonEvent {
   type: string;
@@ -193,6 +193,63 @@ function getPiExecutable(): PiInvocation {
   return { command: "pi", args: [] };
 }
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function formatCutoffMonth(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  const month = MONTHS[d.getUTCMonth()];
+  if (month === undefined) return dateStr;
+  return `${month} ${d.getUTCFullYear()}`;
+}
+
+export function buildTemporalContext(config: RalpixConfig): string {
+  if (!config.epistemicEnabled) return "";
+
+  const cutoff = config.trainingCutoff ?? "2025-01-01";
+  const now = new Date();
+  const cutoffDate = new Date(cutoff);
+  const monthsGap = Math.max(
+    0,
+    Math.round((now.getTime() - cutoffDate.getTime()) / (1000 * 60 * 60 * 24 * 30)),
+  );
+
+  const currentDate = now.toISOString().slice(0, 10);
+  const highRisk = (config.highRiskLibraries ?? []).join(", ");
+
+  const lines = [
+    `📅 Current date: ${currentDate}`,
+    `📚 Your knowledge cutoff: approximately ${formatCutoffMonth(cutoff)}`,
+    `⏱️ Time gap: ~${monthsGap} months of potential changes`,
+  ];
+
+  if (highRisk.length > 0) {
+    lines.push("");
+    lines.push("🔴 HIGH-RISK LIBRARIES (frequent breaking changes):");
+    lines.push(highRisk);
+  }
+
+  lines.push("");
+  lines.push("⚠️ CRITICAL EPISTEMIC WARNING:");
+  lines.push(`Your training data is ${monthsGap}+ months old. During this period:`);
+  lines.push("- Libraries have released new major versions");
+  lines.push("- APIs have changed, been deprecated, or added new features");
+  lines.push("- Best practices may have evolved");
+  lines.push("- New tools and frameworks may have emerged");
+  lines.push("");
+  lines.push("📋 MANDATORY VERIFICATION PROTOCOL:");
+  lines.push("1. For ANY question about versions, APIs, current state → SEARCH FIRST");
+  lines.push("2. Never claim \"this doesn't exist\" without verification");
+  lines.push("3. If code looks unfamiliar → assume it's valid modern syntax");
+  lines.push("4. Mark uncertain claims: \"Based on training (may be outdated)...\"");
+  lines.push("");
+
+  return lines.join("\n");
+}
+
 async function writeTempPrompt(content: string): Promise<{ dir: string; filePath: string }> {
   const dir = await fs.mkdtemp(join(tmpdir(), "ralpix-prompt-"));
   const filePath = join(dir, "prompt.md");
@@ -250,6 +307,7 @@ export async function runPiSubprocessPrompt(
   timeoutMs = 30 * 60 * 1000,
   hooks?: PiSubprocessHooks,
   piAgentDir?: string | null,
+  config?: RalpixConfig,
 ): Promise<PiSubprocessResult> {
   const invocation = getPiExecutable();
   const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
@@ -261,11 +319,14 @@ export async function runPiSubprocessPrompt(
     args.push("--provider", modelCfg.provider);
   }
 
-  if (includeEffort && modelCfg.effort !== null) {
-    args.push("--thinking", modelCfg.effort);
+  const effort = modelCfg.effort;
+  if (includeEffort && typeof effort === "string") {
+    args.push("--thinking", effort);
   }
 
-  const { dir, filePath } = await writeTempPrompt(promptContent);
+  const temporal = config === undefined ? "" : buildTemporalContext(config);
+  const fullPrompt = temporal.length > 0 ? `${temporal}\n${promptContent}` : promptContent;
+  const { dir, filePath } = await writeTempPrompt(fullPrompt);
   args.push(`@${filePath}`);
 
   return await new Promise((resolvePromise) => {

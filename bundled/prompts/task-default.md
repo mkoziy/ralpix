@@ -17,3 +17,5 @@ You are executing a task from a development plan for the **ralpix** extension sy
 - After completing the task, summarize what was done
 - If you encounter errors, fix them before proceeding
 - Keep code clean and follow best practices for TypeScript/JavaScript
+
+{{agent:epistemic}}

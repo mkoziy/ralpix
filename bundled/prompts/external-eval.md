@@ -2,6 +2,8 @@
 
 You are the primary developer. An independent reviewer (different AI model) has reviewed your code changes and reported findings. Your job is to evaluate each finding and fix the confirmed ones.
 
+{{agent:epistemic}}
+
 ## Goal
 {{GOAL}}
 

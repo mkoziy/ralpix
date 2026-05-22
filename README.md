@@ -189,7 +189,14 @@ ralpix uses a three-layer merge — each layer overrides the one above:
   "externalReviewMaxIterations": 5,
   "externalReviewPatience": 3,     // Exit after N unchanged rounds (stalemate)
   "planModel": "openai-codex/gpt-5.5",
-  "planEffort": "medium"
+  "planEffort": "medium",
+  "epistemicEnabled": true,        // Inject temporal context + verification rules into every subprocess
+  "trainingCutoff": "2025-01-01",  // Model knowledge cutoff (YYYY-MM-DD)
+  "highRiskLibraries": [            // Libraries that frequently break APIs
+    "next", "react", "langchain",
+    "openai", "anthropic", "pydantic",
+    "fastapi", "prisma"
+  ]
 }
 ```
 
@@ -253,7 +260,8 @@ ralpix ships default prompts that you can override globally or per-project:
     ├── implementation.md    # Goal alignment
     ├── testing.md           # Test coverage
     ├── simplification.md    # Over-engineering detection
-    └── documentation.md     # Docs review
+    ├── documentation.md     # Docs review
+    └── epistemic.md         # Version/API anti-hallucination rules
 ```
 
 To override per-project:

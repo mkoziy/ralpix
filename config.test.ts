@@ -52,6 +52,9 @@ function makeConfig(overrides: Partial<RalpixConfig>): RalpixConfig {
     planEffort: null,
     plansDir: "docs/plans",
     piAgentDir: null,
+    epistemicEnabled: true,
+    trainingCutoff: "2025-01-01",
+    highRiskLibraries: null,
     models: {},
     ...overrides,
   };

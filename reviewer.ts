@@ -140,6 +140,7 @@ async function runReviewSession(
   phase: "first" | "second" | "external" | "eval",
   modelCfg: ModelConfig,
   piAgentDir: string | null,
+  config: RalpixConfig,
   includeEffort = true,
   onProgress?: (detail: string) => void,
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
@@ -152,6 +153,7 @@ async function runReviewSession(
     30 * 60 * 1000,
     createPiProgressHooks(onProgress, onUsage),
     piAgentDir,
+    config,
   );
   const report = parseReviewSessionReport(result.lastAssistantText);
   if (report !== null) return report;
@@ -196,7 +198,7 @@ async function runReviewProcess(
   } as const;
   const modelCfg = resolveModel(config, phaseToModelKey[phase]);
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
-  return runReviewSession(ctx, prompt, phase, modelCfg, piAgentDir, includeEffort, (detail) => {
+  return runReviewSession(ctx, prompt, phase, modelCfg, piAgentDir, config, includeEffort, (detail) => {
     logger.logReview("loop", `${phase}: ${detail}`);
   }, onUsage);
 }
@@ -361,6 +363,7 @@ async function runExternalReviewLoop(
       "external",
       externalModelCfg,
       piAgentDir,
+      config,
       true,
       undefined,
       hooks?.onUsage,

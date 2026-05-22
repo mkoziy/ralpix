@@ -2,6 +2,8 @@
 
 All tasks are complete and reviews have passed.
 
+{{agent:epistemic}}
+
 ## Final Actions
 
 1. Run final verification commands to ensure everything works

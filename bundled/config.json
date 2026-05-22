@@ -21,5 +21,17 @@
   "planModel": "openai-codex/gpt-5.5",
   "planEffort": "medium",
   "plansDir": "docs/plans",
+  "epistemicEnabled": true,
+  "trainingCutoff": "2025-01-01",
+  "highRiskLibraries": [
+    "next",
+    "react",
+    "langchain",
+    "openai",
+    "anthropic",
+    "pydantic",
+    "fastapi",
+    "prisma"
+  ],
   "models": {}
 }

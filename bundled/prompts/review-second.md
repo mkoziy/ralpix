@@ -2,6 +2,8 @@
 
 You are performing a second-pass code review, after first-pass fixes were applied.
 
+{{agent:epistemic}}
+
 ## Step 1: Get Updated Branch Context
 ```bash
 git log main..HEAD --oneline

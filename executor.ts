@@ -62,6 +62,7 @@ async function runTaskSession(
   promptContent: string,
   modelCfg: ModelConfig,
   piAgentDir: string | null,
+  config: RalpixConfig,
   onProgress?: (detail: string) => void,
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
 ): Promise<TaskSessionReport> {
@@ -73,6 +74,7 @@ async function runTaskSession(
     30 * 60 * 1000,
     createPiProgressHooks(onProgress, onUsage),
     piAgentDir,
+    config,
   );
   const report = parseTaskSessionReport(result.lastAssistantText);
   if (report !== null) return report;
@@ -146,7 +148,7 @@ export async function executeTask(
       const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
       logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
       ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
-      const result = await runTaskSession(ctx, prompt, modelCfg, piAgentDir, (detail) => {
+      const result = await runTaskSession(ctx, prompt, modelCfg, piAgentDir, config, (detail) => {
         logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
       }, hooks?.onUsage);
 

@@ -2,6 +2,8 @@
 
 You are performing a comprehensive code review. Progress log is at: `{{PROGRESS_FILE}}`
 
+{{agent:epistemic}}
+
 ## Step 1: Get Branch Context
 Run these commands to understand what changed:
 ```bash

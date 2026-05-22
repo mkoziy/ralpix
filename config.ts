@@ -479,7 +479,7 @@ export function initRalpixHome(): void {
   // Copy agents
   const bundledAgentsDir = join(__dirname, "bundled", "agents");
   const agentsDir = join(RALPIX_HOME, "agents");
-  const agentNames = ["quality", "implementation", "testing", "simplification", "documentation"];
+  const agentNames = ["quality", "implementation", "testing", "simplification", "documentation", "epistemic"];
   for (const name of agentNames) {
     const dest = join(agentsDir, `${name}.md`);
     if (!existsSync(dest)) {

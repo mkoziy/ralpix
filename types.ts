@@ -62,6 +62,12 @@ export interface RalpixConfig {
   planEffort: ThinkingLevel | null;
   /** Directory for created/stored plan files */
   plansDir: string;
+  /** Enable epistemic guardrails (temporal context + verification rules) */
+  epistemicEnabled: boolean;
+  /** Approximate knowledge cutoff date for the model (YYYY-MM-DD) */
+  trainingCutoff: string | null;
+  /** Libraries/frameworks known for frequent breaking changes */
+  highRiskLibraries: string[] | null;
   /**
    * Named model presets keyed by phase.
    * Each preset provides model/provider/effort for the given phase.

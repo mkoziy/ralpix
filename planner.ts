@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 
 import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
 import { parsePlan } from "./parser.js";
+import { buildTemporalContext } from "./pi-subprocess.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { plannerLaunchConfigs } from "./planner-prompt.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
@@ -313,7 +314,9 @@ async function runPlannerProcess(
   if (launchConfig.includeEffort && modelCfg.effort !== null) {
     args.push("--thinking", modelCfg.effort);
   }
-  const { dir, filePath } = await writeTempFile(`plan-round-${round}`, promptContent);
+  const temporal = buildTemporalContext(config);
+  const fullPrompt = temporal.length > 0 ? `${temporal}\n${promptContent}` : promptContent;
+  const { dir, filePath } = await writeTempFile(`plan-round-${round}`, fullPrompt);
   args.push(`@${filePath}`);
   const modelLabel = launchConfig.modelPhase === null ? "default" : (modelArg ?? modelCfg.provider ?? "default");
   const effortLabel = launchConfig.includeEffort ? (modelCfg.effort ?? "default") : "default";

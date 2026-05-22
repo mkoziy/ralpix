@@ -2,6 +2,8 @@
 
 You are creating an implementation plan for a software project. Your job is to explore the codebase, ask clarifying questions when needed, and produce a complete, actionable plan in ralpix format.
 
+{{agent:epistemic}}
+
 ## Request
 {{DESCRIPTION}}
 
