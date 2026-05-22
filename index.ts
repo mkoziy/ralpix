@@ -78,6 +78,21 @@ interface ProgressStepEntry {
   usageSummary: UsageSummary | undefined;
 }
 
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_INTERVAL_MS = 80;
+
+function spinnerFrame(): string {
+  const index = Math.floor(Date.now() / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length;
+  return SPINNER_FRAMES[index] ?? " ";
+}
+
+function fmtElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 class RalpixProgressComponent implements PiTuiComponent {
   private readonly title: string;
   private readonly theme: PiTuiTheme;
@@ -86,6 +101,8 @@ class RalpixProgressComponent implements PiTuiComponent {
   private currentUsage: UsageSummary | undefined;
   private totalUsage: UsageSummary = { input: 0, output: 0, cost: 0 };
   private readonly steps: ProgressStepEntry[] = [];
+  private running = false;
+  private currentStartTime = 0;
 
   constructor(title: string, theme: PiTuiTheme) {
     this.title = title;
@@ -106,6 +123,13 @@ class RalpixProgressComponent implements PiTuiComponent {
     this.currentUsage = undefined;
   }
 
+  setRunning(running: boolean): void {
+    this.running = running;
+    if (running) {
+      this.currentStartTime = Date.now();
+    }
+  }
+
   setTotalUsage(usage: UsageSummary): void {
     this.totalUsage = usage;
   }
@@ -119,9 +143,11 @@ class RalpixProgressComponent implements PiTuiComponent {
     const maxWidth = Math.max(20, width);
     const border = this.theme.fg("borderAccent", "─".repeat(maxWidth));
     const bold = this.theme.bold ?? ((text: string) => text);
+    const spin = this.running ? this.theme.fg("accent", spinnerFrame()) : "";
+    const spinPad = this.running ? " " : "";
     lines.push(border);
     lines.push(this.fit(this.theme.fg("accent", bold(`ralpix: ${this.title}`)), maxWidth));
-    lines.push(this.fit(this.theme.fg("muted", `Phase: ${this.currentPhase}`), maxWidth));
+    lines.push(this.fit(this.theme.fg("muted", `${spin}${spinPad}Phase: ${this.currentPhase}`), maxWidth));
     lines.push(border);
 
     lines.push(this.fit(this.theme.fg("accent", "Steps"), maxWidth));
@@ -139,14 +165,7 @@ class RalpixProgressComponent implements PiTuiComponent {
 
     lines.push(border);
     lines.push(this.fit(this.theme.fg("accent", "Now"), maxWidth));
-    if (this.currentTitle.length === 0) {
-      lines.push(this.fit(this.theme.fg("dim", "Idle"), maxWidth));
-    } else {
-      lines.push(this.fit(this.currentTitle, maxWidth));
-      if (this.currentUsage !== undefined) {
-        lines.push(this.fit(this.theme.fg("muted", this.formatUsage(this.currentUsage)), maxWidth));
-      }
-    }
+    lines.push(...this.renderNowLines(maxWidth, spin, spinPad));
 
     lines.push(border);
     lines.push(this.fit(this.theme.fg("accent", "Total"), maxWidth));
@@ -158,6 +177,23 @@ class RalpixProgressComponent implements PiTuiComponent {
 
   invalidate(): void {
     return;
+  }
+
+  private renderNowLines(maxWidth: number, spin: string, spinPad: string): string[] {
+    const result: string[] = [];
+    if (this.currentTitle.length === 0) {
+      result.push(this.fit(this.theme.fg("dim", `${spin}${spinPad}Idle`), maxWidth));
+    } else {
+      let titleLine = this.currentTitle;
+      if (this.running && this.currentStartTime > 0) {
+        titleLine += ` (${fmtElapsed(Date.now() - this.currentStartTime)})`;
+      }
+      result.push(this.fit(`${spin}${spinPad}${titleLine}`, maxWidth));
+      if (this.currentUsage !== undefined) {
+        result.push(this.fit(this.theme.fg("muted", this.formatUsage(this.currentUsage)), maxWidth));
+      }
+    }
+    return result;
   }
 
   private formatUsage(usage: UsageSummary): string {
@@ -334,6 +370,21 @@ function createProgressTui(
 
   const panel = new RalpixProgressComponent(planTitle, ctx.ui.theme);
   let requestRender = noopFn;
+  let animInterval: ReturnType<typeof setInterval> | undefined;
+
+  const startAnimation = (): void => {
+    if (animInterval !== undefined) return;
+    panel.setRunning(true);
+    animInterval = setInterval(() => requestRender(), SPINNER_INTERVAL_MS);
+  };
+
+  const stopAnimation = (): void => {
+    if (animInterval !== undefined) {
+      clearInterval(animInterval);
+      animInterval = undefined;
+    }
+    panel.setRunning(false);
+  };
 
   ctx.ui.setWidget("ralpix-progress", (ui: PiTuiRuntime) => {
     requestRender = () => ui.requestRender();
@@ -364,6 +415,7 @@ function createProgressTui(
 
   return {
     close() {
+      stopAnimation();
       ctx.ui.setWidget("ralpix-progress", undefined);
       requestRender = noopFn;
     },
@@ -377,6 +429,11 @@ function createProgressTui(
     },
     setPhase(phase) {
       panel.setPhase(phase);
+      if (phase === "executing" || phase === "reviewing") {
+        startAnimation();
+      } else {
+        stopAnimation();
+      }
     },
   };
 }
