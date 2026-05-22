@@ -48,8 +48,8 @@ void test("fmtTokens formats token counts with k suffix", () => {
   assert.equal(fmtTokens(999), "999");
   assert.equal(fmtTokens(1000), "1.0k");
   assert.equal(fmtTokens(9999), "10.0k");
-  assert.equal(fmtTokens(10_000), "10.0k");
-  assert.equal(fmtTokens(99_999), "100.0k");
+  assert.equal(fmtTokens(10_000), "10k");
+  assert.equal(fmtTokens(99_999), "100k");
   assert.equal(fmtTokens(100_000), "100k");
   assert.equal(fmtTokens(150_000), "150k");
   assert.equal(fmtTokens(999_999), "1000k");

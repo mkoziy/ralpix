@@ -59,6 +59,11 @@ interface StatusWidgetView {
   lines: WidgetLine[];
 }
 
+// Module-scope no-op function to satisfy unicorn/consistent-function-scoping
+const noopFn = (): void => {
+  return;
+};
+
 type UsageByModel = Map<string, UsageSummary>;
 type UsageById = Map<string, UsageByModel>;
 
@@ -183,12 +188,6 @@ function createTokenLedger() {
     });
   }
 
-  function totalCost(): number {
-    let total = 0;
-    for (const e of map.values()) total += e.cost;
-    return total;
-  }
-
   function snapshot(): UsageSummary {
     let input = 0;
     let output = 0;
@@ -210,7 +209,7 @@ function createTokenLedger() {
     };
   }
 
-  return { add, diffSince, snapshot, totalCost };
+  return { add, diffSince, snapshot };
 }
 
 function recordUsage(
@@ -334,10 +333,9 @@ function createProgressTui(
   }
 
   const panel = new RalpixProgressComponent(planTitle, ctx.ui.theme);
+  let requestRender = noopFn;
 
-  let requestRender: () => void = () => { return; };
-
-  ctx.ui.setWidget("ralpix-progress", (ui, _theme) => {
+  ctx.ui.setWidget("ralpix-progress", (ui: PiTuiRuntime) => {
     requestRender = () => ui.requestRender();
     return panel;
   });
@@ -367,7 +365,7 @@ function createProgressTui(
   return {
     close() {
       ctx.ui.setWidget("ralpix-progress", undefined);
-      requestRender = () => { return; };
+      requestRender = noopFn;
     },
     pushStep(step) {
       panel.pushStep(step);
