@@ -13,6 +13,28 @@ interface ToolResult {
   details?: Record<string, unknown>;
 }
 
+interface PiTuiComponent {
+  render: (width: number) => string[];
+  invalidate: () => void;
+  handleInput?: (data: string) => void;
+  wantsKeyRelease?: boolean;
+}
+
+interface PiTuiHandle {
+  requestRender: () => void;
+  close: () => void;
+}
+
+interface PiTuiTheme {
+  fg: (color: string, text: string) => string;
+  bg?: (color: string, text: string) => string;
+  bold?: (text: string) => string;
+}
+
+interface PiTuiRuntime {
+  requestRender: () => void;
+}
+
 declare module "@earendil-works/pi-coding-agent" {
   interface ExtensionAPI {
     appendEntry: (key: string, value: unknown) => void;
@@ -42,9 +64,24 @@ declare module "@earendil-works/pi-coding-agent" {
       select: (question: string, options: string[]) => Promise<string | undefined>;
       input: (prompt: string, placeholder?: string) => Promise<string | undefined>;
       confirm: (title: string, message: string) => Promise<boolean | undefined>;
+      custom: {
+        <TResult>(
+          factory: (
+            tui: PiTuiRuntime,
+            theme: PiTuiTheme,
+            keybindings: unknown,
+            done: (result: TResult) => void,
+          ) => PiTuiComponent,
+          options?: Record<string, unknown>,
+        ): Promise<TResult>;
+        (component: PiTuiComponent, options?: Record<string, unknown>): PiTuiHandle;
+      };
       setStatus: (key: string, value: string | undefined) => void;
-      setWidget: (key: string, value: string[] | undefined) => void;
-      theme: { fg: (color: string, text: string) => string };
+      setWidget: (
+        key: string,
+        value: string[] | ((ui: PiTuiRuntime, theme: PiTuiTheme) => PiTuiComponent) | undefined,
+      ) => void;
+      theme: { fg: (color: string, text: string) => string; bold: (text: string) => string };
     };
     newSession: (options: {
       setup?: (sm: SessionManager) => Promise<void> | void;
