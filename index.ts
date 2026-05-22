@@ -201,9 +201,45 @@ class RalpixProgressComponent implements PiTuiComponent {
   }
 
   private fit(text: string, width: number): string {
-    if (text.length <= width) return text;
-    if (width <= 3) return text.slice(0, width);
-    return `${text.slice(0, Math.max(0, width - 3))}...`;
+    const visible = this.#visibleLength(text);
+    if (visible <= width) return text;
+    if (width <= 3) return this.#stripAnsi(text).slice(0, width);
+    return `${this.#ansiSafeSlice(text, width - 3)}...`;
+  }
+
+  /** Strip ANSI escape sequences (SGR codes like \u001B[...m). */
+  #stripAnsi(s: string): string {
+    return s.replaceAll(/\u001B\[[\d;]*m/gu, "");
+  }
+
+  /** Visible character count, excluding ANSI escape sequences. */
+  #visibleLength(s: string): number {
+    return this.#stripAnsi(s).length;
+  }
+
+  /**
+   * Return the prefix of `s` whose visible length is at most `maxVisible`.
+   * ANSI escape sequences are kept intact and do not count toward the limit.
+   */
+  #ansiSafeSlice(s: string, maxVisible: number): string {
+    let out = "";
+    let visible = 0;
+    let i = 0;
+    while (i < s.length && visible < maxVisible) {
+      const start = i;
+      const char = s.charAt(i);
+      if (char === "\u001B" && i + 1 < s.length && s[i + 1] === "[") {
+        i += 2;
+        while (i < s.length && s[i] !== "m") i++;
+        if (i < s.length) i++; // skip "m"
+        out += s.slice(start, i);
+      } else {
+        out += char;
+        visible++;
+        i++;
+      }
+    }
+    return out;
   }
 }
 
@@ -838,6 +874,7 @@ async function runPlan(
       clearStatusWidget(ctx);
       progressTui.setPhase("idle");
       progressTui.refresh();
+      progressTui.close();
       return;
     }
   }
