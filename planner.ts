@@ -53,6 +53,74 @@ function formatDateStamp(date: Date): string {
   return `${year}${month}${day}`;
 }
 
+interface DraftSummary {
+  title: string;
+  tasks: number;
+  items: number;
+}
+
+function summarizeDraft(draft: string): DraftSummary {
+  const titleMatch = (/^#\s+plan:\s+(.+)$/im).exec(draft);
+  const title = titleMatch?.[1]?.trim() ?? "Untitled";
+  const tasks = [...draft.matchAll(/^###\s+task\s+\d+/gim)].length;
+  const items = [...draft.matchAll(/^\s*-\s+\[.]/gim)].length;
+  return { title, tasks, items };
+}
+
+interface ReviewDigest {
+  verdict: string;
+  critical: number;
+  important: number;
+  minor: number;
+  overEngineering: number;
+  testing: string | null;
+  headline: string;
+}
+
+function digestPlanReview(review: string): ReviewDigest {
+  const verdictMatch = (/\*\*\s*(approve|needs revision)\s*\*\*/i).exec(review);
+  const verdict = verdictMatch?.[1]?.toUpperCase() ?? "UNKNOWN";
+
+  const countIssues = (header: string): number => {
+    const pattern = new RegExp(`^#{2,4}\s+${header}`, "gim");
+    const match = pattern.exec(review);
+    if (match === null) return 0;
+    const start = match.index + match[0].length;
+    const nextHeader = review.slice(start).search(/^#{2,4}\s+/m);
+    const section = nextHeader >= 0 ? review.slice(start, start + nextHeader) : review.slice(start);
+    return [...section.matchAll(/^\s*\d+\.\s+\*\*\[plan-review]\*\*/gim)].length;
+  };
+
+  const critical = countIssues("Critical Issues");
+  const important = countIssues("Important Issues");
+  const minor = countIssues("Minor Issues");
+
+  const oeMatch = (/^#{2,4}\s+Over-Engineering Concerns/m).exec(review);
+  let overEngineering = 0;
+  if (oeMatch !== null) {
+    const start = oeMatch.index + oeMatch[0].length;
+    const nextHeader = review.slice(start).search(/^#{2,4}\s+/m);
+    const section = nextHeader >= 0 ? review.slice(start, start + nextHeader) : review.slice(start);
+    overEngineering = [...section.matchAll(/^\s*-\s+\*\*\[plan-review]\*\*/gim)].length;
+  }
+
+  const testingMatch = (/tasks with proper test requirements:\s*(\d+)\/(\d+)/i).exec(review);
+  const g1 = testingMatch?.[1];
+  const g2 = testingMatch?.[2];
+  const testing = g1 != null && g2 != null ? `${g1}/${g2} tasks with tests` : null;
+
+  const parts: string[] = [];
+  if (critical > 0) parts.push(`${String(critical)} critical`);
+  if (important > 0) parts.push(`${String(important)} important`);
+  if (minor > 0) parts.push(`${String(minor)} minor`);
+  if (parts.length === 0) parts.push("no issues");
+
+  const testingSuffix = testing == null ? "" : ` · ${testing}`;
+  const headline = `Review: ${verdict} — ${parts.join(", ")}${testingSuffix}`;
+
+  return { verdict, critical, important, minor, overEngineering, testing, headline };
+}
+
 function getPiExecutable(): { command: string; args: string[] } {
   const currentScript = process.argv[1];
   const isBunVirtual = typeof currentScript === "string" && currentScript.startsWith("/$bunfs/root/");
@@ -515,10 +583,12 @@ export async function runPlanCreation(
       ctx.cwd,
       `round ${round}: extracted draft ${draftStatus}`,
     );
+    ctx.ui.notify(`Draft received (${String(draft.length)} chars)`, "info");
 
     const clarification = extractClarificationRequest(draft);
     if (clarification !== null) {
       appendPlanCreationDebug(ctx.cwd, `round ${round}: model asked clarification ${JSON.stringify(clarification.question)}`);
+      ctx.ui.notify(`Need clarification: ${clarification.question}`, "info");
       const answer = await askClarification(ctx, clarification);
       if (answer == null || answer.length === 0) {
         ctx.ui.notify("Plan creation cancelled (clarification unanswered)", "warning");
@@ -540,6 +610,7 @@ export async function runPlanCreation(
     const draftValidation = validatePlanDraft(draft);
     if (!draftValidation.ok) {
       appendPlanCreationDebug(ctx.cwd, `round ${round}: invalid draft ${draftValidation.reason}`);
+      ctx.ui.notify(`Draft needs fixes: ${draftValidation.reason}`, "warning");
       previousDraft = draft;
       feedback =
         `The previous draft was not a valid ralpix plan: ${draftValidation.reason}. ` +
@@ -549,8 +620,12 @@ export async function runPlanCreation(
     }
 
     draftPath = saveDraftFile(plansDir, description, draft, createdAt, draftPath);
+    const summary = summarizeDraft(draft);
     appendPlanCreationDebug(ctx.cwd, `round ${round}: saved draft ${draftPath}`);
-    ctx.ui.notify(`Plan draft written to ${draftPath}`, "info");
+    ctx.ui.notify(
+      `Draft ready: "${summary.title}" — ${String(summary.tasks)} task${summary.tasks === 1 ? "" : "s"}, ${String(summary.items)} checklist item${summary.items === 1 ? "" : "s"}`,
+      "success",
+    );
 
     for (;;) {
       const review = await reviewDraft(ctx, draftPath);
@@ -580,12 +655,17 @@ export async function runPlanCreation(
 
         // Post-acceptance loop: Review → Execute → Done
         let postReview: string | null = null;
+        let reviewDigest: ReviewDigest | null = null;
         for (;;) {
           const choices = postReview == null
             ? ["🔍 Review plan (AI check)", "▶ Execute plan now", "✓ Done — exit, run later"]
             : ["↻ Revise based on review", "▶ Execute plan now", "✓ Done — exit, run later"];
 
-          const next = await ctx.ui.select("Plan created. What next?", choices);
+          const selectPrompt = reviewDigest == null
+            ? `Plan saved to ${draftPath}. What next?`
+            : `${reviewDigest.headline}\n\nPlan saved to ${draftPath}. What next?`;
+
+          const next = await ctx.ui.select(selectPrompt, choices);
 
           if (typeof next === "string" && next.includes("Execute")) {
             return draftPath;
@@ -603,7 +683,9 @@ export async function runPlanCreation(
               ctx.ui.notify("Plan review did not return output. You can still execute or revise manually.", "warning");
               continue;
             }
-            ctx.ui.notify("Plan review complete. See output below.", "info");
+            const digest = digestPlanReview(reviewResult);
+            ctx.ui.notify(digest.headline, digest.verdict === "APPROVE" ? "success" : "warning");
+            reviewDigest = digest;
             postReview = reviewResult;
             continue;
           }
