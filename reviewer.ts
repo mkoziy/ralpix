@@ -211,7 +211,7 @@ async function runFirstReview(
 ): Promise<string> {
   const modelCfg = resolveModel(config, "review-first");
   const effortSuffix = modelCfg.effort === null ? "" : ` — effort: ${modelCfg.effort}`;
-  hooks?.onStageStart?.(REVIEW_STAGES.firstPass, "running comprehensive review");
+  hooks?.onStageStart?.(REVIEW_STAGES.firstPass, "checking all completed tasks");
   logger.logReview("first", `STARTED (5 agents, comprehensive)${effortSuffix}`);
 
   const result = await runReviewProcess(
@@ -219,9 +219,10 @@ async function runFirstReview(
   );
 
   if (result.success) {
+    const detail = result.summary.slice(0, 120);
     const msg = "COMPLETE";
     logger.logReview("first", msg);
-    hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "complete");
+    hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "complete", detail);
     return msg;
   }
 
@@ -241,11 +242,11 @@ async function runReviewLoop(
 ): Promise<string> {
   const maxIterations = config.reviewMaxIterations === 0 ? 5 : config.reviewMaxIterations;
 
-  hooks?.onStageStart?.(REVIEW_STAGES.secondPass, `iteration 1/${maxIterations}`);
+  hooks?.onStageStart?.(REVIEW_STAGES.secondPass, `quality review — iteration 1/${maxIterations}`);
   logger.logReview("loop", `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
 
   for (let i = 0; i < maxIterations; i++) {
-    hooks?.onStageUpdate?.(REVIEW_STAGES.secondPass, `iteration ${i + 1}/${maxIterations}`);
+    hooks?.onStageUpdate?.(REVIEW_STAGES.secondPass, `quality review — iteration ${i + 1}/${maxIterations}`);
     const headBefore = getHeadHash(ctx.cwd);
     if (headBefore.length === 0) {
       const msg = "ERROR: cannot determine HEAD hash (not a git repo?)";
@@ -328,7 +329,7 @@ async function runExternalReviewLoop(
   let lastReviewHead = "";
 
   for (let i = 0; i < maxIterations; i++) {
-    hooks?.onStageStart?.(REVIEW_STAGES.externalReview, `iteration ${i + 1}/${maxIterations}`);
+    hooks?.onStageStart?.(REVIEW_STAGES.externalReview, `auditing changes — iteration ${i + 1}/${maxIterations}`);
     const diffInstruction = lastReviewHead.length > 0
       ? `Run: \`git diff ${lastReviewHead}..HEAD\` to see the latest fix changes.`
       : `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`;
@@ -386,7 +387,7 @@ async function runExternalReviewLoop(
     lastReviewHead = getHeadHash(ctx.cwd);
 
     const headBefore = getHeadHash(ctx.cwd);
-    hooks?.onStageStart?.(REVIEW_STAGES.externalEval, `iteration ${i + 1}/${maxIterations}`);
+    hooks?.onStageStart?.(REVIEW_STAGES.externalEval, `fixing findings — iteration ${i + 1}/${maxIterations}`);
     logger.logExternalReview("eval", `Iteration ${i + 1} — evaluating findings...`);
 
     const evalResult = await runReviewProcess(

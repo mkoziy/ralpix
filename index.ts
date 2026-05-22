@@ -325,10 +325,10 @@ function usageSummaryFor(id: string, usageById: UsageById): UsageSummary | undef
 }
 
 const REVIEW_STAGE_LABELS: Record<ReviewStageId, string> = {
-  "first-pass": "First pass",
-  "external-review": "External review",
-  "external-eval": "External eval",
-  "second-pass": "Second pass",
+  "first-pass": "Comprehensive review",
+  "external-review": "External audit",
+  "external-eval": "Resolve findings",
+  "second-pass": "Quality & fix loop",
 };
 
 function createInitialReviewState(externalReviewEnabled: boolean): ReviewPipelineState {
