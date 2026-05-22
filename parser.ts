@@ -31,13 +31,15 @@ const RE_H3_OR_H2 = /^(?:###\s+task|##\s+)/i;
 // ---------------------------------------------------------------------------
 
 interface ParseState {
-  section: "overview" | "context" | "criteria" | "task" | "ignore";
+  section: "overview" | "context" | "criteria" | "task" | "ignore" | "extra";
   overviewLines: string[];
   contextLines: string[];
   criteria: PlanItem[];
   tasks: PlanTask[];
   currentTask: PlanTask | null;
   taskLines: string[];
+  extraSections: Record<string, string[]>;
+  currentExtraKey: string | null;
 }
 
 function flushCurrentTask(state: ParseState): void {
@@ -52,20 +54,32 @@ function flushCurrentTask(state: ParseState): void {
   state.taskLines = [];
 }
 
+function flushExtraSection(state: ParseState): void {
+  if (state.currentExtraKey === null) return;
+  const lines = state.extraSections[state.currentExtraKey];
+  if (lines !== undefined) {
+    // Trim leading/trailing blank lines but preserve internal ones
+    while (lines.length > 0 && lines[0]?.trim() === "") lines.shift();
+    while (lines.length > 0 && lines.at(-1)?.trim() === "") lines.pop();
+  }
+  state.currentExtraKey = null;
+}
+
 function handleH1(line: string): string | null {
   const match = RE_H1.exec(line);
   return match?.[1]?.trim() ?? null;
 }
 
-function handleH2(heading: string): ParseState["section"] | "flush" {
+function handleH2(heading: string): { section: ParseState["section"]; extraKey?: string } | "flush" {
   const lower = heading.toLowerCase();
-  if (lower.startsWith("overview")) return "overview";
-  if (lower.startsWith("context")) return "context";
-  if (lower.startsWith("success")) return "criteria";
+  if (lower.startsWith("overview")) return { section: "overview" };
+  if (lower.startsWith("context")) return { section: "context" };
+  if (lower.startsWith("success")) return { section: "criteria" };
   if (lower.startsWith("open question") || lower.startsWith("v2") || lower.startsWith("validation")) {
     return "flush";
   }
-  return "ignore";
+  // Treat all other H2 headings as extra sections (Design Decisions, Key Layout, etc.)
+  return { section: "extra", extraKey: heading.trim() };
 }
 
 function handleH3(line: string, state: ParseState): void {
@@ -110,6 +124,9 @@ function collectLine(line: string, state: ParseState): void {
     state.contextLines.push(line);
   } else if (state.section === "task" && state.currentTask !== null) {
     state.taskLines.push(line);
+  } else if (state.section === "extra" && state.currentExtraKey !== null) {
+    const bucket = state.extraSections[state.currentExtraKey];
+    if (bucket !== undefined) bucket.push(line);
   }
 }
 
@@ -135,6 +152,8 @@ function createInitialState(): ParseState {
     tasks: [],
     currentTask: null,
     taskLines: [],
+    extraSections: {},
+    currentExtraKey: null,
   };
 }
 
@@ -162,12 +181,19 @@ export function parsePlan(filePath: string): Plan {
     const h2Match = RE_H2.exec(line);
     if (h2Match !== null) {
       const heading = h2Match[1] ?? "";
-      const newSection = handleH2(heading);
-      if (newSection === "flush") {
+      const result = handleH2(heading);
+      if (result === "flush") {
         flushCurrentTask(state);
+        flushExtraSection(state);
         state.section = "ignore";
       } else {
-        state.section = newSection;
+        flushCurrentTask(state);
+        flushExtraSection(state);
+        state.section = result.section;
+        if (result.section === "extra" && result.extraKey !== undefined) {
+          state.currentExtraKey = result.extraKey;
+          state.extraSections[result.extraKey] ??= [];
+        }
       }
       continue;
     }
@@ -175,6 +201,7 @@ export function parsePlan(filePath: string): Plan {
     // H3: Task
     if (RE_H3_TASK.test(line)) {
       flushCurrentTask(state);
+      flushExtraSection(state);
       handleH3(line, state);
       continue;
     }
@@ -193,7 +220,16 @@ export function parsePlan(filePath: string): Plan {
   }
 
   flushCurrentTask(state);
+  flushExtraSection(state);
   inferTaskStatuses(state.tasks);
+
+  const extraSections: Record<string, string> = {};
+  for (const [key, sectionLines] of Object.entries(state.extraSections)) {
+    const trimmed = sectionLines.join("\n").trim();
+    if (trimmed.length > 0) {
+      extraSections[key] = trimmed;
+    }
+  }
 
   return {
     path: filePath,
@@ -202,6 +238,7 @@ export function parsePlan(filePath: string): Plan {
     context: state.contextLines.join("\n").trim(),
     successCriteria: state.criteria,
     tasks: state.tasks,
+    extraSections,
   };
 }
 

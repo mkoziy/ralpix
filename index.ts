@@ -9,14 +9,11 @@
  *   /ralpix init          — Initialise ~/.ralpix/ with defaults
  *   /ralpix <path>        — Execute a plan
  *
- * Tools (for LLM):
- *   ralpix_mark_task_done — Mark current task as complete
+ *
  */
 
 import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, join as pathJoin, parse as pathParse } from "node:path";
-
-import { Type } from "typebox";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
@@ -76,6 +73,7 @@ interface CurrentStepView {
 interface ProgressStepEntry {
   title: string;
   usageSummary: UsageSummary | undefined;
+  usageLines?: string[];
 }
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -157,7 +155,11 @@ class RalpixProgressComponent implements PiTuiComponent {
     } else {
       for (const step of visibleSteps) {
         lines.push(this.fit(step.title, maxWidth));
-        if (step.usageSummary !== undefined) {
+        if (step.usageLines !== undefined && step.usageLines.length > 0) {
+          for (const line of step.usageLines) {
+            lines.push(this.fit(this.theme.fg("muted", line), maxWidth));
+          }
+        } else if (step.usageSummary !== undefined) {
           lines.push(this.fit(this.theme.fg("muted", this.formatUsage(step.usageSummary)), maxWidth));
         }
       }
@@ -543,6 +545,35 @@ export function buildStatusWidgetView(
   };
 }
 
+function snapshotUsageById(usageById: UsageById): UsageById {
+  const snap = new Map<string, Map<string, UsageSummary>>();
+  for (const [id, perModel] of usageById.entries()) {
+    const copy = new Map<string, UsageSummary>();
+    for (const [key, usage] of perModel.entries()) {
+      copy.set(key, { ...usage });
+    }
+    snap.set(id, copy);
+  }
+  return snap;
+}
+
+function diffUsageLines(id: string, before: UsageById, after: UsageById): string[] {
+  const afterModels = after.get(id);
+  if (afterModels === undefined) return [];
+  const beforeModels = before.get(id);
+  const lines: string[] = [];
+  for (const [key, afterUsage] of afterModels.entries()) {
+    const beforeUsage = beforeModels?.get(key);
+    const input = afterUsage.input - (beforeUsage?.input ?? 0);
+    const output = afterUsage.output - (beforeUsage?.output ?? 0);
+    const cost = afterUsage.cost - (beforeUsage?.cost ?? 0);
+    if (input > 0 || output > 0 || cost > 0) {
+      lines.push(`${key}  in ${fmtTokens(input)}  out ${fmtTokens(output)}  $${cost.toFixed(3)}`);
+    }
+  }
+  return lines;
+}
+
 export function normalizePlanPathArg(rawPath: string): string {
   if (!rawPath.startsWith("@")) return rawPath;
 
@@ -700,36 +731,6 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
     }),
   });
 
-  // ---- tool: ralpix_mark_task_done ----------------------------------------
-
-  pi.registerTool({
-    name: "ralpix_mark_task_done",
-    label: "Mark Task Done",
-    description: "Mark the current plan task as complete during execution",
-    promptSnippet: "Mark a ralpix plan task as done",
-    /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-    parameters: Type.Object({
-      taskId: Type.Optional(
-        Type.String({ description: "Task ID to mark done (uses current if omitted)" }),
-      ),
-    }),
-    /* eslint-enable @typescript-eslint/no-unsafe-assignment */
-    execute(_toolCallId, params) {
-      const taskId = typeof params["taskId"] === "string"
-        ? params["taskId"]
-        : "current";
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Task ${taskId} marked as done.`,
-          },
-        ],
-        details: {},
-      };
-    },
-  });
-
   // ---- session_start — restore state and notify on interrupted runs ---------
 
   pi.on("session_start", (_event, ctx) => {
@@ -791,6 +792,7 @@ async function runPlan(
   const taskUsageById: UsageById = new Map();
   const reviewUsageById: UsageById = new Map();
   const reviewUsageStartById = new Map<ReviewStageId, UsageSummary>();
+  const reviewUsageByIdStart = new Map<ReviewStageId, UsageById>();
   const onUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
     ledger.add(provider, model, usage);
     if (state.currentTaskId === null) {
@@ -847,7 +849,8 @@ async function runPlan(
       onTaskFinish(task, result) {
         const stepUsage = ledger.diffSince(taskUsageStart);
         const totalUsage = ledger.snapshot();
-        logger.logTaskUsage(task, stepUsage, totalUsage);
+        const taskUsageLines = usageLinesFor(task.id, taskUsageById);
+        logger.logTaskUsage(task, stepUsage, totalUsage, taskUsageLines);
         const nextState = markTaskExecutionFinished(state, task.id, result.success);
         state.currentTaskId = nextState.currentTaskId;
         state.completedTasks = nextState.completedTasks;
@@ -857,6 +860,7 @@ async function runPlan(
         progressTui.pushStep({
           title: `Task ${task.number}: ${task.title}${result.success ? "" : " (failed)"}`,
           usageSummary: stepUsage,
+          usageLines: taskUsageLines,
         });
         progressTui.refresh();
       },
@@ -874,7 +878,6 @@ async function runPlan(
       clearStatusWidget(ctx);
       progressTui.setPhase("idle");
       progressTui.refresh();
-      progressTui.close();
       return;
     }
   }
@@ -894,6 +897,7 @@ async function runPlan(
       onUsage,
       onStageStart(stage, detail) {
         reviewUsageStartById.set(stage, ledger.snapshot());
+        reviewUsageByIdStart.set(stage, snapshotUsageById(reviewUsageById));
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
           stage,
@@ -920,8 +924,11 @@ async function runPlan(
         const stageUsageStart = reviewUsageStartById.get(stage);
         const totalUsage = ledger.snapshot();
         const stepUsage = stageUsageStart === undefined ? undefined : ledger.diffSince(stageUsageStart);
+        const stageUsageStartById = reviewUsageByIdStart.get(stage) ??
+          new Map<string, Map<string, UsageSummary>>();
+        const stageUsageLines = diffUsageLines(stage, stageUsageStartById, reviewUsageById);
         if (stepUsage !== undefined) {
-          logger.logReviewStepUsage(stage, stepUsage, totalUsage);
+          logger.logReviewStepUsage(stage, stepUsage, totalUsage, stageUsageLines);
         }
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
@@ -936,6 +943,7 @@ async function runPlan(
         progressTui.pushStep({
           title: `${REVIEW_STAGE_LABELS[stage]}${statusSuffix}${detailSuffix}`,
           usageSummary: stepUsage,
+          ...(stageUsageLines.length > 0 ? { usageLines: stageUsageLines } : {}),
         });
         progressTui.refresh();
       },
@@ -963,8 +971,8 @@ async function runPlan(
     failed > 0 ? "warning" : "success",
   );
 
-  // Move plan on completion if configured
-  if (config.movePlanOnCompletion && existsSync(planPath)) {
+  // Move completed plan to docs/plans/completed/
+  if (existsSync(planPath)) {
     try {
       const { dir, base } = pathParse(planPath);
       const completedDir = pathJoin(dir, "completed");
@@ -972,12 +980,11 @@ async function runPlan(
       renameSync(planPath, pathJoin(completedDir, base));
       ctx.ui.notify(`Plan moved to ${completedDir}/${base}`, "info");
     } catch {
-      // Non-fatal — plan move is optional
+      // Non-fatal — plan move is best-effort
     }
   }
 
-  clearStatusWidget(ctx);
-  progressTui.close();
+  // Keep the progress TUI visible so the full report remains on screen
 }
 
 // ---------------------------------------------------------------------------

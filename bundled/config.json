@@ -12,7 +12,6 @@
   "reviewSecondEffort": "medium",
   "maxRetries": 2,
   "reviewMaxIterations": 5,
-  "movePlanOnCompletion": false,
   "externalReviewEnabled": true,
   "externalReviewModel": "openai-codex/gpt-5.5",
   "externalReviewEffort": "medium",

@@ -107,8 +107,14 @@ export class ProgressLogger {
     this.append(`TASK_INFO   Task ${task.number}: ${task.title}  ${detail}`);
   }
 
-  logTaskUsage(task: PlanTask, step: UsageSummary, total: UsageSummary): void {
-    this.append(`task_usage  Task ${task.number}: ${task.title}  ${formatUsageSummary(step, total)}`);
+  logTaskUsage(task: PlanTask, step: UsageSummary, total: UsageSummary, breakdown?: string[]): void {
+    const lines = [`task_usage  Task ${task.number}: ${task.title}  ${formatUsageSummary(step, total)}`];
+    if (breakdown !== undefined && breakdown.length > 0) {
+      for (const line of breakdown) {
+        lines.push(`            ${line}`);
+      }
+    }
+    this.append(lines.join(EOL));
   }
 
   logExternalReview(phase: string, result: string): void {
@@ -128,8 +134,14 @@ export class ProgressLogger {
     this.append(`review_usage review pipeline  ${formatUsageSummary(step, total)}`);
   }
 
-  logReviewStepUsage(stage: ReviewStageId, step: UsageSummary, total: UsageSummary): void {
-    this.append(`review_usage ${REVIEW_STAGE_LOG_LABELS[stage]}  ${formatUsageSummary(step, total)}`);
+  logReviewStepUsage(stage: ReviewStageId, step: UsageSummary, total: UsageSummary, breakdown?: string[]): void {
+    const lines = [`review_usage ${REVIEW_STAGE_LOG_LABELS[stage]}  ${formatUsageSummary(step, total)}`];
+    if (breakdown !== undefined && breakdown.length > 0) {
+      for (const line of breakdown) {
+        lines.push(`             ${line}`);
+      }
+    }
+    this.append(lines.join(EOL));
   }
 
   logComplete(): void {

@@ -50,7 +50,6 @@ export interface RalpixConfig {
   reviewSecondEffort: ThinkingLevel | null;
   maxRetries: number;
   reviewMaxIterations: number;
-  movePlanOnCompletion: boolean;
   /** External review phase — independent model reviews code */
   externalReviewEnabled: boolean;
   externalReviewModel: string | null;
@@ -100,6 +99,8 @@ export interface Plan {
   context: string;
   successCriteria: PlanItem[];
   tasks: PlanTask[];
+  /** Arbitrary sections captured from the markdown (e.g. Design Decisions, Key Layout, Auth, API Surface) */
+  extraSections: Record<string, string>;
 }
 
 /** Result of a task execution */

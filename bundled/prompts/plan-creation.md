@@ -39,8 +39,9 @@ Guidelines:
 - Prefer multiple-choice options over open-ended questions
 
 ### Phase 3: Generate the Plan
-Create a complete implementation plan following this exact format:
+Create a complete implementation plan. Use the richest format that helps the implementer — include optional sections when they add clarity.
 
+**Required structure:**
 ```markdown
 # Plan: <Concise Descriptive Title>
 
@@ -52,18 +53,31 @@ Create a complete implementation plan following this exact format:
 - [ ] `<relevant verification command passes>`
 
 ### Task 1: <Title>
-- [ ] <Specific, actionable checklist item>
-- [ ] <Specific, actionable checklist item>
+**Files:**
+- Create: `exact/path/to/new_file`
+- Modify: `exact/path/to/existing`
 
-### Task 2: <Title>
+- [ ] <Specific, actionable checklist item>
 - [ ] <Specific, actionable checklist item>
 ```
+
+**Optional enriched sections (add when helpful):**
+- `## Context` — codebase findings, existing patterns, relevant files
+- `## Design Decisions` — why you chose this approach over alternatives
+- `## Key Layout` — data structures, DB schemas, API contracts, storage layouts
+- `## Invariants` — rules that must hold across all tasks
+- `## Auth / Security` — auth model, permission rules, sensitive-data handling
+- `## API Surface` — endpoints, methods, request/response shapes
+- `## Testing Strategy` — unit vs integration vs e2e, coverage expectations
+- `## What Goes Where` — which files host which concepts
 
 **Plan writing rules:**
 - The plan title must stay tightly aligned to the user's request. Do not invent a different feature, subsystem, or theme.
 - Reuse the user's wording for the core feature when possible so the title and overview are obviously about the requested work.
 - Each `### Task N:` should be small, concrete, and independently valuable
 - Each task has 2-5 checklist items that are specific and verifiable
+- Include a `**Files:**` block in each task listing files to create or modify
+- Tests must be separate checklist items, not bundled with implementation
 - Use `- [ ]` for all items (pending — ralpix will mark them done during execution)
 - Tasks must be in dependency order (Task 2 can depend on Task 1, but not vice versa)
 - `## Success Criteria` should be concrete and testable, and should mention real verification commands when applicable (e.g., `npm test`, `go test ./...`)

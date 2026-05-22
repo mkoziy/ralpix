@@ -14,10 +14,10 @@ import { join, resolve } from "node:path";
 
 import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
 import { parsePlan } from "./parser.js";
-import { buildTemporalContext } from "./pi-subprocess.js";
+import { buildTemporalContext, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { plannerLaunchConfigs } from "./planner-prompt.js";
-import { loadPrompt, expandPrompt } from "./prompt.js";
+import { loadAgent, loadPrompt, expandPrompt } from "./prompt.js";
 
 import type { RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -204,12 +204,6 @@ function validatePlanDraft(content: string): { ok: true } | { ok: false; reason:
   if (!(/^#\s+plan:\s+/im).test(content)) {
     return { ok: false, reason: "missing `# Plan:` title" };
   }
-  if (!(/^##\s+overview\b/im).test(content)) {
-    return { ok: false, reason: "missing `## Overview` section" };
-  }
-  if (!(/^##\s+success criteria\b/im).test(content)) {
-    return { ok: false, reason: "missing `## Success Criteria` section" };
-  }
   if (!(/^###\s+task\s+\d+:/im).test(content)) {
     return { ok: false, reason: "missing `### Task N:` sections" };
   }
@@ -394,6 +388,39 @@ async function runPlannerProcess(
   });
 }
 
+async function runPlanReviewSubprocess(
+  draftPath: string,
+  cwd: string,
+  config: RalpixConfig,
+): Promise<string | null> {
+  try {
+    const planContent = readFileSync(draftPath, "utf-8");
+    const agentPrompt = loadAgent("plan-review");
+    const fullPrompt = `${agentPrompt}\n\n---\n\n## Plan to Review\n\n${planContent}`;
+
+    const modelCfg = resolveModel(config, "plan");
+    const piAgentDir = resolvePiAgentDir(cwd, config);
+    const temporal = buildTemporalContext(config);
+    const promptWithTemporal = temporal.length > 0 ? `${temporal}\n${fullPrompt}` : fullPrompt;
+
+    const result = await runPiSubprocessPrompt(
+      cwd,
+      promptWithTemporal,
+      modelCfg,
+      true,
+      120000,
+      undefined,
+      piAgentDir,
+      config,
+    );
+
+    if (result.exitCode !== 0) return null;
+    return extractLastAssistantText(result.output.split("\n"));
+  } catch {
+    return null;
+  }
+}
+
 async function reviewDraft(
   ctx: ExtensionCommandContext,
   draftPath: string,
@@ -516,7 +543,8 @@ export async function runPlanCreation(
       previousDraft = draft;
       feedback =
         `The previous draft was not a valid ralpix plan: ${draftValidation.reason}. ` +
-        "Return only valid ralpix plan markdown with `# Plan:`, `## Overview`, `## Success Criteria`, and `### Task N:` sections.";
+        "Return only valid ralpix plan markdown with `# Plan:` and `### Task N:` sections. " +
+        "Optional sections like `## Overview`, `## Success Criteria`, `## Design Decisions`, etc. are encouraged when they help the implementer.";
       continue;
     }
 
@@ -550,16 +578,52 @@ export async function runPlanCreation(
         appendPlanCreationDebug(ctx.cwd, `runPlanCreation: accepted ${draftPath}`);
         ctx.ui.notify(`Plan saved to ${draftPath}`, "success");
 
-        const execute = await ctx.ui.select(
-          "Plan created. What next?",
-          ["▶ Execute plan now", "✓ Done — exit, run later"],
-        );
+        // Post-acceptance loop: Review → Execute → Done
+        let postReview: string | null = null;
+        for (;;) {
+          const choices = postReview == null
+            ? ["🔍 Review plan (AI check)", "▶ Execute plan now", "✓ Done — exit, run later"]
+            : ["↻ Revise based on review", "▶ Execute plan now", "✓ Done — exit, run later"];
 
-        if (typeof execute === "string" && execute.includes("Execute")) {
-          return draftPath;
+          const next = await ctx.ui.select("Plan created. What next?", choices);
+
+          if (typeof next === "string" && next.includes("Execute")) {
+            return draftPath;
+          }
+
+          if (typeof next === "string" && next.includes("Done")) {
+            return null;
+          }
+
+          if (typeof next === "string" && next.includes("Review")) {
+            ctx.ui.notify("Running AI plan review...", "info");
+            appendPlanCreationDebug(ctx.cwd, "runPlanCreation: starting plan review");
+            const reviewResult = await runPlanReviewSubprocess(draftPath, ctx.cwd, config);
+            if (reviewResult == null || reviewResult.trim().length === 0) {
+              ctx.ui.notify("Plan review did not return output. You can still execute or revise manually.", "warning");
+              continue;
+            }
+            ctx.ui.notify("Plan review complete. See output below.", "info");
+            postReview = reviewResult;
+            continue;
+          }
+
+          if (typeof next === "string" && next.includes("Revise")) {
+            if (postReview != null) {
+              previousDraft = readFileSync(draftPath, "utf-8");
+              feedback = `Apply the following AI review feedback:\n\n${postReview}`;
+              appendPlanCreationDebug(ctx.cwd, "runPlanCreation: revision from plan review");
+            }
+            break;
+          }
+
+          // Fallback — treat as Done
+          return null;
         }
 
-        return null;
+        // If we broke out of the post-acceptance loop with a revision request,
+        // continue the outer revision loop.
+        continue;
       }
 
       previousDraft = readFileSync(draftPath, "utf-8");

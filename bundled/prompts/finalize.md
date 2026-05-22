@@ -8,8 +8,7 @@ All tasks are complete and reviews have passed.
 
 1. Run final verification commands to ensure everything works
 2. Check that ALL checklist items in the plan are marked complete
-3. If `movePlanOnCompletion` is enabled, move the plan to a `completed/` subdirectory
-4. Write a brief summary of what was accomplished
+3. Write a brief summary of what was accomplished
 
 ## Summary Template
 ```markdown

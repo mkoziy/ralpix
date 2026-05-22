@@ -98,7 +98,7 @@ npm ci
 
 ## Plan Format
 
-ralpix plans are plain markdown files:
+ralpix plans are plain markdown files. The format is intentionally flexible — add rich context sections when they help the implementer:
 
 ```markdown
 # Plan: My Feature
@@ -106,19 +106,53 @@ ralpix plans are plain markdown files:
 ## Overview
 Brief description of what this plan achieves.
 
+## Context
+Files/components involved, existing patterns, dependencies.
+
+## Design Decisions
+- BadgerDB for durable storage
+- Claim-based pull for natural load spreading
+
+## Key Layout
+```
+job:{queue}:{ulid}  → JSON: {payload, status, ...}
+queue:{queue}:pending:{ulid} → "" (index)
+```
+
+## Invariants
+- Every reserved key must have a corresponding job record
+- The sweeper cross-checks to catch crash-orphaned records
+
+## Auth
+Admin API: HTTP Basic Auth. Worker API: Bearer token.
+
+## API Surface
+```
+POST /queues/{queue}/jobs   schedule
+GET  /queues/{queue}/next   claim next job
+```
+
 ## Success Criteria
 - [ ] Feature works
 - [ ] Tests pass
 
 ### Task 1: Set up the foundation
-Description of what needs to be done.
+**Files:**
+- Create: `src/store.ts`
+- Modify: `src/config.ts`
 
 - [ ] Create module structure
 - [ ] Write interface definitions
+- [ ] Write tests for store initialization
 
 ### Task 2: Implement core logic
+**Files:**
+- Create: `src/engine.ts`
+- Create: `src/engine_test.ts`
+
 - [ ] Write main algorithm
 - [ ] Add error handling
+- [ ] Write tests for success and error cases
 ```
 
 Rules:
@@ -127,9 +161,19 @@ Rules:
 |---------|----------|-------------|
 | `# Plan: <Title>` | Yes | Plan title, injected into prompts |
 | `## Overview` | No | Description injected into every task prompt |
+| `## Context` | No | Codebase findings, patterns, dependencies |
+| `## Design Decisions` | No | Why this approach over alternatives |
+| `## Key Layout` | No | Data structures, schemas, storage layouts |
+| `## Invariants` | No | Rules that must hold across all tasks |
+| `## Auth / Security` | No | Auth model, permission rules |
+| `## API Surface` | No | Endpoints, methods, request/response shapes |
+| `## Testing Strategy` | No | Unit vs integration vs e2e expectations |
 | `## Success Criteria` | No | Overall success checklist |
 | `### Task N: <Title>` | Yes | One section per task |
+| `**Files:**` | No | Files to create or modify in this task |
 | `- [ ]` / `- [x]` | No | Checkboxes; if absent, the entire task description is treated as one item |
+
+**Arbitrary `##` sections are preserved.** Any heading not listed above is captured and injected into every task prompt as additional context. This lets you add `## Deployment Notes`, `## Rollback Plan`, or any other section the implementer needs.
 
 ---
 
@@ -144,11 +188,12 @@ Skip writing plans by hand — describe what you want and ralpix creates the pla
 The model will:
 
 1. **Ask clarifying questions** in the UI when needed (option picker + free-form answer)
-2. **Generate a plan draft** in ralpix format
+2. **Generate a plan draft** in ralpix format — optionally enriched with `## Context`, `## Design Decisions`, `## Key Layout`, `## Invariants`, `## API Surface`, and other sections when they help the implementer
 3. **Validate** the draft structure before saving
 4. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`
 5. **Pause for review** — Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
-6. **Offer execution** only after you explicitly accept
+6. **Offer AI plan review** after you accept — an independent agent checks for over-engineering, missing tests, YAGNI violations, and convention mismatches before execution
+7. **Offer execution** only after you explicitly accept (or skip review)
 
 The saved file is the source of truth, so you can inspect or edit it in any editor before continuing.
 
@@ -182,7 +227,6 @@ ralpix uses a three-layer merge — each layer overrides the one above:
   "reviewSecondEffort": "medium",
   "maxRetries": 2,                 // Max retries per task on failure
   "reviewMaxIterations": 5,
-  "movePlanOnCompletion": false,   // Move plan.md → completed/plan.md when done
   "externalReviewEnabled": true,
   "externalReviewModel": "openai-codex/gpt-5.5",
   "externalReviewEffort": "medium",

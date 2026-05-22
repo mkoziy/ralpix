@@ -5,7 +5,7 @@
 import { execSync } from "node:child_process";
 
 import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
-import { updatePlanTaskStatus } from "./parser.js";
+import { parsePlan, updatePlanTaskStatus } from "./parser.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 
@@ -59,6 +59,7 @@ export function parseTaskSessionReport(text: string): TaskSessionReport | null {
 
 async function runTaskSession(
   ctx: ExtensionCommandContext,
+  planPath: string,
   promptContent: string,
   modelCfg: ModelConfig,
   piAgentDir: string | null,
@@ -77,7 +78,28 @@ async function runTaskSession(
     config,
   );
   const report = parseTaskSessionReport(result.lastAssistantText);
-  if (report !== null) return report;
+
+  // Detect the optional completion signal (model claims all tasks are done)
+  const allDoneSignal = (/<<<ralpix:all_tasks_done>>>/i).test(result.lastAssistantText);
+
+  if (report !== null) {
+    if (report.success && allDoneSignal) {
+      // Host-verified completion: re-parse plan to guard against hallucination
+      try {
+        const refreshed = parsePlan(planPath);
+        const hasPending = refreshed.tasks.some(
+          (t) => t.status === "pending" || t.status === "in-progress",
+        );
+        if (!hasPending) {
+          return { ...report, summary: `${report.summary} (all tasks done — verified)` };
+        }
+        // Signal was emitted but tasks remain — warn and treat as normal success
+      } catch {
+        // ignore parse errors, fall through to normal report
+      }
+    }
+    return report;
+  }
 
   const stderr = result.error.trim();
   const assistantText = result.lastAssistantText.trim();
@@ -129,12 +151,30 @@ export async function executeTask(
   logger.logTaskStart(task);
 
   const template = loadPrompt("task-default", ctx.cwd);
+
+  // Pre-build context blocks so empty values leave no stray headings
+  const contextBlock = plan.context.length > 0
+    ? `## Project Context\n${plan.context}`
+    : "";
+
+  const extraKeys = Object.keys(plan.extraSections);
+  const extraSectionsInner = extraKeys.length > 0
+    ? extraKeys
+      .map((key) => `## ${key}\n${plan.extraSections[key] ?? ""}`)
+      .join("\n\n")
+    : "";
+  const extraSectionsBlock = extraSectionsInner.length > 0
+    ? `## Additional Context\n${extraSectionsInner}`
+    : "";
+
   const prompt = expandPrompt(template, {
     OVERVIEW: plan.overview.length > 0 ? plan.overview : plan.title,
+    CONTEXT_BLOCK: contextBlock,
     TASK_TITLE: task.title,
     TASK_DESCRIPTION: task.description.length > 0
       ? task.description
       : task.items.map((i) => `- [${i.done ? "x" : " "}] ${i.text}`).join("\n"),
+    EXTRA_SECTIONS_BLOCK: extraSectionsBlock,
   });
 
   updatePlanTaskStatus(plan.path, task.id, task.title, "in-progress");
@@ -148,7 +188,7 @@ export async function executeTask(
       const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
       logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
       ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
-      const result = await runTaskSession(ctx, prompt, modelCfg, piAgentDir, config, (detail) => {
+      const result = await runTaskSession(ctx, plan.path, prompt, modelCfg, piAgentDir, config, (detail) => {
         logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
       }, hooks?.onUsage);
 

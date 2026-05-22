@@ -12,7 +12,9 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -445,6 +447,25 @@ export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): 
   writeFileSync(configPath, JSON.stringify(merged, null, 2), UTF8_ENCODING);
 }
 
+function copyBundledSkills(piAgentDir: string): void {
+  const bundledSkillsDir = join(__dirname, "bundled", "skills");
+  const skillsDir = join(piAgentDir, "skills");
+  if (!existsSync(bundledSkillsDir)) return;
+
+  if (!existsSync(skillsDir)) mkdirSync(skillsDir, { recursive: true });
+  for (const entry of readdirSync(bundledSkillsDir)) {
+    const srcDir = join(bundledSkillsDir, entry);
+    if (!statSync(srcDir).isDirectory()) continue;
+    const destDir = join(skillsDir, entry);
+    if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
+    const srcSkill = join(srcDir, "SKILL.md");
+    const destSkill = join(destDir, "SKILL.md");
+    if (existsSync(srcSkill) && !existsSync(destSkill)) {
+      copyFileSync(srcSkill, destSkill);
+    }
+  }
+}
+
 /**
  * Initialise ~/.ralpix/ with bundled defaults.
  * Idempotent — does not overwrite existing files.
@@ -490,6 +511,9 @@ export function initRalpixHome(): void {
   // Copy default pi-agent profile used by ralpix child sessions
   const bundledPiAgentDir = join(__dirname, "bundled", DEFAULT_PI_AGENT_DIR_NAME);
   const piAgentDir = defaultPiAgentDir();
+
+  copyBundledSkills(piAgentDir);
+
   const agentInstructionsPath = join(piAgentDir, "AGENTS.md");
   if (!existsSync(agentInstructionsPath)) {
     writeFileSync(
