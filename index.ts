@@ -14,7 +14,7 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync } from "node:fs";
-import { resolve, join as pathJoin, parse as pathParse } from "node:path";
+import { resolve, join as pathJoin, parse as pathParse, basename as pathBasename } from "node:path";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
@@ -1122,10 +1122,14 @@ async function runPlan(
   if (existsSync(planPath)) {
     try {
       const { dir, base } = pathParse(planPath);
-      const completedDir = pathJoin(dir, "completed");
-      mkdirSync(completedDir, { recursive: true });
-      renameSync(planPath, pathJoin(completedDir, base));
-      ctx.ui.notify(`Plan moved to ${completedDir}/${base}`, "info");
+      if (pathBasename(dir) === "completed") {
+        ctx.ui.notify("Plan already in completed/ directory", "info");
+      } else {
+        const completedDir = pathJoin(dir, "completed");
+        mkdirSync(completedDir, { recursive: true });
+        renameSync(planPath, pathJoin(completedDir, base));
+        ctx.ui.notify(`Plan moved to ${completedDir}/${base}`, "info");
+      }
     } catch {
       // Non-fatal — plan move is best-effort
     }
