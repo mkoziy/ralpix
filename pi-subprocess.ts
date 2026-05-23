@@ -278,17 +278,6 @@ function parseJsonEvent(line: string): JsonEvent | null {
   }
 }
 
-function extractLastAssistantText(lines: string[]): string {
-  let parts: string[] = [];
-  for (const line of lines) {
-    const event = parseJsonEvent(line);
-    if (event?.type === "message_end" && event.message?.role === "assistant") {
-      parts = parseAssistantTextParts(event.message.content);
-    }
-  }
-  return parts.join("\n").trim();
-}
-
 function buildPiSubprocessEnv(piAgentDir?: string | null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   if (piAgentDir != null) {
@@ -353,13 +342,13 @@ export async function runPiSubprocessPrompt(
       hooks?.onLifecycle?.(`idle for ${String(seconds)}s waiting for subprocess output`);
     }, 30000);
 
-    let stdout = "";
-    let stderr = "";
+    let lastAssistantText = "";
+    let stderrAccum = "";
+    const MAX_STDERR = 200_000;
     let stdoutBuffer = "";
 
     proc.stdout.on("data", (data: Buffer) => {
       const chunk = data.toString();
-      stdout += chunk;
       stdoutBuffer += chunk;
       lastActivity = Date.now();
 
@@ -371,25 +360,32 @@ export async function runPiSubprocessPrompt(
         hooks?.onEvent?.(event);
         if (
           event.type === "message_end" &&
-          event.message?.role === "assistant" &&
-          event.message.usage != null &&
-          (event.message.usage.input ?? 0) + (event.message.usage.output ?? 0) > 0 &&
-          hooks?.onUsage != null
+          event.message?.role === "assistant"
         ) {
-          const { provider = "unknown", model = "unknown", usage } = event.message;
-          hooks.onUsage(provider, model, {
-            input: usage.input ?? 0,
-            output: usage.output ?? 0,
-            cacheRead: usage.cacheRead ?? 0,
-            cacheWrite: usage.cacheWrite ?? 0,
-            cost: usage.cost?.total ?? 0,
-          });
+          lastAssistantText = parseAssistantTextParts(event.message.content).join("\n").trim();
+          if (
+            event.message.usage != null &&
+            (event.message.usage.input ?? 0) + (event.message.usage.output ?? 0) > 0 &&
+            hooks?.onUsage != null
+          ) {
+            const { provider = "unknown", model = "unknown", usage } = event.message;
+            hooks.onUsage(provider, model, {
+              input: usage.input ?? 0,
+              output: usage.output ?? 0,
+              cacheRead: usage.cacheRead ?? 0,
+              cacheWrite: usage.cacheWrite ?? 0,
+              cost: usage.cost?.total ?? 0,
+            });
+          }
         }
       }
     });
 
     proc.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
+      stderrAccum += data.toString();
+      if (stderrAccum.length > MAX_STDERR) {
+        stderrAccum = `...(truncated)...${stderrAccum.slice(-MAX_STDERR)}`;
+      }
       lastActivity = Date.now();
     });
 
@@ -400,9 +396,9 @@ export async function runPiSubprocessPrompt(
         hooks?.onLifecycle?.(`pi subprocess exited with code ${String(code ?? 1)}`);
         resolvePromise({
           exitCode: code ?? 1,
-          output: stdout,
-          error: stderr,
-          lastAssistantText: extractLastAssistantText(stdout.split("\n")),
+          output: lastAssistantText,
+          error: stderrAccum,
+          lastAssistantText,
         });
       });
     });
@@ -414,9 +410,9 @@ export async function runPiSubprocessPrompt(
         hooks?.onLifecycle?.(`pi subprocess error: ${error.message}`);
         resolvePromise({
           exitCode: 1,
-          output: stdout,
+          output: lastAssistantText,
           error: error.message,
-          lastAssistantText: extractLastAssistantText(stdout.split("\n")),
+          lastAssistantText,
         });
       });
     });

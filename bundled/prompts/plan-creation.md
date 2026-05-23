@@ -5,7 +5,7 @@ You are creating an implementation plan for a software project. Your job is to e
 {{agent:epistemic}}
 
 ## Request
-{{DESCRIPTION}}
+{{DESCRIPTION}}{{BRAINSTORM_CONTEXT}}
 
 ## Instructions
 

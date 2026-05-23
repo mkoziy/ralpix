@@ -15,7 +15,7 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
  * - "external-eval":   External review eval (main model fixes issues)
  * - "plan":            Interactive plan creation
  */
-export type ModelPhase = "task" | "review-first" | "review-second" | "external-review" | "external-eval" | "plan";
+export type ModelPhase = "task" | "review-first" | "review-second" | "external-review" | "external-eval" | "plan" | "brainstorm";
 
 /** All valid model phases */
 export const MODEL_PHASES: ModelPhase[] = [
@@ -25,6 +25,7 @@ export const MODEL_PHASES: ModelPhase[] = [
   "external-review",
   "external-eval",
   "plan",
+  "brainstorm",
 ];
 
 /** Model configuration for a single phase */
@@ -59,6 +60,10 @@ export interface RalpixConfig {
   /** Plan creation model / effort (falls back to defaultModel / defaultEffort) */
   planModel: string | null;
   planEffort: ThinkingLevel | null;
+  /** Brainstorm model / effort (falls back to planModel / planEffort) */
+  brainstormEnabled: boolean;
+  brainstormModel: string | null;
+  brainstormEffort: ThinkingLevel | null;
   /** Directory for created/stored plan files */
   plansDir: string;
   /** Enable epistemic guardrails (temporal context + verification rules) */

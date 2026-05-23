@@ -6,23 +6,20 @@
  * runtime currently aborts before the session callback starts.
  */
 
-import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync, rmdirSync } from "node:fs";
-import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
+import { resolveModel, resolvePiAgentDir } from "./config.js";
 import { parsePlan } from "./parser.js";
-import { buildTemporalContext, runPiSubprocessPrompt } from "./pi-subprocess.js";
+import { buildTemporalContext, createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { plannerLaunchConfigs } from "./planner-prompt.js";
 import { loadAgent, loadPrompt, expandPrompt } from "./prompt.js";
+import { createProgressTui, createTokenLedger } from "./tui.js";
 
 import type { RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-
-const DEFAULT_FZF_COMMAND = "rg --files --hidden --follow --glob '!.git'";
 
 function slugify(text: string): string {
   const slug = text
@@ -119,62 +116,6 @@ function digestPlanReview(review: string): ReviewDigest {
   const headline = `Review: ${verdict} — ${parts.join(", ")}${testingSuffix}`;
 
   return { verdict, critical, important, minor, overEngineering, testing, headline };
-}
-
-function getPiExecutable(): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const isBunVirtual = typeof currentScript === "string" && currentScript.startsWith("/$bunfs/root/");
-  if (typeof currentScript === "string" && !isBunVirtual && existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript] };
-  }
-  return { command: "pi", args: [] };
-}
-
-function buildPlannerEnv(piAgentDir: string | null): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  if (piAgentDir != null) {
-    env["PI_CODING_AGENT_DIR"] = piAgentDir;
-  }
-  env["FZF_DEFAULT_COMMAND"] ??= DEFAULT_FZF_COMMAND;
-  env["FZF_CTRL_T_COMMAND"] ??= DEFAULT_FZF_COMMAND;
-  return env;
-}
-
-async function writeTempFile(prefix: string, content: string): Promise<{ dir: string; filePath: string }> {
-  const dir = await fs.mkdtemp(join(tmpdir(), "ralpix-plan-"));
-  const filePath = join(dir, `${prefix}.md`);
-  await fs.writeFile(filePath, content, { encoding: "utf-8", mode: 0o600 });
-  return { dir, filePath };
-}
-
-interface JsonEvent {
-  type: string;
-  message?: {
-    role: string;
-    content?: Array<{ type: string; text: string }>;
-  };
-}
-
-// eslint-disable-next-line sonarjs/cognitive-complexity
-function extractLastAssistantText(lines: string[]): string {
-  let parts: string[] = [];
-  for (const line of lines) {
-    try {
-      const event = JSON.parse(line) as JsonEvent;
-      if (event.type === "message_end" && event.message?.role === "assistant") {
-        parts = [];
-        const content = event.message.content;
-        if (content !== undefined) {
-          for (const part of content) {
-            if (part.type === "text") parts.push(part.text);
-          }
-        }
-      }
-    } catch {
-      // skip malformed lines
-    }
-  }
-  return parts.join("\n").trim();
 }
 
 function buildPlanGenerationPrompt(
@@ -348,114 +289,6 @@ function saveDraftFile(
   return nextPath;
 }
 
-interface PlannerProcessResult {
-  exitCode: number;
-  output: string;
-  error: string;
-}
-
-async function runPlannerProcess(
-  cwd: string,
-  promptContent: string,
-  round: number,
-  config: RalpixConfig,
-  launchConfig: { modelPhase: "plan" | "task" | null; includeEffort: boolean },
-): Promise<PlannerProcessResult> {
-  appendPlanCreationDebug(cwd, `round ${round}: subprocess start`);
-  const invocation = getPiExecutable();
-  const args = [...invocation.args, "--mode", "json", "-p", "--no-session"];
-  const modelCfg = launchConfig.modelPhase === null
-    ? { model: null, provider: null, effort: null }
-    : resolveModel(config, launchConfig.modelPhase);
-  const modelArg = buildModelArg(modelCfg);
-  if (launchConfig.modelPhase !== null && modelArg !== null) {
-    args.push("--model", modelArg);
-  } else if (launchConfig.modelPhase !== null && modelCfg.provider !== null && modelCfg.provider.length > 0) {
-    args.push("--provider", modelCfg.provider);
-  }
-  if (launchConfig.includeEffort && modelCfg.effort !== null) {
-    args.push("--thinking", modelCfg.effort);
-  }
-  const temporal = buildTemporalContext(config);
-  const fullPrompt = temporal.length > 0 ? `${temporal}\n${promptContent}` : promptContent;
-  const { dir, filePath } = await writeTempFile(`plan-round-${round}`, fullPrompt);
-  args.push(`@${filePath}`);
-  const modelLabel = launchConfig.modelPhase === null ? "default" : (modelArg ?? modelCfg.provider ?? "default");
-  const effortLabel = launchConfig.includeEffort ? (modelCfg.effort ?? "default") : "default";
-  appendPlanCreationDebug(cwd, `round ${round}: subprocess args prepared model=${modelLabel} effort=${effortLabel}`);
-
-  return new Promise((resolvePromise) => {
-    const piAgentDir = resolvePiAgentDir(cwd, config);
-    const proc = spawn(invocation.command, args, {
-      cwd,
-      env: buildPlannerEnv(piAgentDir),
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const timeout = setTimeout(() => {
-      appendPlanCreationDebug(cwd, `round ${round}: subprocess timeout`);
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        if (!proc.killed) proc.kill("SIGKILL");
-      }, 5000);
-    }, 120000);
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (data: Buffer) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on("data", (data: Buffer) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      try {
-        unlinkSync(filePath);
-      } catch {
-        // ignore
-      }
-      try {
-        rmdirSync(dir);
-      } catch {
-        // ignore
-      }
-      clearTimeout(timeout);
-      appendPlanCreationDebug(cwd, `round ${round}: subprocess close exit=${String(code ?? 1)}`);
-      if (stderr.trim().length > 0) {
-        appendPlanCreationDebug(cwd, `round ${round}: stderr ${JSON.stringify(stderr.trim().slice(0, 2000))}`);
-      }
-      resolvePromise({
-        exitCode: code ?? 1,
-        output: stdout,
-        error: stderr,
-      });
-    });
-
-    proc.on("error", (error) => {
-      try {
-        unlinkSync(filePath);
-      } catch {
-        // ignore
-      }
-      try {
-        rmdirSync(dir);
-      } catch {
-        // ignore
-      }
-      clearTimeout(timeout);
-      appendPlanCreationDebug(cwd, `round ${round}: subprocess error ${error.message}`);
-      resolvePromise({
-        exitCode: 1,
-        output: "",
-        error: error.message,
-      });
-    });
-  });
-}
-
 async function runPlanReviewSubprocess(
   draftPath: string,
   cwd: string,
@@ -483,7 +316,7 @@ async function runPlanReviewSubprocess(
     );
 
     if (result.exitCode !== 0) return null;
-    return extractLastAssistantText(result.output.split("\n"));
+    return result.output;
   } catch {
     return null;
   }
@@ -528,6 +361,8 @@ export async function runPlanCreation(
   ctx: ExtensionCommandContext,
   _pi: ExtensionAPI,
   config: RalpixConfig,
+  existingPlanPath?: string,
+  brainstormContext?: string,
 ): Promise<string | null> {
   const trimmed = description.trim();
   if (trimmed.length < 5) {
@@ -535,15 +370,35 @@ export async function runPlanCreation(
     return null;
   }
 
-  ctx.ui.notify(`Creating plan for: "${description}"...`, "info");
+  const isUpdate = existingPlanPath !== undefined && existsSync(existingPlanPath);
+  const modeLabel = isUpdate ? "Updating" : "Creating";
+  ctx.ui.notify(`${modeLabel} plan for: "${description}"...`, "info");
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: start description=${JSON.stringify(description)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: debug file ${planCreationDebugFilePath(ctx.cwd)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: plansDir=${config.plansDir}`);
+
+  // ── Optional brainstorm phase (if enabled and not updating) ──
+  let effectiveContext = brainstormContext ?? "";
+  if (!isUpdate && effectiveContext.length === 0 && config.brainstormEnabled) {
+    const offer = await ctx.ui.confirm(
+      "Brainstorm first?",
+      "Would you like to brainstorm approaches and design before creating the plan?",
+    );
+    if (offer === true) {
+      const { runBrainstorm } = await import("./brainstorm.js");
+      const result = await runBrainstorm(description, ctx, _pi, config);
+      if (result != null) {
+        effectiveContext = result;
+      }
+    }
+  }
+
   ctx.ui.notify("Generating plan draft...", "info");
 
   const template = loadPrompt("plan-creation", ctx.cwd);
   const basePrompt = expandPrompt(template, {
     DESCRIPTION: description,
+    BRAINSTORM_CONTEXT: effectiveContext.length > 0 ? `\n\n${effectiveContext}\n` : "",
   });
 
   let previousDraft: string | undefined;
@@ -557,164 +412,248 @@ export async function runPlanCreation(
   }
   let draftPath: string | undefined;
 
-  for (let round = 1; round <= 5; round++) {
-    const prompt = buildPlanGenerationPrompt(basePrompt, round, clarifications, previousDraft, feedback);
-    let result: PlannerProcessResult | null = null;
-    for (const [launchIndex, launchConfig] of launchConfigs.entries()) {
-      result = await runPlannerProcess(ctx.cwd, prompt, round, config, launchConfig);
-      if (result.exitCode === 0) break;
+  if (isUpdate) {
+    previousDraft = readFileSync(existingPlanPath, "utf-8");
+    feedback = description;
+    draftPath = existingPlanPath;
+    appendPlanCreationDebug(ctx.cwd, `runPlanCreation: loaded existing plan ${existingPlanPath}`);
+  }
+
+  const tui = createProgressTui(ctx, "plan-creation-progress", `plan: ${description}`);
+  const ledger = createTokenLedger();
+
+  try {
+    for (let round = isUpdate ? 2 : 1; round <= 5; round++) {
+      const prompt = buildPlanGenerationPrompt(basePrompt, round, clarifications, previousDraft, feedback);
+      let result: { exitCode: number; output: string; error: string } | null = null;
+
+      for (const [launchIndex, launchConfig] of launchConfigs.entries()) {
+        const modelCfg = launchConfig.modelPhase === null
+          ? { model: null, provider: null, effort: null }
+          : resolveModel(config, launchConfig.modelPhase);
+        const usageBefore = ledger.snapshot();
+
+        tui.setPhase("drafting");
+        tui.setCurrent(`Round ${round}: AI drafting...`);
+        tui.refresh();
+
+        appendPlanCreationDebug(ctx.cwd, `round ${round}: subprocess start`);
+
+        const hooks = createPiProgressHooks(
+          (detail) => {
+            tui.setCurrent(`Round ${round}: ${detail}`);
+            tui.refresh();
+          },
+          (provider, model, usage) => {
+            ledger.add(provider, model, usage);
+            tui.setTotalUsage(ledger.snapshot());
+            tui.refresh();
+          },
+        );
+
+        result = await runPiSubprocessPrompt(
+          ctx.cwd,
+          prompt,
+          modelCfg,
+          launchConfig.includeEffort,
+          120000,
+          hooks,
+          resolvePiAgentDir(ctx.cwd, config),
+          config,
+        );
+
+        if (result.exitCode === 0) {
+          tui.pushStep({
+            title: `Round ${round}: draft generated`,
+            usageSummary: ledger.diffSince(usageBefore),
+            usageLines: ledger.usageLines(),
+          });
+          break;
+        }
+
+        appendPlanCreationDebug(
+          ctx.cwd,
+          `round ${round}: launch ${String(launchIndex + 1)} failed exit=${String(result.exitCode)}`,
+        );
+        tui.pushStep({
+          title: `Round ${round}: launch ${String(launchIndex + 1)} failed (exit ${String(result.exitCode)})`,
+        });
+      }
+
+      if (result?.exitCode !== 0) {
+        ctx.ui.notify(
+          `Plan creation failed in subprocess. See ${planCreationDebugFilePath(ctx.cwd)} and stderr in debug log.`,
+          "error",
+        );
+        return null;
+      }
+
+      const draft = stripMarkdownFence(result.output);
+      const draftStatus = draft.length > 0 ? `len=${String(draft.length)}` : "empty";
       appendPlanCreationDebug(
         ctx.cwd,
-        `round ${round}: launch ${String(launchIndex + 1)} failed exit=${String(result.exitCode)}`,
+        `round ${round}: extracted draft ${draftStatus}`,
       );
-    }
+      ctx.ui.notify(`Draft received (${String(draft.length)} chars)`, "info");
 
-    if (result?.exitCode !== 0) {
-      ctx.ui.notify(
-        `Plan creation failed in subprocess. See ${planCreationDebugFilePath(ctx.cwd)} and stderr in debug log.`,
-        "error",
-      );
-      return null;
-    }
-
-    const draft = stripMarkdownFence(extractLastAssistantText(result.output.split("\n")));
-    const draftStatus = draft.length > 0 ? `len=${String(draft.length)}` : "empty";
-    appendPlanCreationDebug(
-      ctx.cwd,
-      `round ${round}: extracted draft ${draftStatus}`,
-    );
-    ctx.ui.notify(`Draft received (${String(draft.length)} chars)`, "info");
-
-    const clarification = extractClarificationRequest(draft);
-    if (clarification !== null) {
-      appendPlanCreationDebug(ctx.cwd, `round ${round}: model asked clarification ${JSON.stringify(clarification.question)}`);
-      ctx.ui.notify(`Need clarification: ${clarification.question}`, "info");
-      const answer = await askClarification(ctx, clarification);
-      if (answer == null || answer.length === 0) {
-        ctx.ui.notify("Plan creation cancelled (clarification unanswered)", "warning");
-        return null;
-      }
-      clarifications.push({ question: clarification.question, answer });
-      appendPlanCreationDebug(ctx.cwd, `round ${round}: clarification answered ${JSON.stringify(answer)}`);
-      continue;
-    }
-
-    if (draft.length === 0) {
-      ctx.ui.notify(
-        `Plan creation produced no draft. See ${planCreationDebugFilePath(ctx.cwd)}`,
-        "error",
-      );
-      return null;
-    }
-
-    const draftValidation = validatePlanDraft(draft);
-    if (!draftValidation.ok) {
-      appendPlanCreationDebug(ctx.cwd, `round ${round}: invalid draft ${draftValidation.reason}`);
-      ctx.ui.notify(`Draft needs fixes: ${draftValidation.reason}`, "warning");
-      previousDraft = draft;
-      feedback =
-        `The previous draft was not a valid ralpix plan: ${draftValidation.reason}. ` +
-        "Return only valid ralpix plan markdown with `# Plan:` and `### Task N:` sections. " +
-        "Optional sections like `## Overview`, `## Success Criteria`, `## Design Decisions`, etc. are encouraged when they help the implementer.";
-      continue;
-    }
-
-    draftPath = saveDraftFile(plansDir, description, draft, createdAt, draftPath);
-    const summary = summarizeDraft(draft);
-    appendPlanCreationDebug(ctx.cwd, `round ${round}: saved draft ${draftPath}`);
-    ctx.ui.notify(
-      `Draft ready: "${summary.title}" — ${String(summary.tasks)} task${summary.tasks === 1 ? "" : "s"}, ${String(summary.items)} checklist item${summary.items === 1 ? "" : "s"}`,
-      "success",
-    );
-
-    for (;;) {
-      const review = await reviewDraft(ctx, draftPath);
-      if (review.action === "reject") {
-        ctx.ui.notify("Plan creation cancelled (user rejected)", "warning");
-        return null;
-      }
-      if (review.action === "reload") {
-        const currentDraft = readFileSync(draftPath, "utf-8");
-        const validation = validatePlanDraft(currentDraft);
-        if (!validation.ok) {
-          ctx.ui.notify(`Plan file is invalid: ${validation.reason}`, "error");
-          continue;
+      const clarification = extractClarificationRequest(draft);
+      if (clarification !== null) {
+        appendPlanCreationDebug(ctx.cwd, `round ${round}: model asked clarification ${JSON.stringify(clarification.question)}`);
+        tui.setPhase("clarifying");
+        tui.setCurrent("Waiting for clarification...");
+        tui.refresh();
+        ctx.ui.notify(`Need clarification: ${clarification.question}`, "info");
+        const answer = await askClarification(ctx, clarification);
+        if (answer == null || answer.length === 0) {
+          ctx.ui.notify("Plan creation cancelled (clarification unanswered)", "warning");
+          return null;
         }
-        ctx.ui.notify(`Reloaded edited draft from ${draftPath}`, "success");
+        clarifications.push({ question: clarification.question, answer });
+        appendPlanCreationDebug(ctx.cwd, `round ${round}: clarification answered ${JSON.stringify(answer)}`);
+        tui.pushStep({ title: `Clarified: ${clarification.question} → ${answer}` });
         continue;
       }
-      if (review.action === "accept") {
-        const currentDraft = readFileSync(draftPath, "utf-8");
-        const validation = validatePlanDraft(currentDraft);
-        if (!validation.ok) {
-          ctx.ui.notify(`Plan file is invalid: ${validation.reason}`, "error");
+
+      if (draft.length === 0) {
+        ctx.ui.notify(
+          `Plan creation produced no draft. See ${planCreationDebugFilePath(ctx.cwd)}`,
+          "error",
+        );
+        return null;
+      }
+
+      const draftValidation = validatePlanDraft(draft);
+      if (!draftValidation.ok) {
+        appendPlanCreationDebug(ctx.cwd, `round ${round}: invalid draft ${draftValidation.reason}`);
+        ctx.ui.notify(`Draft needs fixes: ${draftValidation.reason}`, "warning");
+        tui.pushStep({ title: `Round ${round}: invalid draft (${draftValidation.reason})` });
+        previousDraft = draft;
+        feedback =
+          `The previous draft was not a valid ralpix plan: ${draftValidation.reason}. ` +
+          "Return only valid ralpix plan markdown with `# Plan:` and `### Task N:` sections. " +
+          "Optional sections like `## Overview`, `## Success Criteria`, `## Design Decisions`, etc. are encouraged when they help the implementer.";
+        continue;
+      }
+
+      if (isUpdate) {
+        writeFileSync(existingPlanPath, `${draft.trimEnd()}\n`, "utf-8");
+        draftPath = existingPlanPath;
+      } else {
+        draftPath = saveDraftFile(plansDir, description, draft, createdAt, draftPath);
+      }
+      const summary = summarizeDraft(draft);
+      appendPlanCreationDebug(ctx.cwd, `round ${round}: saved draft ${draftPath}`);
+      ctx.ui.notify(
+        isUpdate ? `Plan updated at ${draftPath}` : `Plan saved to ${draftPath}`,
+        "success",
+      );
+      tui.pushStep({
+        title: `Draft: "${summary.title}" — ${String(summary.tasks)} tasks, ${String(summary.items)} items`,
+      });
+
+      for (;;) {
+        tui.setPhase("reviewing");
+        tui.setCurrent("Waiting for user review...");
+        tui.refresh();
+        const review = await reviewDraft(ctx, draftPath);
+        if (review.action === "reject") {
+          tui.pushStep({ title: "Plan rejected by user" });
+          ctx.ui.notify("Plan creation cancelled (user rejected)", "warning");
+          return null;
+        }
+        if (review.action === "reload") {
+          const currentDraft = readFileSync(draftPath, "utf-8");
+          const validation = validatePlanDraft(currentDraft);
+          if (!validation.ok) {
+            ctx.ui.notify(`Plan file is invalid: ${validation.reason}`, "error");
+            continue;
+          }
+          ctx.ui.notify(`Reloaded edited draft from ${draftPath}`, "success");
+          tui.pushStep({ title: "Reloaded edited draft" });
           continue;
         }
-        appendPlanCreationDebug(ctx.cwd, `runPlanCreation: accepted ${draftPath}`);
-        ctx.ui.notify(`Plan saved to ${draftPath}`, "success");
-
-        // Post-acceptance loop: Review → Execute → Done
-        let postReview: string | null = null;
-        let reviewDigest: ReviewDigest | null = null;
-        for (;;) {
-          const choices = postReview == null
-            ? ["🔍 Review plan (AI check)", "▶ Execute plan now", "✓ Done — exit, run later"]
-            : ["↻ Revise based on review", "▶ Execute plan now", "✓ Done — exit, run later"];
-
-          const selectPrompt = reviewDigest == null
-            ? `Plan saved to ${draftPath}. What next?`
-            : `${reviewDigest.headline}\n\nPlan saved to ${draftPath}. What next?`;
-
-          const next = await ctx.ui.select(selectPrompt, choices);
-
-          if (typeof next === "string" && next.includes("Execute")) {
-            return draftPath;
+        if (review.action === "accept") {
+          const currentDraft = readFileSync(draftPath, "utf-8");
+          const validation = validatePlanDraft(currentDraft);
+          if (!validation.ok) {
+            ctx.ui.notify(`Plan file is invalid: ${validation.reason}`, "error");
+            continue;
           }
+          tui.setPhase("complete");
+          tui.pushStep({ title: "Plan accepted" });
+          appendPlanCreationDebug(ctx.cwd, `runPlanCreation: accepted ${draftPath}`);
+          ctx.ui.notify(isUpdate ? `Plan updated at ${draftPath}` : `Plan saved to ${draftPath}`, "success");
 
-          if (typeof next === "string" && next.includes("Done")) {
+          // Post-acceptance loop: Review → Execute → Done
+          let postReview: string | null = null;
+          let reviewDigest: ReviewDigest | null = null;
+          for (;;) {
+            const choices = postReview == null
+              ? ["🔍 Review plan (AI check)", "▶ Execute plan now", "✓ Done — exit, run later"]
+              : ["↻ Revise based on review", "▶ Execute plan now", "✓ Done — exit, run later"];
+
+            const selectPrompt = reviewDigest == null
+              ? `Plan saved to ${draftPath}. What next?`
+              : `${reviewDigest.headline}\n\nPlan saved to ${draftPath}. What next?`;
+
+            const next = await ctx.ui.select(selectPrompt, choices);
+
+            if (typeof next === "string" && next.includes("Execute")) {
+              return draftPath;
+            }
+
+            if (typeof next === "string" && next.includes("Done")) {
+              return null;
+            }
+
+            if (typeof next === "string" && next.includes("Review")) {
+              ctx.ui.notify("Running AI plan review...", "info");
+              appendPlanCreationDebug(ctx.cwd, "runPlanCreation: starting plan review");
+              tui.setCurrent("AI reviewing plan...");
+              tui.refresh();
+              const reviewResult = await runPlanReviewSubprocess(draftPath, ctx.cwd, config);
+              if (reviewResult == null || reviewResult.trim().length === 0) {
+                ctx.ui.notify("Plan review did not return output. You can still execute or revise manually.", "warning");
+                continue;
+              }
+              const digest = digestPlanReview(reviewResult);
+              ctx.ui.notify(digest.headline, digest.verdict === "APPROVE" ? "success" : "warning");
+              tui.pushStep({ title: `AI review: ${digest.headline}` });
+              reviewDigest = digest;
+              postReview = reviewResult;
+              continue;
+            }
+
+            if (typeof next === "string" && next.includes("Revise")) {
+              if (postReview != null) {
+                previousDraft = readFileSync(draftPath, "utf-8");
+                feedback = `Apply the following AI review feedback:\n\n${postReview}`;
+                appendPlanCreationDebug(ctx.cwd, "runPlanCreation: revision from plan review");
+                tui.pushStep({ title: "Revision from AI review feedback" });
+              }
+              break;
+            }
+
+            // Fallback — treat as Done
             return null;
           }
 
-          if (typeof next === "string" && next.includes("Review")) {
-            ctx.ui.notify("Running AI plan review...", "info");
-            appendPlanCreationDebug(ctx.cwd, "runPlanCreation: starting plan review");
-            const reviewResult = await runPlanReviewSubprocess(draftPath, ctx.cwd, config);
-            if (reviewResult == null || reviewResult.trim().length === 0) {
-              ctx.ui.notify("Plan review did not return output. You can still execute or revise manually.", "warning");
-              continue;
-            }
-            const digest = digestPlanReview(reviewResult);
-            ctx.ui.notify(digest.headline, digest.verdict === "APPROVE" ? "success" : "warning");
-            reviewDigest = digest;
-            postReview = reviewResult;
-            continue;
-          }
-
-          if (typeof next === "string" && next.includes("Revise")) {
-            if (postReview != null) {
-              previousDraft = readFileSync(draftPath, "utf-8");
-              feedback = `Apply the following AI review feedback:\n\n${postReview}`;
-              appendPlanCreationDebug(ctx.cwd, "runPlanCreation: revision from plan review");
-            }
-            break;
-          }
-
-          // Fallback — treat as Done
-          return null;
+          // If we broke out of the post-acceptance loop with a revision request,
+          // continue the outer revision loop.
+          continue;
         }
 
-        // If we broke out of the post-acceptance loop with a revision request,
-        // continue the outer revision loop.
-        continue;
+        previousDraft = readFileSync(draftPath, "utf-8");
+        feedback = review.feedback;
+        tui.pushStep({ title: "User requested revision" });
+        appendPlanCreationDebug(ctx.cwd, `round ${round}: revision requested`);
+        break;
       }
-
-      previousDraft = readFileSync(draftPath, "utf-8");
-      feedback = review.feedback;
-      appendPlanCreationDebug(ctx.cwd, `round ${round}: revision requested`);
-      break;
     }
-  }
 
-  ctx.ui.notify("Plan creation exhausted revision rounds", "error");
-  return null;
+    ctx.ui.notify("Plan creation exhausted revision rounds", "error");
+    return null;
+  } finally {
+    tui.close();
+  }
 }

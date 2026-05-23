@@ -13,9 +13,10 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 
 - **Isolated task execution** — each task gets a clean `pi` session; no context bleed between tasks
 - **Auto-commit** — commits after every successful task with a configurable message template
+- **Interactive brainstorm phase** — collaborative Q&A to explore approaches and validate design before writing a plan
 - **Interactive plan creation** — describe a feature in one line, get a validated markdown plan back
 - **Multi-model review pipeline** — first pass (5 parallel agents) → optional external review (different provider) → second pass (critical issues only)
-- **Live progress widget** — animated spinner and elapsed timer show when background processes are running, plus review phases with meaningful labels (`Comprehensive review`, `External audit`, `Resolve findings`, `Quality & fix loop`)
+- **Live progress widget** — animated spinner, phase labels, step log, and token usage across brainstorm, plan creation, and task execution
 - **Stalemate detection** — exits the external review loop when two models keep disagreeing, saving tokens
 - **Three-layer config** — bundled defaults → `~/.ralpix/config.json` → `./.ralpix/config.json`
 - **Prompt customization** — override any prompt globally or per-project
@@ -28,6 +29,7 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 - [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Plan Format](#plan-format)
+- [Brainstorm](#brainstorm)
 - [Plan Creation](#plan-creation)
 - [Configuration](#configuration)
   - [Config reference](#config-reference)
@@ -54,10 +56,13 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 # 1. Initialize ralpix — creates ~/.ralpix/ with default prompts, agents, and config
 /ralpix init
 
-# 2a. Create a plan interactively (recommended)
+# 2a. Brainstorm first, then create a plan (recommended for new features)
+/ralpix brainstorm "add health check endpoint"
+
+# 2b. Create a plan directly
 /ralpix plan "add health check endpoint"
 
-# 2b. Or write a plan manually and execute it directly
+# 2c. Or write a plan manually and execute it directly
 /ralpix docs/plans/my-feature.md
 ```
 
@@ -177,6 +182,27 @@ Rules:
 
 ---
 
+## Brainstorm
+
+Before writing a plan, explore the problem space with a collaborative design dialogue:
+
+```bash
+/ralpix brainstorm "add JWT authentication to the API"
+```
+
+The brainstorm phase runs in four stages, driven by an AI design partner:
+
+1. **Understand** — Asks clarifying questions (one at a time) about purpose, constraints, and integration points
+2. **Explore Approaches** — Proposes 2-3 approaches with trade-offs after enough context is gathered
+3. **Design** — Breaks the chosen approach into sections (architecture, components, data flow, error handling, testing), presenting one at a time for your validation
+4. **Complete** — Summarizes the validated design into a structured context string
+
+You control the flow — answer questions, pick an approach, validate or reject design sections. There is no fixed question limit; the AI transitions between phases when it has enough context. A safety cap of 15 rounds prevents runaway subprocesses.
+
+After completion, ralpix offers to create a plan using the brainstorm context. The design decisions, selected approach, and validated sections are injected into the plan creation prompt so the generated plan is grounded in the work you just did.
+
+When `brainstormEnabled: true` (default), creating a plan directly with `/ralpix plan` also offers the brainstorm phase first.
+
 ## Plan Creation
 
 Skip writing plans by hand — describe what you want and ralpix creates the plan for you:
@@ -184,6 +210,14 @@ Skip writing plans by hand — describe what you want and ralpix creates the pla
 ```bash
 /ralpix plan "add JWT authentication to the API"
 ```
+
+You can also update an existing plan by pointing to its file:
+
+```bash
+/ralpix plan docs/plans/20260523-jwt-auth.md "add refresh token rotation"
+```
+
+ralpix loads the existing plan, treats your description as revision instructions, and generates an updated draft. The original file is overwritten once you accept.
 
 The model will:
 
@@ -226,14 +260,18 @@ ralpix uses a three-layer merge — each layer overrides the one above:
   "reviewFirstEffort": "high",
   "reviewSecondEffort": "medium",
   "maxRetries": 2,                 // Max retries per task on failure
-  "reviewMaxIterations": 5,
+  "reviewMaxIterations": 10,
+  "brainstormEnabled": true,
+  "brainstormModel": "opencode-go/kimi-k2.6",
+  "brainstormEffort": "medium",
   "externalReviewEnabled": true,
   "externalReviewModel": "openai-codex/gpt-5.5",
   "externalReviewEffort": "medium",
-  "externalReviewMaxIterations": 5,
+  "externalReviewMaxIterations": 10,
   "externalReviewPatience": 3,     // Exit after N unchanged rounds (stalemate)
   "planModel": "openai-codex/gpt-5.5",
   "planEffort": "medium",
+  "plansDir": "docs/plans",        // Directory for created/stored plan files
   "epistemicEnabled": true,        // Inject temporal context + verification rules into every subprocess
   "trainingCutoff": "2025-01-01",  // Model knowledge cutoff (YYYY-MM-DD)
   "highRiskLibraries": [            // Libraries that frequently break APIs
@@ -291,6 +329,7 @@ ralpix ships default prompts that you can override globally or per-project:
 ```
 ~/.ralpix/
 └── prompts/
+    ├── brainstorm.md        # Pre-plan design dialogue
     ├── task-default.md      # Runs for each task
     ├── review-first.md      # First review pass (5 agents)
     ├── review-second.md     # Second review pass
@@ -320,6 +359,8 @@ cp ~/.ralpix/prompts/task-default.md .ralpix/prompts/task-default.md
 
 | Variable | Description |
 |----------|-------------|
+| `{{DESCRIPTION}}` | User's one-line plan description (plan creation) |
+| `{{BRAINSTORM_CONTEXT}}` | Accumulated design dialogue from brainstorm phase (plan creation) |
 | `{{OVERVIEW}}` | Plan overview text |
 | `{{TASK_TITLE}}` | Current task title |
 | `{{TASK_DESCRIPTION}}` | Task description + checklist |
@@ -349,7 +390,7 @@ Example config:
   "defaultModel": "anthropic/claude-sonnet-4-5",
   "externalReviewEnabled": true,
   "externalReviewModel": "openai/gpt-5.2",
-  "externalReviewMaxIterations": 5,
+  "externalReviewMaxIterations": 10,
   "externalReviewPatience": 3
 }
 ```
@@ -506,7 +547,7 @@ EOF
 
   "externalReviewEnabled": true,
   "externalReviewModel": "openai/gpt-5.2",
-  "externalReviewMaxIterations": 5,
+  "externalReviewMaxIterations": 10,
   "externalReviewPatience": 3,
 
   "reviewSecondModel": "anthropic/claude-sonnet-4-5",
@@ -553,37 +594,48 @@ EOF
 
 ## Architecture
 
-### Plan creation (interactive)
+### Brainstorm → Plan creation (interactive)
 
 ```
-┌─────────────────────────────────────────────┐
-│  /ralpix plan "description"                  │
-│    │                                         │
-│    ├─► ctx.newSession()                      │
-│    │   ├─► Model explores codebase           │
-│    │   ├─► Model calls ralpix_ask_question   │
-│    │   │   └─► User picks answer             │
-│    │   ├─► Model generates plan draft        │
-│    │   └─► Model calls ralpix_submit_plan    │
-│    │       └─► User accepts / revises        │
-│    │                                         │
-│    └─► Plan saved to docs/plans/             │
-│        └─► Option: execute immediately       │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  /ralpix brainstorm "description"                   │
+│    │                                                  │
+│    ├─► Q&A round 1                                   │
+│    │   └─► User answers question                     │
+│    ├─► Q&A round 2  (AI decides when to move on)    │
+│    │   └─► User answers question                     │
+│    ├─► Propose approaches → User selects one        │
+│    ├─► Design section 1 → User validates / rejects  │
+│    ├─► Design section 2 → User validates / rejects  │
+│    └─► Summarize design context                     │
+│        └─► Offer to create plan                     │
+│                                                      │
+│  /ralpix plan "description"                          │
+│    │                                                  │
+│    ├─► Optional brainstorm (if brainstormEnabled)   │
+│    ├─► Model explores codebase                      │
+│    ├─► Model asks clarifying questions              │
+│    ├─► Model generates plan draft                  │
+│    └─► User accepts / revises / reloads            │
+│        └─► Plan saved to docs/plans/                │
+│            └─► Option: AI review → execute           │
+└──────────────────────────────────────────────────────┘
 ```
 
 ### Task execution
 
-Each task runs as an isolated `pi` subprocess — no context contamination between tasks:
+Each task runs as an isolated `pi` subprocess — no context contamination between tasks. A live TUI panel shows the current activity, elapsed timer, step log, and cumulative token usage for every brainstorm round, plan creation draft, and task attempt:
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │  /ralpix docs/plans/feature.md                       │
 │    │                                                  │
 │    ├─► spawn pi (task-default)          Task 1        │
+│    │   ├─► TUI: running → retrying → complete       │
 │    │   └─► auto-commit                                │
 │    │                                                  │
 │    ├─► spawn pi (task-default)          Task 2        │
+│    │   ├─► TUI: running → complete                  │
 │    │   └─► auto-commit                                │
 │    │                                                  │
 │    ├─► spawn pi (review-first)          Review 1      │

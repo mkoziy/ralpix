@@ -38,6 +38,7 @@ const PHASE_FIELDS: Record<ModelPhase, PhaseFields> = {
   "external-review": { modelField: "externalReviewModel", effortField: "externalReviewEffort" },
   "external-eval": { modelField: "defaultModel", effortField: "defaultEffort" },
   plan: { modelField: "planModel", effortField: "planEffort" },
+  brainstorm: { modelField: "brainstormModel", effortField: "brainstormEffort" },
 };
 
 // ---------------------------------------------------------------------------
@@ -488,7 +489,7 @@ export function initRalpixHome(): void {
   const promptsDir = join(RALPIX_HOME, "prompts");
   const promptNames = [
     "task-default", "review-first", "review-second", "finalize",
-    "external-review", "external-eval", "plan-creation",
+    "external-review", "external-eval", "plan-creation", "brainstorm",
   ];
   for (const name of promptNames) {
     const dest = join(promptsDir, `${name}.md`);

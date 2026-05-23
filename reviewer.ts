@@ -242,7 +242,7 @@ async function runReviewLoop(
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
 ): Promise<string> {
-  const maxIterations = config.reviewMaxIterations === 0 ? 5 : config.reviewMaxIterations;
+  const maxIterations = config.reviewMaxIterations === 0 ? 10 : config.reviewMaxIterations;
 
   hooks?.onStageStart?.(REVIEW_STAGES.secondPass, `quality review — iteration 1/${maxIterations}`);
   logger.logReview("loop", `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
@@ -302,7 +302,7 @@ async function runExternalReviewLoop(
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
 ): Promise<string> {
-  const maxIterations = config.externalReviewMaxIterations === 0 ? 5 : config.externalReviewMaxIterations;
+  const maxIterations = config.externalReviewMaxIterations === 0 ? 10 : config.externalReviewMaxIterations;
   const patience = config.externalReviewPatience === 0 ? 3 : config.externalReviewPatience;
 
   const externalModelCfg = resolveModel(config, "external-review");

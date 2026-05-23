@@ -8,8 +8,10 @@ import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
 import { parsePlan, updatePlanTaskStatus } from "./parser.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
+import { createProgressTui, createTokenLedger } from "./tui.js";
 
 import type { ProgressLogger } from "./logger.js";
+import type { PiSubprocessHooks } from "./pi-subprocess.js";
 import type { ModelConfig, Plan, PlanTask, RalpixConfig, SubprocessUsage, TaskResult } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
@@ -64,8 +66,7 @@ async function runTaskSession(
   modelCfg: ModelConfig,
   piAgentDir: string | null,
   config: RalpixConfig,
-  onProgress?: (detail: string) => void,
-  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  hooks?: PiSubprocessHooks,
 ): Promise<TaskSessionReport> {
   const result = await runPiSubprocessPrompt(
     ctx.cwd,
@@ -73,7 +74,7 @@ async function runTaskSession(
     modelCfg,
     true,
     30 * 60 * 1000,
-    createPiProgressHooks(onProgress, onUsage),
+    hooks,
     piAgentDir,
     config,
   );
@@ -150,6 +151,9 @@ export async function executeTask(
   hooks?.onTaskStart?.(task);
   logger.logTaskStart(task);
 
+  const tui = createProgressTui(ctx, `execute-task-${task.number}`, `execute: Task ${task.number} — ${task.title}`);
+  const ledger = createTokenLedger();
+
   const template = loadPrompt("task-default", ctx.cwd);
 
   // Pre-build context blocks so empty values leave no stray headings
@@ -188,11 +192,39 @@ export async function executeTask(
       const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
       logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
       ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
-      const result = await runTaskSession(ctx, plan.path, prompt, modelCfg, piAgentDir, config, (detail) => {
-        logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
-      }, hooks?.onUsage);
+
+      const usageBefore = ledger.snapshot();
+      tui.setPhase("running");
+      tui.setCurrent(`Attempt ${attempt}: running...`);
+      tui.refresh();
+
+      const progressHooks = createPiProgressHooks(
+        (detail) => {
+          logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
+          tui.setCurrent(`Attempt ${attempt}: ${detail}`);
+          tui.refresh();
+        },
+        (provider, model, usage) => {
+          ledger.add(provider, model, usage);
+          hooks?.onUsage?.(provider, model, usage);
+          tui.setTotalUsage(ledger.snapshot());
+          tui.refresh();
+        },
+      );
+
+      const result = await runTaskSession(ctx, plan.path, prompt, modelCfg, piAgentDir, config, progressHooks);
 
       if (result.success) {
+        tui.pushStep({
+          title: `Attempt ${attempt}: ✓ ${result.summary}`,
+          usageSummary: ledger.diffSince(usageBefore),
+          usageLines: ledger.usageLines(),
+        });
+        tui.setPhase("complete");
+        tui.setCurrent("Task complete!");
+        tui.refresh();
+        tui.close();
+
         const commitMsg = config.commitMessageTemplate
           .replaceAll("{{taskTitle}}", task.title)
           .replaceAll("{{taskNumber}}", String(task.number));
@@ -214,6 +246,11 @@ export async function executeTask(
       lastError = result.summary;
       if (attempt <= config.maxRetries) {
         logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying (${lastError})`);
+        tui.pushStep({
+          title: `Attempt ${attempt}: ✗ ${lastError.slice(0, 100)}`,
+          usageSummary: ledger.diffSince(usageBefore),
+        });
+        tui.setPhase("retrying");
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
@@ -224,6 +261,12 @@ export async function executeTask(
   }
 
   const finalError = lastError ?? "Unknown error";
+  tui.pushStep({ title: `Failed after ${config.maxRetries + 1} attempts` });
+  tui.setPhase("failed");
+  tui.setCurrent("Task failed");
+  tui.refresh();
+  tui.close();
+
   logger.logTaskEnd(task, false, finalError);
   updatePlanTaskStatus(plan.path, task.id, task.title, "failed");
   const taskResult = { success: false, error: finalError };

@@ -17,9 +17,11 @@ Most changes here affect orchestration, prompts, or config behavior. Treat small
 Start with the smallest relevant surface:
 
 - `index.ts` — extension entry point, `/ralpix` command registration, top-level run orchestration
+- `brainstorm.ts` — interactive brainstorm phase (understand → explore → design → complete)
 - `executor.ts` — task execution flow
 - `planner.ts` — interactive plan creation flow
 - `reviewer.ts` — review pipeline
+- `tui.ts` — shared TUI components: `ProgressPanel`, `createProgressTui`, `createTokenLedger`
 - `parser.ts` — ralpix markdown plan parsing
 - `config.ts` — config initialization and layered config loading
 - `prompt.ts` — prompt loading/template expansion
@@ -51,10 +53,12 @@ Start with the smallest relevant surface:
 For common tasks:
 
 - command routing or run lifecycle: start in `index.ts`
+- brainstorm phase: start in `brainstorm.ts` + `bundled/prompts/brainstorm.md`
 - plan parsing issues: start in `parser.ts`
 - plan creation UX: start in `planner.ts`
 - task execution behavior: start in `executor.ts`
 - review loop behavior: start in `reviewer.ts`
+- TUI panel behavior: start in `tui.ts`; callers are `brainstorm.ts`, `planner.ts`, `executor.ts`
 - prompt/template bugs: start in `prompt.ts` plus the relevant file in `bundled/prompts/`
 - config issues: start in `config.ts` and `bundled/config.json`
 

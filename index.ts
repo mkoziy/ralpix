@@ -652,6 +652,81 @@ function restoreState(entries: SessionEntry[]): RalpixState | null {
   return null;
 }
 
+function detectExistingPlan(description: string, cwd: string): { existingPlanPath?: string; description: string } {
+  const firstToken = description.split(/\s+/)[0];
+  if (firstToken?.endsWith(".md") === true) {
+    const candidate = resolve(cwd, firstToken);
+    if (existsSync(candidate)) {
+      const remaining = description.slice(firstToken.length).trim();
+      return {
+        existingPlanPath: candidate,
+        description: remaining.length > 0 ? remaining : "Update the plan based on current codebase state and requirements.",
+      };
+    }
+  }
+  return { description };
+}
+
+async function handleBrainstormSubcommand(
+  description: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<void> {
+  if (!existsSync(ralpixHomeDir())) {
+    ctx.ui.notify("First run — initialising ~/.ralpix/...", "info");
+    initRalpixHome();
+  }
+
+  const config = loadConfig(ctx.cwd);
+  const { runBrainstorm } = await import("./brainstorm.js");
+  const result = await runBrainstorm(description, ctx, pi, config);
+
+  if (result == null) return;
+
+  const createPlan = await ctx.ui.confirm(
+    "Create plan now?",
+    "Use the brainstorm results to generate an implementation plan?",
+  );
+  if (createPlan !== true) return;
+
+  const planPath = await runPlanCreation(description, ctx, pi, config, undefined, result);
+  if (planPath != null) {
+    await runPlan(planPath, ctx, pi);
+  }
+}
+
+async function handlePlanSubcommand(
+  trimmed: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<void> {
+  if (existsSync(resolve(ctx.cwd, trimmed))) {
+    await runPlan(trimmed, ctx, pi);
+    return;
+  }
+
+  let description = trimmed.slice(5).trim();
+  if (description.length === 0) {
+    ctx.ui.notify("Usage: /ralpix plan <description>", "error");
+    return;
+  }
+
+  const planQuery = detectExistingPlan(description, ctx.cwd);
+  description = planQuery.description;
+  const existingPlanPath = planQuery.existingPlanPath;
+
+  if (!existsSync(ralpixHomeDir())) {
+    ctx.ui.notify("First run — initialising ~/.ralpix/...", "info");
+    initRalpixHome();
+  }
+
+  const config = loadConfig(ctx.cwd);
+  const planPath = await runPlanCreation(description, ctx, pi, config, existingPlanPath);
+  if (planPath != null) {
+    await runPlan(planPath, ctx, pi);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -661,7 +736,7 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
   // ---- /ralpix command ----------------------------------------------------
 
   pi.registerCommand("ralpix", {
-    description: "Execute a ralpix plan (/ralpix <path>, /ralpix init, /ralpix plan <desc>)",
+    description: "Execute a ralpix plan (/ralpix <path>, /ralpix init, /ralpix plan <desc>, /ralpix brainstorm <desc>)",
     handler: async (args, ctx) => withRalpixErrorHandling(async () => {
       const trimmed = typeof args === "string" ? args.trim() : "";
 
@@ -688,33 +763,26 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
         return;
       }
 
+      // /ralpix brainstorm (exact, no description) — show usage
+      if (trimmed === "brainstorm") {
+        ctx.ui.notify("Usage: /ralpix brainstorm <description>", "error");
+        return;
+      }
+
+      // ── /ralpix brainstorm <description> ────────────────────────
+      if (trimmed.startsWith("brainstorm ")) {
+        const description = trimmed.slice(11).trim();
+        if (description.length === 0) {
+          ctx.ui.notify("Usage: /ralpix brainstorm <description>", "error");
+          return;
+        }
+        await handleBrainstormSubcommand(description, ctx, pi);
+        return;
+      }
+
       // ── /ralpix plan <description> ──────────────────────────────
       if (trimmed.startsWith("plan ")) {
-        // If the full argument is an existing file path (e.g. a file
-        // named "plan drafts/feature.md"), execute it directly instead
-        // of treating it as a plan description.
-        if (existsSync(resolve(ctx.cwd, trimmed))) {
-          await runPlan(trimmed, ctx, pi);
-          return;
-        }
-
-        const description = trimmed.slice(5).trim();
-        if (description.length === 0) {
-          ctx.ui.notify("Usage: /ralpix plan <description>", "error");
-          return;
-        }
-
-        // Auto-init if needed
-        if (!existsSync(ralpixHomeDir())) {
-          ctx.ui.notify("First run — initialising ~/.ralpix/...", "info");
-          initRalpixHome();
-        }
-
-        const config = loadConfig(ctx.cwd);
-        const planPath = await runPlanCreation(description, ctx, pi, config);
-        if (planPath !== null) {
-          await runPlan(planPath, ctx, pi);
-        }
+        await handlePlanSubcommand(trimmed, ctx, pi);
         return;
       }
 
