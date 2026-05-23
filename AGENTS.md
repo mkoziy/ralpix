@@ -16,7 +16,7 @@ Most changes here affect orchestration, prompts, or config behavior. Treat small
 
 Start with the smallest relevant surface:
 
-- `index.ts` — extension entry point, `/ralpix` command registration, top-level run orchestration
+- `index.ts` — extension entry point, `/ralpix` command registration, top-level run orchestration, branch guardrail (`maybeSwitchBranch`)
 - `brainstorm.ts` — interactive brainstorm phase (understand → explore → design → complete)
 - `executor.ts` — task execution flow
 - `planner.ts` — interactive plan creation flow

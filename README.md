@@ -13,6 +13,7 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 
 - **Isolated task execution** — each task gets a clean `pi` session; no context bleed between tasks
 - **Auto-commit** — commits after every successful task with a configurable message template
+- **Branch guardrail** — warns when you're on `main`/`master` before executing a plan and offers to create a feature branch
 - **Interactive brainstorm phase** — collaborative Q&A to explore approaches and validate design before writing a plan
 - **Interactive plan creation** — describe a feature in one line, get a validated markdown plan back
 - **Multi-model review pipeline** — first pass (5 parallel agents) → optional external review (different provider) → second pass (critical issues only)
@@ -68,12 +69,13 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 
 What happens when you execute a plan:
 
-1. Plan is parsed into tasks
-2. Each task runs in an isolated `pi` session seeded from the merged ralpix config
-3. Auto-commit after each successful task
-4. Progress is logged to `./.ralpix/progress/<plan-name>.txt`
-5. After all tasks: review pipeline runs (first pass → optional external review → second pass)
-6. Plan checkboxes are updated automatically
+1. If you're on `main` or `master`, ralpix offers to create a feature branch (e.g. `ralpix/20260523-add-health-check`)
+2. Plan is parsed into tasks
+3. Each task runs in an isolated `pi` session seeded from the merged ralpix config
+4. Auto-commit after each successful task
+5. Progress is logged to `./.ralpix/progress/<plan-name>.txt`
+6. After all tasks: review pipeline runs (first pass → optional external review → second pass)
+7. Plan checkboxes are updated automatically
 
 ---
 
@@ -629,6 +631,9 @@ Each task runs as an isolated `pi` subprocess — no context contamination betwe
 ```
 ┌──────────────────────────────────────────────────────┐
 │  /ralpix docs/plans/feature.md                       │
+│    │                                                  │
+│    ├─► On main/master? → Offer branch creation       │
+│    │   └─► e.g. ralpix/20260523-add-health-check    │
 │    │                                                  │
 │    ├─► spawn pi (task-default)          Task 1        │
 │    │   ├─► TUI: running → retrying → complete       │
