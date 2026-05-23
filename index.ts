@@ -729,6 +729,35 @@ async function handlePlanSubcommand(
 }
 
 // ---------------------------------------------------------------------------
+// Init handler
+// ---------------------------------------------------------------------------
+
+async function handleInitCommand(ctx: ExtensionCommandContext): Promise<void> {
+  const homeExists = existsSync(ralpixHomeDir());
+  let overwrite = false;
+  if (homeExists) {
+    const rewrite = await ctx.ui.confirm(
+      "Re-initialize ralpix?",
+      "~/.ralpix/ already exists. Overwrite existing files with bundled defaults?",
+    );
+    overwrite = rewrite === true;
+  } else {
+    const ok = await ctx.ui.confirm(
+      "Initialize ralpix?",
+      "Create ~/.ralpix/ with default prompts, agents, and config?",
+    );
+    if (ok !== true) return;
+  }
+  const result = initRalpixHome(overwrite);
+  const parts: string[] = [];
+  if (result.created.length > 0) parts.push(`${String(result.created.length)} created`);
+  if (result.overwritten.length > 0) parts.push(`${String(result.overwritten.length)} overwritten`);
+  if (result.skipped.length > 0) parts.push(`${String(result.skipped.length)} skipped`);
+  const summary = parts.length > 0 ? parts.join(", ") : "no changes";
+  ctx.ui.notify(`ralpix initialized — ${summary}`, "success");
+}
+
+// ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
 
@@ -745,16 +774,7 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
 
       // /ralpix (empty) or /ralpix init
       if (trimmed.length === 0 || trimmed === "init") {
-        const ok = await ctx.ui.confirm(
-          "Initialize ralpix?",
-          "Create ~/.ralpix/ with default prompts, agents, and config?",
-        );
-        if (ok !== true) return;
-        initRalpixHome();
-        ctx.ui.notify(
-          "ralpix initialized — ~/.ralpix/ created with defaults",
-          "success",
-        );
+        await handleInitCommand(ctx);
         return;
       }
 

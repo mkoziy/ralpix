@@ -57,6 +57,10 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 # 1. Initialize ralpix — creates ~/.ralpix/ with default prompts, agents, and config
 /ralpix init
 
+# Running init again asks whether to overwrite existing files,
+# or just create any missing ones (e.g. after an update added new prompts)
+/ralpix init
+
 # 2a. Brainstorm first, then create a plan (recommended for new features)
 /ralpix brainstorm "add health check endpoint"
 

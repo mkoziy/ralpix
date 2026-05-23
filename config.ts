@@ -448,7 +448,41 @@ export function saveProjectConfig(cwd: string, updates: Partial<RalpixConfig>): 
   writeFileSync(configPath, JSON.stringify(merged, null, 2), UTF8_ENCODING);
 }
 
-function copyBundledSkills(piAgentDir: string): void {
+interface InitResult {
+  created: string[];
+  overwritten: string[];
+  skipped: string[];
+}
+
+function writeOrSkip(content: string, dest: string, overwrite: boolean, result: InitResult): void {
+  if (existsSync(dest)) {
+    if (overwrite) {
+      writeFileSync(dest, content, UTF8_ENCODING);
+      result.overwritten.push(dest);
+    } else {
+      result.skipped.push(dest);
+    }
+  } else {
+    writeFileSync(dest, content, UTF8_ENCODING);
+    result.created.push(dest);
+  }
+}
+
+function copyFileOrSkip(src: string, dest: string, overwrite: boolean, result: InitResult): void {
+  if (existsSync(dest)) {
+    if (overwrite) {
+      copyFileSync(src, dest);
+      result.overwritten.push(dest);
+    } else {
+      result.skipped.push(dest);
+    }
+  } else {
+    copyFileSync(src, dest);
+    result.created.push(dest);
+  }
+}
+
+function copyBundledSkills(piAgentDir: string, overwrite: boolean, result: InitResult): void {
   const bundledSkillsDir = join(__dirname, "bundled", "skills");
   const skillsDir = join(piAgentDir, "skills");
   if (!existsSync(bundledSkillsDir)) return;
@@ -461,30 +495,31 @@ function copyBundledSkills(piAgentDir: string): void {
     if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
     const srcSkill = join(srcDir, "SKILL.md");
     const destSkill = join(destDir, "SKILL.md");
-    if (existsSync(srcSkill) && !existsSync(destSkill)) {
-      copyFileSync(srcSkill, destSkill);
-    }
+    if (!existsSync(srcSkill)) continue;
+    copyFileOrSkip(srcSkill, destSkill, overwrite, result);
   }
 }
 
 /**
  * Initialise ~/.ralpix/ with bundled defaults.
- * Idempotent — does not overwrite existing files.
+ *
+ * When `overwrite` is false (default), only missing files are created.
+ * When `overwrite` is true, all files are rewritten with bundled defaults.
  */
-export function initRalpixHome(): void {
+export function initRalpixHome(overwrite = false): InitResult {
+  const result: InitResult = { created: [], overwritten: [], skipped: [] };
+
   const dirs = ["prompts", "agents", "progress", DEFAULT_PI_AGENT_DIR_NAME];
   for (const dirName of dirs) {
     const dirPath = join(RALPIX_HOME, dirName);
     if (!existsSync(dirPath)) mkdirSync(dirPath, { recursive: true });
   }
 
-  // Copy config if missing
+  // Config
   const configPath = join(RALPIX_HOME, CONFIG_FILE);
-  if (!existsSync(configPath)) {
-    writeFileSync(configPath, JSON.stringify(bundledConfig(), null, 2), UTF8_ENCODING);
-  }
+  writeOrSkip(JSON.stringify(bundledConfig(), null, 2), configPath, overwrite, result);
 
-  // Copy prompts
+  // Prompts
   const bundledPromptsDir = join(__dirname, "bundled", "prompts");
   const promptsDir = join(RALPIX_HOME, "prompts");
   const promptNames = [
@@ -493,48 +528,37 @@ export function initRalpixHome(): void {
   ];
   for (const name of promptNames) {
     const dest = join(promptsDir, `${name}.md`);
-    if (!existsSync(dest)) {
-      writeFileSync(dest, readFileSync(join(bundledPromptsDir, `${name}.md`), UTF8_ENCODING), UTF8_ENCODING);
-    }
+    writeOrSkip(readFileSync(join(bundledPromptsDir, `${name}.md`), UTF8_ENCODING), dest, overwrite, result);
   }
 
-  // Copy agents
+  // Agents
   const bundledAgentsDir = join(__dirname, "bundled", "agents");
   const agentsDir = join(RALPIX_HOME, "agents");
   const agentNames = ["quality", "implementation", "testing", "simplification", "documentation", "epistemic"];
   for (const name of agentNames) {
     const dest = join(agentsDir, `${name}.md`);
-    if (!existsSync(dest)) {
-      writeFileSync(dest, readFileSync(join(bundledAgentsDir, `${name}.md`), UTF8_ENCODING), UTF8_ENCODING);
-    }
+    writeOrSkip(readFileSync(join(bundledAgentsDir, `${name}.md`), UTF8_ENCODING), dest, overwrite, result);
   }
 
-  // Copy default pi-agent profile used by ralpix child sessions
+  // Pi-agent profile
   const bundledPiAgentDir = join(__dirname, "bundled", DEFAULT_PI_AGENT_DIR_NAME);
   const piAgentDir = defaultPiAgentDir();
 
-  copyBundledSkills(piAgentDir);
+  copyBundledSkills(piAgentDir, overwrite, result);
 
-  const agentInstructionsPath = join(piAgentDir, "AGENTS.md");
-  if (!existsSync(agentInstructionsPath)) {
-    writeFileSync(
-      agentInstructionsPath,
-      readFileSync(join(bundledPiAgentDir, "AGENTS.md"), UTF8_ENCODING),
-      UTF8_ENCODING,
-    );
-  }
+  const bundledAgentsMd = join(bundledPiAgentDir, "AGENTS.md");
+  writeOrSkip(readFileSync(bundledAgentsMd, UTF8_ENCODING), join(piAgentDir, "AGENTS.md"), overwrite, result);
 
-  const settingsPath = join(piAgentDir, "settings.json");
-  if (!existsSync(settingsPath)) {
-    const bundledSettings = JSON.parse(
-      readFileSync(join(bundledPiAgentDir, "settings.json"), UTF8_ENCODING),
-    ) as { packages?: string[] };
-    const settings = {
-      ...bundledSettings,
-      packages: [__dirname],
-    };
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), UTF8_ENCODING);
-  }
+  const bundledSettings = JSON.parse(
+    readFileSync(join(bundledPiAgentDir, "settings.json"), UTF8_ENCODING),
+  ) as { packages?: string[] };
+  const settings = {
+    ...bundledSettings,
+    packages: [__dirname],
+  };
+  writeOrSkip(JSON.stringify(settings, null, 2), join(piAgentDir, "settings.json"), overwrite, result);
 
   ensureSharedPiAuth(piAgentDir);
+
+  return result;
 }
