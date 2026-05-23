@@ -12,6 +12,7 @@
  *
  */
 
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, join as pathJoin, parse as pathParse } from "node:path";
 
@@ -820,6 +821,62 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
 }
 
 // ---------------------------------------------------------------------------
+// Branch guardrail helpers
+// ---------------------------------------------------------------------------
+
+function getCurrentBranch(cwd: string): string | null {
+  try {
+    return execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd,
+      encoding: "utf-8",
+      stdio: "pipe",
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replaceAll(/[^\d\sa-z-]+/g, "")
+    .trim()
+    .replaceAll(/\s+/g, "-")
+    .slice(0, 50);
+}
+
+function suggestBranchName(planTitle: string): string {
+  const slug = slugify(planTitle);
+  const date = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  return `ralpix/${date}-${slug}`;
+}
+
+async function maybeSwitchBranch(
+  ctx: ExtensionCommandContext,
+  planTitle: string,
+): Promise<void> {
+  const current = getCurrentBranch(ctx.cwd);
+  if (current !== "main" && current !== "master") {
+    return;
+  }
+
+  const branchName = suggestBranchName(planTitle);
+  const shouldCreate = await ctx.ui.confirm(
+    "Create branch?",
+    `You are on \`${current}\`. Create branch \`${branchName}\` to work on this plan?`,
+  );
+
+  if (shouldCreate === true) {
+    try {
+      execSync(`git checkout -b ${branchName}`, { cwd: ctx.cwd, encoding: "utf-8", stdio: "pipe" });
+      ctx.ui.notify(`Switched to branch ${branchName}`, "success");
+    } catch {
+      ctx.ui.notify(`Failed to create branch ${branchName}. Continuing on ${current}.`, "warning");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Plan execution orchestrator
 // ---------------------------------------------------------------------------
 
@@ -842,6 +899,8 @@ async function runPlan(
 
   const config = loadConfig(ctx.cwd);
   const plan = parsePlan(planPath);
+
+  await maybeSwitchBranch(ctx, plan.title);
 
   const pendingCount = plan.tasks.filter((t) => t.status === "pending").length;
   ctx.ui.notify(
