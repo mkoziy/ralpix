@@ -4,11 +4,8 @@ You are performing a second-pass code review, after first-pass fixes were applie
 
 {{agent:epistemic}}
 
-## Step 1: Get Updated Branch Context
-```bash
-git log main..HEAD --oneline
-git diff main...HEAD
-```
+## Step 1: Get Updated Context
+{{DIFF_COMMANDS}}
 
 ## Step 2: Review ONLY Critical and Major Issues
 Re-examine the code for any remaining:
@@ -26,5 +23,4 @@ Skip minor issues and style nits. Focus only on what matters.
 2. **Remaining Major Issues** — should be fixed
 3. **Verdict** — `APPROVE` or `NEEDS_WORK`
 
-## Step 4: Fix Remaining Issues
-If verdict is `NEEDS_WORK`, fix the identified issues and commit each fix.
+{{FIX_INSTRUCTIONS}}

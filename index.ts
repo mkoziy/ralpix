@@ -7,6 +7,7 @@
  * Commands:
  *   /ralpix plan <desc>  — Create a plan interactively
  *   /ralpix init          — Initialise ~/.ralpix/ with defaults
+ *   /ralpix review        — Review branch or uncommitted changes
  *   /ralpix <path>        — Execute a plan
  *
  *
@@ -21,7 +22,7 @@ import { executeAllTasks } from "./executor.js";
 import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
-import { runReviewPipeline } from "./reviewer.js";
+import { runReviewPipeline, runStandaloneReview } from "./reviewer.js";
 
 import type {
   RalpixState,
@@ -729,6 +730,66 @@ async function handlePlanSubcommand(
 }
 
 // ---------------------------------------------------------------------------
+// Review handler
+// ---------------------------------------------------------------------------
+
+async function handleReviewSubcommand(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<void> {
+  const currentBranch = (() => {
+    try {
+      return execSync("git rev-parse --abbrev-ref HEAD", { cwd: ctx.cwd, encoding: "utf-8", stdio: "pipe" }).trim();
+    } catch {
+      return null;
+    }
+  })();
+
+  if (currentBranch === null) {
+    ctx.ui.notify("Not a git repository — review requires a git repo", "error");
+    return;
+  }
+
+  const reviewTargetRaw = await ctx.ui.select("What to review?", [
+    "Branch changes (vs main/master)",
+    "Uncommitted changes",
+    "Both",
+  ]);
+
+  if (reviewTargetRaw == null) {
+    ctx.ui.notify("Review cancelled", "info");
+    return;
+  }
+
+  const targetMap: Record<string, "branch" | "uncommitted" | "both"> = {
+    "Branch changes (vs main/master)": "branch",
+    "Uncommitted changes": "uncommitted",
+    Both: "both",
+  };
+  const reviewTarget = targetMap[reviewTargetRaw] ?? "branch";
+
+  const modeChoice = await ctx.ui.select("Review mode?", [
+    "Review only — report findings, no fixes",
+    "Review and fix — apply fixes for issues found",
+  ]);
+
+  if (modeChoice == null) {
+    ctx.ui.notify("Review cancelled", "info");
+    return;
+  }
+
+  const reviewOnly = modeChoice === "Review only — report findings, no fixes";
+
+  if (!existsSync(ralpixHomeDir())) {
+    ctx.ui.notify("First run — initialising ~/.ralpix/...", "info");
+    initRalpixHome();
+  }
+
+  const config = loadConfig(ctx.cwd);
+  await runStandaloneReview(ctx, pi, config, reviewTarget, reviewOnly);
+}
+
+// ---------------------------------------------------------------------------
 // Init handler
 // ---------------------------------------------------------------------------
 
@@ -766,7 +827,7 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
   // ---- /ralpix command ----------------------------------------------------
 
   pi.registerCommand("ralpix", {
-    description: "Execute a ralpix plan (/ralpix <path>, /ralpix init, /ralpix plan <desc>, /ralpix brainstorm <desc>)",
+    description: "Execute a ralpix plan (/ralpix <path>, /ralpix init, /ralpix plan <desc>, /ralpix brainstorm <desc>, /ralpix review)",
     handler: async (args, ctx) => withRalpixErrorHandling(async () => {
       const trimmed = typeof args === "string" ? args.trim() : "";
 
@@ -790,6 +851,12 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
         return;
       }
 
+      // /ralpix review — show usage or run interactive
+      if (trimmed === "review") {
+        await handleReviewSubcommand(ctx, pi);
+        return;
+      }
+
       // ── /ralpix brainstorm <description> ────────────────────────
       if (trimmed.startsWith("brainstorm ")) {
         const description = trimmed.slice(11).trim();
@@ -804,6 +871,12 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
       // ── /ralpix plan <description> ──────────────────────────────
       if (trimmed.startsWith("plan ")) {
         await handlePlanSubcommand(trimmed, ctx, pi);
+        return;
+      }
+
+      // ── /ralpix review (with args, currently ignored) ───────────
+      if (trimmed.startsWith("review ")) {
+        await handleReviewSubcommand(ctx, pi);
         return;
       }
 

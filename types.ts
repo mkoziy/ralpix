@@ -50,6 +50,8 @@ export interface RalpixConfig {
   reviewFirstEffort: ThinkingLevel | null;
   reviewSecondEffort: ThinkingLevel | null;
   maxRetries: number;
+  reviewMaxRetries: number;
+  reviewTimeoutMs: number | null;
   reviewMaxIterations: number;
   /** External review phase — independent model reviews code */
   externalReviewEnabled: boolean;

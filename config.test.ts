@@ -41,6 +41,8 @@ function makeConfig(overrides: Partial<RalpixConfig>): RalpixConfig {
     reviewFirstEffort: null,
     reviewSecondEffort: null,
     maxRetries: 2,
+    reviewMaxRetries: 1,
+    reviewTimeoutMs: 1800000,
     reviewMaxIterations: 10,
     externalReviewEnabled: true,
     externalReviewModel: null,

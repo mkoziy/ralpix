@@ -32,6 +32,7 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 - [Plan Format](#plan-format)
 - [Brainstorm](#brainstorm)
 - [Plan Creation](#plan-creation)
+- [Standalone Review](#standalone-review)
 - [Configuration](#configuration)
   - [Config reference](#config-reference)
   - [Per-project config](#per-project-config)
@@ -69,6 +70,9 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 
 # 2c. Or write a plan manually and execute it directly
 /ralpix docs/plans/my-feature.md
+
+# 3. Review code without a plan
+/ralpix review
 ```
 
 What happens when you execute a plan:
@@ -209,6 +213,27 @@ After completion, ralpix offers to create a plan using the brainstorm context. T
 
 When `brainstormEnabled: true` (default), creating a plan directly with `/ralpix plan` also offers the brainstorm phase first.
 
+## Standalone Review
+
+Review branch changes or uncommitted code without creating a plan:
+
+```bash
+/ralpix review
+```
+
+You'll be asked interactively:
+1. **What to review** — branch diff vs main, uncommitted changes, or both
+2. **Mode** — review-only (report findings, no code changes) or review-and-fix (same pipeline as plan execution)
+
+The review uses the same multi-model pipeline as plan execution:
+- **First pass** — 5 parallel agents comprehensively review all changes
+- **External review** (if enabled) — independent model finds issues
+- **Second pass** — focused re-review for remaining critical/major issues
+
+Progress is logged to `.ralpix/progress/review-<date>-<branch>.txt`.
+
+Use this when you want a fresh set of eyes on a PR, a quick sanity check before committing, or an independent audit of uncommitted work.
+
 ## Plan Creation
 
 Skip writing plans by hand — describe what you want and ralpix creates the plan for you:
@@ -266,6 +291,8 @@ ralpix uses a three-layer merge — each layer overrides the one above:
   "reviewFirstEffort": "high",
   "reviewSecondEffort": "medium",
   "maxRetries": 2,                 // Max retries per task on failure
+  "reviewMaxRetries": 1,           // Max retries per review session on failure
+  "reviewTimeoutMs": 1800000,      // Max ms per review session (default: 30 min)
   "reviewMaxIterations": 10,
   "brainstormEnabled": true,
   "brainstormModel": "opencode-go/kimi-k2.6",
@@ -373,7 +400,8 @@ cp ~/.ralpix/prompts/task-default.md .ralpix/prompts/task-default.md
 | `{{GOAL}}` | Plan title (review prompts) |
 | `{{PROGRESS_FILE}}` | Path to progress log |
 | `{{DEFAULT_BRANCH}}` | Main/master branch name |
-| `{{DIFF_INSTRUCTION}}` | Git diff command for external reviewer |
+| `{{DIFF_COMMANDS}}` | Git diff commands for reviewer context gathering |
+| `{{FIX_INSTRUCTIONS}}` | Fix step instructions (varies by review mode) |
 | `{{FINDINGS}}` | External reviewer findings (for eval prompt) |
 | `{{agent:name}}` | Inline agent content, e.g. `{{agent:quality}}` |
 

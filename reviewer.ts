@@ -5,10 +5,12 @@
 import { execSync } from "node:child_process";
 
 import { buildSessionModelChange, resolveModel, resolvePiAgentDir } from "./config.js";
+import { ProgressLogger } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
+import { createProgressTui, createTokenLedger } from "./tui.js";
 
-import type { ProgressLogger } from "./logger.js";
+import type { ProgressStep } from "./tui.js";
 import type {
   ModelConfig,
   Plan,
@@ -32,6 +34,8 @@ export interface ReviewPipelineHooks {
     status: Exclude<ReviewStageStatus, "pending" | "active">,
     detail?: string,
   ) => void;
+  /** Full review report text from a completed stage (findings, verdict, etc.) */
+  onStageReport?: (stage: ReviewStageId, report: string) => void;
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void;
 }
 
@@ -41,6 +45,13 @@ const REVIEW_STAGES = {
   externalReview: "external-review",
   externalEval: "external-eval",
 } as const;
+
+const REVIEW_STAGE_LABELS: Record<ReviewStageId, string> = {
+  "first-pass": "Comprehensive review",
+  "external-review": "External audit",
+  "external-eval": "Resolve findings",
+  "second-pass": "Quality & fix loop",
+};
 
 function detectDefaultBranch(cwd: string): string {
   try {
@@ -69,6 +80,80 @@ function getHeadHash(cwd: string): string {
   } catch {
     return "";
   }
+}
+
+function getCurrentBranch(cwd: string): string | null {
+  try {
+    return execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf-8", stdio: "pipe" }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function getBranchDiffCommands(defaultBranch: string): string {
+  return `Run these commands to understand branch changes:
+\`\`\`bash
+git log ${defaultBranch}..HEAD --oneline
+git diff ${defaultBranch}...HEAD --stat
+git diff ${defaultBranch}...HEAD
+\`\`\`
+If \`${defaultBranch}\` doesn't exist, try \`master\` or \`origin/main\`.`;
+}
+
+function getUncommittedDiffCommands(): string {
+  return `Run these commands to see uncommitted changes:
+\`\`\`bash
+git status
+git diff
+git diff --cached
+\`\`\``;
+}
+
+function getBothDiffCommands(defaultBranch: string): string {
+  return `Run these commands to see all changes (branch + uncommitted):
+\`\`\`bash
+git log ${defaultBranch}..HEAD --oneline
+git diff ${defaultBranch}...HEAD --stat
+git diff ${defaultBranch}...HEAD
+git status
+git diff
+git diff --cached
+\`\`\`
+If \`${defaultBranch}\` doesn't exist, try \`master\` or \`origin/main\`.`;
+}
+
+function buildDiffCommands(defaultBranch: string, reviewTarget: "branch" | "uncommitted" | "both"): string {
+  switch (reviewTarget) {
+    case "branch": {
+      return getBranchDiffCommands(defaultBranch);
+    }
+    case "uncommitted": {
+      return getUncommittedDiffCommands();
+    }
+    case "both": {
+      return getBothDiffCommands(defaultBranch);
+    }
+  }
+}
+
+function getFirstPassFixInstructions(reviewOnly: boolean): string {
+  if (reviewOnly) {
+    return `## Step 4: Report Only
+Do NOT make any code changes, file edits, or git commits. Only analyze and report your findings.`;
+  }
+  return `## Step 4: Fix Issues
+For each critical and major issue, fix it using the available tools.
+After each fix, verify it compiles and works.
+Commit with: \`ralpix: review - fix <brief description>\``;
+}
+
+function getSecondPassFixInstructions(reviewOnly: boolean): string {
+  if (reviewOnly) {
+    return `## Step 4: Report Only
+Do NOT make any code changes. Report remaining findings only.`;
+  }
+  return `## Step 4: Fix Remaining Issues
+If verdict is \`NEEDS_WORK\`, fix the identified issues and commit each fix.`;
 }
 
 export function buildReviewPrompt(
@@ -134,6 +219,56 @@ export function parseReviewSessionReport(text: string): ReviewSessionReport | nu
   };
 }
 
+async function runReviewSessionOnce(
+  ctx: ExtensionCommandContext,
+  promptContent: string,
+  phase: "first" | "second" | "external" | "eval",
+  modelCfg: ModelConfig,
+  piAgentDir: string | null,
+  config: RalpixConfig,
+  includeEffort = true,
+  onProgress?: (detail: string) => void,
+  onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  timeoutMs = 30 * 60 * 1000,
+): Promise<ReviewSessionReport> {
+  const result = await runPiSubprocessPrompt(
+    ctx.cwd,
+    buildReviewPrompt(promptContent, phase),
+    modelCfg,
+    includeEffort,
+    timeoutMs,
+    createPiProgressHooks(onProgress, onUsage),
+    piAgentDir,
+    config,
+  );
+
+  const report = parseReviewSessionReport(result.lastAssistantText);
+  if (report !== null) return report;
+
+  const stderr = result.error.trim();
+  const assistantText = result.lastAssistantText.trim();
+  const isTimeout = result.exitCode === 143 || result.exitCode === 137 || result.exitCode === 9;
+
+  if (isTimeout) {
+    const partial = parseReviewSessionReport(result.lastAssistantText);
+    if (partial !== null) return partial;
+
+    let summary = `Review session timed out (exit code ${String(result.exitCode)})`;
+    if (assistantText.length > 0) summary += `. Partial output: ${assistantText.slice(0, 200)}`;
+    if (stderr.length > 0) summary += ` | stderr: ${stderr.slice(0, 200)}`;
+    return { success: false, summary: summary.slice(0, 500) };
+  }
+
+  let detail = `pi exited with code ${String(result.exitCode)}`;
+  if (assistantText.length > 0) detail = assistantText;
+  if (stderr.length > 0) detail = stderr;
+
+  return {
+    success: false,
+    summary: `Review session did not report a structured result. ${detail}`.slice(0, 500),
+  };
+}
+
 async function runReviewSession(
   ctx: ExtensionCommandContext,
   promptContent: string,
@@ -144,30 +279,29 @@ async function runReviewSession(
   includeEffort = true,
   onProgress?: (detail: string) => void,
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  timeoutMs = 30 * 60 * 1000,
 ): Promise<ReviewSessionReport> {
-  const result = await runPiSubprocessPrompt(
-    ctx.cwd,
-    buildReviewPrompt(promptContent, phase),
-    modelCfg,
-    includeEffort,
-    30 * 60 * 1000,
-    createPiProgressHooks(onProgress, onUsage),
-    piAgentDir,
-    config,
-  );
-  const report = parseReviewSessionReport(result.lastAssistantText);
-  if (report !== null) return report;
+  const maxRetries = config.reviewMaxRetries;
+  let lastError = "";
 
-  const stderr = result.error.trim();
-  const assistantText = result.lastAssistantText.trim();
-  let detail = `pi exited with code ${String(result.exitCode)}`;
-  if (assistantText.length > 0) detail = assistantText;
-  if (stderr.length > 0) detail = stderr;
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    if (attempt > 1 && onProgress != null) {
+      onProgress(`retrying (attempt ${attempt}/${maxRetries + 1})`);
+    }
 
-  return {
-    success: false,
-    summary: `Review session did not report a structured result. ${detail}`.slice(0, 500),
-  };
+    const report = await runReviewSessionOnce(
+      ctx, promptContent, phase, modelCfg, piAgentDir, config, includeEffort, onProgress, onUsage,
+      timeoutMs,
+    );
+    if (report.success) return report;
+
+    lastError = report.summary;
+    if (attempt <= maxRetries) {
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  }
+
+  return { success: false, summary: lastError };
 }
 
 async function runReviewProcess(
@@ -181,12 +315,25 @@ async function runReviewProcess(
   includeEffort = true,
   extraVars?: Record<string, string>,
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  timeoutMs = 30 * 60 * 1000,
+  reviewOnly = false,
+  diffCommands?: string,
 ): Promise<ReviewSessionReport> {
   const template = loadPrompt(promptName, ctx.cwd);
+
+  const diffCommandsText = diffCommands ?? buildDiffCommands(defaultBranch, "branch");
+  const fixInstructions = phase === "first"
+    ? getFirstPassFixInstructions(reviewOnly)
+    : (phase === "second"
+      ? getSecondPassFixInstructions(reviewOnly)
+      : "");
+
   const prompt = expandPrompt(template, {
     GOAL: plan.title,
     PROGRESS_FILE: logger.filePath,
     DEFAULT_BRANCH: defaultBranch,
+    DIFF_COMMANDS: diffCommandsText,
+    FIX_INSTRUCTIONS: fixInstructions,
     ...extraVars,
   });
 
@@ -200,7 +347,7 @@ async function runReviewProcess(
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   return runReviewSession(ctx, prompt, phase, modelCfg, piAgentDir, config, includeEffort, (detail) => {
     logger.logReview("loop", `${phase}: ${detail}`);
-  }, onUsage);
+  }, onUsage, timeoutMs);
 }
 
 async function runFirstReview(
@@ -210,14 +357,20 @@ async function runFirstReview(
   logger: ProgressLogger,
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
+  reviewOnly = false,
+  diffCommands?: string,
 ): Promise<string> {
   const modelCfg = resolveModel(config, "review-first");
   const effortSuffix = modelCfg.effort === null ? "" : ` — effort: ${modelCfg.effort}`;
   hooks?.onStageStart?.(REVIEW_STAGES.firstPass, "checking all completed tasks");
   logger.logReview("first", `STARTED (5 agents, comprehensive)${effortSuffix}`);
 
+  const timeoutMs = config.reviewTimeoutMs ?? 30 * 60 * 1000;
   const result = await runReviewProcess(
     ctx, "review-first", config, plan, logger, defaultBranch, "first", true, undefined, hooks?.onUsage,
+    timeoutMs,
+    reviewOnly,
+    diffCommands,
   );
 
   if (result.success) {
@@ -225,6 +378,7 @@ async function runFirstReview(
     const msg = "COMPLETE";
     logger.logReview("first", msg);
     hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "complete", detail);
+    hooks?.onStageReport?.(REVIEW_STAGES.firstPass, result.summary);
     return msg;
   }
 
@@ -241,10 +395,13 @@ async function runReviewLoop(
   logger: ProgressLogger,
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
+  reviewOnly = false,
+  diffCommands?: string,
 ): Promise<string> {
   const maxIterations = config.reviewMaxIterations === 0 ? 10 : config.reviewMaxIterations;
 
   hooks?.onStageStart?.(REVIEW_STAGES.secondPass, `quality review — iteration 1/${maxIterations}`);
+  const timeoutMs = config.reviewTimeoutMs ?? 30 * 60 * 1000;
   logger.logReview("loop", `STARTED (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
 
   for (let i = 0; i < maxIterations; i++) {
@@ -263,6 +420,9 @@ async function runReviewLoop(
 
     const result = await runReviewProcess(
       ctx, "review-second", config, plan, logger, defaultBranch, "second", true, undefined, hooks?.onUsage,
+      timeoutMs,
+      reviewOnly,
+      diffCommands,
     );
 
     if (!result.success) {
@@ -272,11 +432,20 @@ async function runReviewLoop(
       return msg;
     }
 
+    if (reviewOnly) {
+      const msg = "COMPLETE (review-only) — findings reported";
+      logger.logReview("loop", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "complete", "review-only pass complete");
+      hooks?.onStageReport?.(REVIEW_STAGES.secondPass, result.summary);
+      return msg;
+    }
+
     const headAfter = getHeadHash(ctx.cwd);
     if (headAfter === headBefore) {
       const msg = `COMPLETE (iteration ${i + 1}) — no changes, review clean`;
       logger.logReview("loop", msg);
       hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "complete", `review clean at iteration ${i + 1}`);
+      hooks?.onStageReport?.(REVIEW_STAGES.secondPass, result.summary);
       return msg;
     }
 
@@ -301,6 +470,8 @@ async function runExternalReviewLoop(
   logger: ProgressLogger,
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
+  reviewOnly = false,
+  diffCommands?: string,
 ): Promise<string> {
   const maxIterations = config.externalReviewMaxIterations === 0 ? 10 : config.externalReviewMaxIterations;
   const patience = config.externalReviewPatience === 0 ? 3 : config.externalReviewPatience;
@@ -320,6 +491,7 @@ async function runExternalReviewLoop(
   }
   const reviewerName = reviewerLabel ?? "(default)";
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
+  const timeoutMs = config.reviewTimeoutMs ?? 30 * 60 * 1000;
 
   logger.logExternalReview(
     "loop",
@@ -332,16 +504,23 @@ async function runExternalReviewLoop(
 
   for (let i = 0; i < maxIterations; i++) {
     hooks?.onStageStart?.(REVIEW_STAGES.externalReview, `auditing changes — iteration ${i + 1}/${maxIterations}`);
-    const diffInstruction = lastReviewHead.length > 0
-      ? `Run: \`git diff ${lastReviewHead}..HEAD\` to see the latest fix changes.`
-      : `Run: \`git diff ${defaultBranch}...HEAD\` to see all changes in this branch.`;
 
     const reviewTemplate = loadPrompt("external-review", ctx.cwd);
+    const diffCommandsText = (() => {
+      if (lastReviewHead.length > 0) {
+        return `Run these commands to see the latest fix changes:
+\`\`\`bash
+git diff ${lastReviewHead}..HEAD --stat
+git diff ${lastReviewHead}..HEAD
+\`\`\``;
+      }
+      return diffCommands ?? buildDiffCommands(defaultBranch, "branch");
+    })();
     let reviewPrompt = expandPrompt(reviewTemplate, {
       GOAL: plan.title,
       DEFAULT_BRANCH: defaultBranch,
       PROGRESS_FILE: logger.filePath,
-      DIFF_INSTRUCTION: diffInstruction,
+      DIFF_COMMANDS: diffCommandsText,
     });
 
     if (previousFindings.length > 0) {
@@ -367,6 +546,7 @@ async function runExternalReviewLoop(
       true,
       undefined,
       hooks?.onUsage,
+      timeoutMs,
     );
     if (!reviewResult.success) {
       const msg = `ERROR: ${reviewResult.summary.slice(0, 200)}`;
@@ -382,12 +562,21 @@ async function runExternalReviewLoop(
       logger.logExternalReview("review", msg);
       hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", "no issues found");
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "no findings to evaluate");
+      hooks?.onStageReport?.(REVIEW_STAGES.externalReview, findings);
       return msg;
     }
 
     hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", `findings reported in iteration ${i + 1}`);
+    hooks?.onStageReport?.(REVIEW_STAGES.externalReview, findings);
     previousFindings = findings;
     lastReviewHead = getHeadHash(ctx.cwd);
+
+    if (reviewOnly) {
+      const msg = "COMPLETE (review-only) — findings reported, no fixes applied";
+      logger.logExternalReview("review", msg);
+      hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "review-only mode");
+      return msg;
+    }
 
     const headBefore = getHeadHash(ctx.cwd);
     hooks?.onStageStart?.(REVIEW_STAGES.externalEval, `fixing findings — iteration ${i + 1}/${maxIterations}`);
@@ -404,6 +593,7 @@ async function runExternalReviewLoop(
       true,
       { FINDINGS: findings },
       hooks?.onUsage,
+      timeoutMs,
     );
 
     if (!evalResult.success) {
@@ -453,6 +643,8 @@ export async function runReviewPipeline(
   config: RalpixConfig,
   logger: ProgressLogger,
   hooks?: ReviewPipelineHooks,
+  reviewOnly = false,
+  diffCommands?: string,
 ): Promise<{ firstResult: string; externalResult: string; loopResult: string }> {
   if (!config.reviewEnabled) {
     const msg = "SKIPPED (review disabled)";
@@ -467,18 +659,184 @@ export async function runReviewPipeline(
 
   const defaultBranch = detectDefaultBranch(ctx.cwd);
 
-  const firstResult = await runFirstReview(ctx, config, plan, logger, defaultBranch, hooks);
+  const firstResult = await runFirstReview(
+    ctx, config, plan, logger, defaultBranch, hooks, reviewOnly, diffCommands,
+  );
 
   let externalResult = "SKIPPED (disabled)";
   if (config.externalReviewEnabled) {
-    externalResult = await runExternalReviewLoop(ctx, config, plan, logger, defaultBranch, hooks);
+    externalResult = await runExternalReviewLoop(
+      ctx, config, plan, logger, defaultBranch, hooks, reviewOnly, diffCommands,
+    );
   } else {
     logger.logExternalReview("loop", "SKIPPED (externalReviewEnabled: false)");
     hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "skipped", "external review disabled");
     hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "external review disabled");
   }
 
-  const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch, hooks);
+  const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch, hooks, reviewOnly, diffCommands);
 
   return { firstResult, externalResult, loopResult };
+}
+
+// ---------------------------------------------------------------------------
+// Standalone review (no plan required)
+// ---------------------------------------------------------------------------
+
+export async function runStandaloneReview(
+  ctx: ExtensionCommandContext,
+  _pi: ExtensionAPI,
+  config: RalpixConfig,
+  reviewTarget: "branch" | "uncommitted" | "both",
+  reviewOnly: boolean,
+): Promise<{ firstResult: string; externalResult: string; loopResult: string }> {
+  const defaultBranch = detectDefaultBranch(ctx.cwd);
+  const currentBranch = getCurrentBranch(ctx.cwd) ?? "current";
+
+  const targetLabel = reviewTarget === "branch"
+    ? `branch ${currentBranch}`
+    : (reviewTarget === "uncommitted"
+      ? "uncommitted changes"
+      : "branch + uncommitted changes");
+  const modeLabel = reviewOnly ? "Review-only" : "Review + fix";
+  const title = `${modeLabel}: ${targetLabel}`;
+
+  const timestamp = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  const stem = `review-${timestamp}-${currentBranch.replaceAll("/", "-")}`;
+  const logger = new ProgressLogger(ctx.cwd, stem);
+
+  const plan: Plan = {
+    path: "",
+    title,
+    overview: "",
+    context: "",
+    successCriteria: [],
+    tasks: [],
+    extraSections: {},
+  };
+  logger.logStart(plan);
+
+  const diffCommands = buildDiffCommands(defaultBranch, reviewTarget);
+
+  // ---- TUI ----------------------------------------------------------------
+  const ledger = createTokenLedger();
+  const progressTui = createProgressTui(ctx, "ralpix-review", `ralpix: ${title}`);
+  progressTui.setPhase("reviewing");
+  progressTui.refresh();
+
+  const stageUsageStart = new Map<ReviewStageId, ReturnType<typeof ledger.snapshot>>();
+  const stageUsageLines = new Map<ReviewStageId, string[]>();
+  const stageReports = new Map<ReviewStageId, string>();
+  let activeStage: ReviewStageId | null = null;
+
+  const recordUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
+    ledger.add(provider, model, usage);
+    progressTui.setTotalUsage(ledger.snapshot());
+    if (activeStage !== null) {
+      const existing = stageUsageLines.get(activeStage) ?? [];
+      const key = `${provider}/${model}`;
+      // accumulate per-stage lines
+      const found = existing.find((line) => line.startsWith(`${key}  `));
+      if (found === undefined) {
+        existing.push(`${key}  in ${usage.input}  out ${usage.output}  $${usage.cost.toFixed(3)}`);
+      }
+      stageUsageLines.set(activeStage, existing);
+    }
+    progressTui.refresh();
+  };
+
+  const pushReportStep = (_stage: ReviewStageId, report: string): void => {
+    const trimmed = report.trim();
+    if (trimmed.length === 0) return;
+    // Truncate to TUI-friendly chunks; full text goes in the notification
+    const preview = trimmed.length > 200 ? `${trimmed.slice(0, 200)}...` : trimmed;
+    const lines = preview.split("\n").filter((line) => line.trim().length > 0).slice(0, 6);
+    if (lines.length === 0) return;
+    for (const line of lines) {
+      progressTui.pushStep({ title: line });
+    }
+    progressTui.refresh();
+  };
+
+  const hooks: ReviewPipelineHooks = {
+    onStageStart(stage, detail) {
+      activeStage = stage;
+      stageUsageStart.set(stage, ledger.snapshot());
+      const label = REVIEW_STAGE_LABELS[stage];
+      const detailText = detail != null && detail.length > 0 ? ` — ${detail}` : "";
+      progressTui.setCurrent(`${label}${detailText}`);
+      progressTui.refresh();
+    },
+    onStageUpdate(stage, detail) {
+      activeStage = stage;
+      const label = REVIEW_STAGE_LABELS[stage];
+      const detailText = detail.length > 0 ? ` — ${detail}` : "";
+      progressTui.setCurrent(`${label}${detailText}`);
+      progressTui.refresh();
+    },
+    onStageFinish(stage, status, detail) {
+      activeStage = null;
+      const start = stageUsageStart.get(stage);
+      const stepUsage = start === undefined ? undefined : ledger.diffSince(start);
+      const lines = stageUsageLines.get(stage) ?? [];
+      const label = REVIEW_STAGE_LABELS[stage];
+      const statusSuffix = status === "failed" ? " (failed)" : "";
+      const detailSuffix = detail != null && detail.length > 0 ? ` — ${detail}` : "";
+      const step: ProgressStep = {
+        title: `${label}${statusSuffix}${detailSuffix}`,
+        ...(stepUsage === undefined ? {} : { usageSummary: stepUsage }),
+        ...(lines.length > 0 ? { usageLines: lines } : {}),
+      };
+      progressTui.pushStep(step);
+      const report = stageReports.get(stage);
+      if (report !== undefined) {
+        pushReportStep(stage, report);
+      }
+      progressTui.setCurrent("");
+      progressTui.refresh();
+    },
+    onStageReport(stage, report) {
+      stageReports.set(stage, report);
+    },
+    onUsage: recordUsage,
+  };
+
+  const result = await runReviewPipeline(ctx, _pi, plan, config, logger, hooks, reviewOnly, diffCommands);
+
+  // ---- Finalize TUI -------------------------------------------------------
+  const totalLines = ledger.usageLines();
+  progressTui.pushStep({
+    title: `Review complete — ${modeLabel}`,
+    usageSummary: ledger.snapshot(),
+    ...(totalLines.length > 0 ? { usageLines: totalLines } : {}),
+  });
+  progressTui.setPhase("complete");
+  progressTui.setCurrent("");
+  progressTui.refresh();
+
+  logger.logComplete();
+
+  // ---- Build rich notification with findings --------------------------------
+  const reportParts: string[] = [];
+  for (const stage of ["first-pass", "external-review", "second-pass"] as ReviewStageId[]) {
+    const report = stageReports.get(stage);
+    if (report !== undefined && report.trim().length > 0) {
+      reportParts.push(`\n--- ${REVIEW_STAGE_LABELS[stage]} ---\n${report.trim()}`);
+    }
+  }
+
+  const summaryLines = [
+    `Review complete: ${title}`,
+    `  First pass:     ${result.firstResult}`,
+    `  External audit: ${result.externalResult}`,
+    `  Second pass:    ${result.loopResult}`,
+    `  Log:            ${logger.filePath}`,
+  ];
+
+  const notifyText = reportParts.length > 0
+    ? `${summaryLines.join("\n")}\n${reportParts.join("\n")}`
+    : summaryLines.join("\n");
+  ctx.ui.notify(notifyText, "success");
+
+  return result;
 }

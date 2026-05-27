@@ -347,6 +347,29 @@ export async function runPiSubprocessPrompt(
     const MAX_STDERR = 200_000;
     let stdoutBuffer = "";
 
+    const processEventLine = (line: string): void => {
+      const event = parseJsonEvent(line);
+      if (event === null) return;
+      hooks?.onEvent?.(event);
+      if (event.type === "message_end" && event.message?.role === "assistant") {
+        lastAssistantText = parseAssistantTextParts(event.message.content).join("\n").trim();
+        if (
+          event.message.usage != null &&
+          (event.message.usage.input ?? 0) + (event.message.usage.output ?? 0) > 0 &&
+          hooks?.onUsage != null
+        ) {
+          const { provider = "unknown", model = "unknown", usage } = event.message;
+          hooks.onUsage(provider, model, {
+            input: usage.input ?? 0,
+            output: usage.output ?? 0,
+            cacheRead: usage.cacheRead ?? 0,
+            cacheWrite: usage.cacheWrite ?? 0,
+            cost: usage.cost?.total ?? 0,
+          });
+        }
+      }
+    };
+
     proc.stdout.on("data", (data: Buffer) => {
       const chunk = data.toString();
       stdoutBuffer += chunk;
@@ -355,29 +378,8 @@ export async function runPiSubprocessPrompt(
       const lines = stdoutBuffer.split("\n");
       stdoutBuffer = lines.pop() ?? "";
       for (const line of lines) {
-        const event = parseJsonEvent(line);
-        if (event === null) continue;
-        hooks?.onEvent?.(event);
-        if (
-          event.type === "message_end" &&
-          event.message?.role === "assistant"
-        ) {
-          lastAssistantText = parseAssistantTextParts(event.message.content).join("\n").trim();
-          if (
-            event.message.usage != null &&
-            (event.message.usage.input ?? 0) + (event.message.usage.output ?? 0) > 0 &&
-            hooks?.onUsage != null
-          ) {
-            const { provider = "unknown", model = "unknown", usage } = event.message;
-            hooks.onUsage(provider, model, {
-              input: usage.input ?? 0,
-              output: usage.output ?? 0,
-              cacheRead: usage.cacheRead ?? 0,
-              cacheWrite: usage.cacheWrite ?? 0,
-              cost: usage.cost?.total ?? 0,
-            });
-          }
-        }
+        if (line.length === 0) continue;
+        processEventLine(line);
       }
     });
 
@@ -390,6 +392,14 @@ export async function runPiSubprocessPrompt(
     });
 
     proc.on("close", (code) => {
+      // Flush any remaining complete lines in the buffer so partial output
+      // isn't lost when the process is killed mid-stream (timeout).
+      if (stdoutBuffer.length > 0) {
+        for (const line of stdoutBuffer.split("\n")) {
+          if (line.length === 0) continue;
+          processEventLine(line);
+        }
+      }
       void cleanupTempDir(dir).finally(() => {
         clearTimeout(timeout);
         clearInterval(heartbeat);

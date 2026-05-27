@@ -4,15 +4,8 @@ You are performing a comprehensive code review. Progress log is at: `{{PROGRESS_
 
 {{agent:epistemic}}
 
-## Step 1: Get Branch Context
-Run these commands to understand what changed:
-```bash
-git log main..HEAD --oneline
-git diff main...HEAD --stat
-git diff main...HEAD
-```
-
-If `main` doesn't exist, try `master` or `origin/main`.
+## Step 1: Get Context
+{{DIFF_COMMANDS}}
 
 ## Step 2: Review the Code
 Review ALL changes in the diff with fresh eyes. Focus on the following areas:
@@ -39,7 +32,4 @@ After reviewing, produce a structured report:
 3. **Minor Issues** (nice to fix) — list with file locations
 4. **Summary** — overall assessment
 
-## Step 4: Fix Issues
-For each critical and major issue, fix it using the available tools.
-After each fix, verify it compiles and works.
-Commit with: `ralpix: review - fix <brief description>`
+{{FIX_INSTRUCTIONS}}

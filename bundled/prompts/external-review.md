@@ -7,9 +7,11 @@ You are an independent code reviewer. Review the code changes below for bugs, se
 ## Goal
 {{GOAL}}
 
-## Instructions
+## Context
 
-{{DIFF_INSTRUCTION}}
+{{DIFF_COMMANDS}}
+
+## Instructions
 
 Review ALL changed files thoroughly. Look at the actual code, not just the diff.
 
