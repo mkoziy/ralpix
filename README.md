@@ -296,7 +296,7 @@ ralpix uses a three-layer merge — each layer overrides the one above:
   "brainstormTimeoutMs": 600000,   // Max ms per brainstorm round (default: 10 min)
   "reviewMaxIterations": 10,
   "brainstormEnabled": true,
-  "brainstormModel": "opencode-go/kimi-k2.6",
+  "brainstormModel": "opencode-go/glm-5.1",
   "brainstormEffort": "medium",
   "externalReviewEnabled": true,
   "externalReviewModel": "openai-codex/gpt-5.5",
