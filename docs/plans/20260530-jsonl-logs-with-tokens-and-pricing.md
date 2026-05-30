@@ -117,12 +117,12 @@ Session names:
 - Modify: `index.ts`
 - Modify: `executor.ts`
 
-- [ ] Replace `ProgressLogger` imports/usages with `LogWriter`.
-- [ ] In `runPlan`, write an `execute/start` event containing plan title, task count, and plan path.
-- [ ] Replace task lifecycle logs with `execute/task_start`, `execute/task_info`, and `execute/task_end` events.
-- [ ] Write `execute/task_usage` events containing task id, step usage, total usage, provider/model breakdown, token counts, and cost.
-- [ ] Keep `RalpixState.progressFile` pointed at the new `.jsonl` path.
-- [ ] Write `execute/complete` when plan execution and final review flow completes.
+- [x] Replace `ProgressLogger` imports/usages with `LogWriter`.
+- [x] In `runPlan`, write an `execute/start` event containing plan title, task count, and plan path.
+- [x] Replace task lifecycle logs with `execute/task_start`, `execute/task_info`, and `execute/task_end` events.
+- [x] Write `execute/task_usage` events containing task id, step usage, total usage, provider/model breakdown, token counts, and cost.
+- [x] Keep `RalpixState.progressFile` pointed at the new `.jsonl` path.
+- [x] Write `execute/complete` when plan execution and final review flow completes.
 
 ### Task 4: Convert Review Logging to JSONL
 
