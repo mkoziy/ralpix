@@ -1214,7 +1214,7 @@ async function runPlan(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Review pipeline error: ${msg}`, "warning");
-    logger.logReview("first", `ERROR: ${msg}`);
+    logger.logReviewComplete({ status: "failed", error: msg });
   }
   logger.logReviewUsage(ledger.diffDetailedSince(reviewUsageStart), ledger.detailedSnapshot());
 

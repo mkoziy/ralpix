@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-import type { JsonlEntry, JsonlUsageData, Phase, Plan, PlanTask, ReviewStageId } from "./types.js";
+import type { JsonlEntry, JsonlUsageData, Phase, Plan, PlanTask, ReviewStageId, ReviewStageStatus } from "./types.js";
 
 export interface UsageSummary {
   input: number;
@@ -199,6 +199,36 @@ export class LogWriter {
 
   logReview(phase: "first" | "second" | "loop", result: string): void {
     this.write("review", "stage_update", { phase, result });
+  }
+
+  logReviewStart(data: Record<string, unknown>): void {
+    this.write("review", "start", data);
+  }
+
+  logReviewComplete(data: Record<string, unknown>): void {
+    this.write("review", "complete", data);
+  }
+
+  logReviewStageStart(stage: ReviewStageId, detail?: string, data: Record<string, unknown> = {}): void {
+    this.write("review", "stage_start", { stage, ...(detail === undefined ? {} : { detail }), ...data });
+  }
+
+  logReviewStageUpdate(stage: ReviewStageId, detail: string, data: Record<string, unknown> = {}): void {
+    this.write("review", "stage_update", { stage, detail, ...data });
+  }
+
+  logReviewStageFinish(
+    stage: ReviewStageId,
+    status: Exclude<ReviewStageStatus, "pending" | "active">,
+    detail?: string,
+    data: Record<string, unknown> = {},
+  ): void {
+    this.write("review", "stage_finish", {
+      stage,
+      status,
+      ...(detail === undefined ? {} : { detail }),
+      ...data,
+    });
   }
 
   logReviewUsage(step: UsageSnapshot, total: UsageSnapshot): void {

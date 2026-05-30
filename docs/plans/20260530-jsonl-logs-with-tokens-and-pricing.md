@@ -130,11 +130,11 @@ Session names:
 - Modify: `reviewer.ts`
 - Modify: `index.ts`
 
-- [ ] Update `runReviewPipeline`, standalone review, and helper functions to accept/use `LogWriter`.
-- [ ] Map review progress messages to `review/stage_start`, `review/stage_update`, and `review/stage_finish` events with stage identifiers and details.
-- [ ] Record review usage as `review/stage_usage` events with step usage, total usage, provider/model breakdown, token counts, and cost.
-- [ ] Ensure standalone `/ralpix review` creates a `.jsonl` log and writes `review/start` and `review/complete`.
-- [ ] Update prompt variables that use `PROGRESS_FILE` so they receive the JSONL log path.
+- [x] Update `runReviewPipeline`, standalone review, and helper functions to accept/use `LogWriter`.
+- [x] Map review progress messages to `review/stage_start`, `review/stage_update`, and `review/stage_finish` events with stage identifiers and details.
+- [x] Record review usage as `review/stage_usage` events with step usage, total usage, provider/model breakdown, token counts, and cost.
+- [x] Ensure standalone `/ralpix review` creates a `.jsonl` log and writes `review/start` and `review/complete`.
+- [x] Update prompt variables that use `PROGRESS_FILE` so they receive the JSONL log path.
 
 ### Task 5: Add JSONL Logging to Brainstorm
 
