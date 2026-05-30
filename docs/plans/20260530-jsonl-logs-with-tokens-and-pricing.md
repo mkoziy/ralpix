@@ -152,11 +152,11 @@ Session names:
 **Files:**
 - Modify: `planner.ts`
 
-- [ ] Create a `LogWriter` at the start of `runPlanCreation` using `plan-YYYYMMDD`.
-- [ ] Write `plan/start` with description, update/create mode, existing plan path if present, and whether brainstorm context was provided.
-- [ ] Write `plan/round_start`, `plan/clarification`, `plan/draft_generated`, and `plan/review_result` events from the existing generation/review loop.
-- [ ] Write `plan/usage` after each subprocess launch with step usage, total usage, provider/model breakdown, token counts, and cost.
-- [ ] Write `plan/end` with `accepted`, `rejected`, `cancelled`, or `failed` status and `planPath` when available.
+- [x] Create a `LogWriter` at the start of `runPlanCreation` using `plan-YYYYMMDD`.
+- [x] Write `plan/start` with description, update/create mode, existing plan path if present, and whether brainstorm context was provided.
+- [x] Write `plan/round_start`, `plan/clarification`, `plan/draft_generated`, and `plan/review_result` events from the existing generation/review loop.
+- [x] Write `plan/usage` after each subprocess launch with step usage, total usage, provider/model breakdown, token counts, and cost.
+- [x] Write `plan/end` with `accepted`, `rejected`, `cancelled`, or `failed` status and `planPath` when available.
 
 ### Task 7: Update Documentation and Validate
 
