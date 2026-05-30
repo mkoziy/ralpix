@@ -141,11 +141,11 @@ Session names:
 **Files:**
 - Modify: `brainstorm.ts`
 
-- [ ] Create a `LogWriter` at the start of `runBrainstorm` using `brainstorm-YYYYMMDD`.
-- [ ] Write `brainstorm/start` with the requested description.
-- [ ] Write per-round events such as `round_start`, `question`, `answer`, `approach_selected`, and `section_validated`.
-- [ ] Write `brainstorm/usage` after subprocess rounds with step usage, total usage, provider/model breakdown, token counts, and cost.
-- [ ] Write `brainstorm/end` with `status: "complete"` or `status: "cancelled"` before returning.
+- [x] Create a `LogWriter` at the start of `runBrainstorm` using `brainstorm-YYYYMMDD`.
+- [x] Write `brainstorm/start` with the requested description.
+- [x] Write per-round events such as `round_start`, `question`, `answer`, `approach_selected`, and `section_validated`.
+- [x] Write `brainstorm/usage` after subprocess rounds with step usage, total usage, provider/model breakdown, token counts, and cost.
+- [x] Write `brainstorm/end` with `status: "complete"` or `status: "cancelled"` before returning.
 
 ### Task 6: Add JSONL Logging to Plan Creation
 
