@@ -41,6 +41,10 @@ interface BrainstormState {
   pendingFeedback: string | null;
 }
 
+function isTimeoutExitCode(exitCode: number): boolean {
+  return exitCode === 143 || exitCode === 137 || exitCode === 9;
+}
+
 // ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------
@@ -422,7 +426,7 @@ async function runBrainstormSubprocess(
     prompt,
     modelCfg,
     true,
-    180000,
+    config.brainstormTimeoutMs ?? 10 * 60 * 1000,
     progressHooks,
     piAgentDir,
     config,
@@ -431,10 +435,13 @@ async function runBrainstormSubprocess(
   const stepUsage = ledger.diffSince(usageBefore);
 
   if (result.exitCode !== 0) {
-    ctx.ui.notify("Brainstorm subprocess failed", "error");
-    appendPlanCreationDebug(ctx.cwd, `brainstorm round ${round}: subprocess failed exit=${String(result.exitCode)}`);
+    const errMsg = isTimeoutExitCode(result.exitCode)
+      ? `brainstorm timed out after ${String(Math.round((config.brainstormTimeoutMs ?? 10 * 60 * 1000) / 1000))}s`
+      : `subprocess failed exit=${String(result.exitCode)}`;
+    ctx.ui.notify(`Brainstorm error: ${errMsg}`, "error");
+    appendPlanCreationDebug(ctx.cwd, `brainstorm round ${round}: ${errMsg}`);
     tui.pushStep({
-      title: `Round ${round}: subprocess failed`,
+      title: `Round ${round}: ${errMsg}`,
       usageSummary: stepUsage,
       usageLines: ledger.usageLines(),
     });

@@ -293,6 +293,7 @@ ralpix uses a three-layer merge — each layer overrides the one above:
   "maxRetries": 2,                 // Max retries per task on failure
   "reviewMaxRetries": 1,           // Max retries per review session on failure
   "reviewTimeoutMs": 1800000,      // Max ms per review session (default: 30 min)
+  "brainstormTimeoutMs": 600000,   // Max ms per brainstorm round (default: 10 min)
   "reviewMaxIterations": 10,
   "brainstormEnabled": true,
   "brainstormModel": "opencode-go/kimi-k2.6",

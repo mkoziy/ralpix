@@ -43,6 +43,7 @@ function makeConfig(overrides: Partial<RalpixConfig>): RalpixConfig {
     maxRetries: 2,
     reviewMaxRetries: 1,
     reviewTimeoutMs: 1800000,
+    brainstormTimeoutMs: 600000,
     reviewMaxIterations: 10,
     externalReviewEnabled: true,
     externalReviewModel: null,

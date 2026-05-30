@@ -52,6 +52,7 @@ export interface RalpixConfig {
   maxRetries: number;
   reviewMaxRetries: number;
   reviewTimeoutMs: number | null;
+  brainstormTimeoutMs: number | null;
   reviewMaxIterations: number;
   /** External review phase — independent model reviews code */
   externalReviewEnabled: boolean;

@@ -233,6 +233,9 @@ export function loadConfig(cwd: string): RalpixConfig {
   if (typeof config.reviewTimeoutMs !== "number" || config.reviewTimeoutMs <= 0) {
     config.reviewTimeoutMs = 30 * 60 * 1000;
   }
+  if (typeof config.brainstormTimeoutMs !== "number" || config.brainstormTimeoutMs <= 0) {
+    config.brainstormTimeoutMs = 10 * 60 * 1000;
+  }
 
   return config;
 }
