@@ -78,12 +78,12 @@ Session names:
 - Existing TUI token formatting helpers must remain available.
 
 ## Success Criteria
-- [ ] Brainstorm, plan creation, execute, and review commands append structured JSONL events under `.ralpix/progress/`.
-- [ ] Execute and review phases for a plan share one `<planStem>.jsonl` file.
-- [ ] Usage events include token counts and pricing: `input`, `output`, `cost`, and cache token details where available.
-- [ ] JSONL lines include timestamps, phase, event name, and structured data with task/stage details.
-- [ ] Logging errors are caught and reported to stderr without failing commands.
-- [ ] README progress log documentation references `.jsonl`, includes the schema, and documents token/pricing fields.
+- [x] Brainstorm, plan creation, execute, and review commands append structured JSONL events under `.ralpix/progress/`.
+- [x] Execute and review phases for a plan share one `<planStem>.jsonl` file.
+- [x] Usage events include token counts and pricing: `input`, `output`, `cost`, and cache token details where available.
+- [x] JSONL lines include timestamps, phase, event name, and structured data with task/stage details.
+- [x] Logging errors are caught and reported to stderr without failing commands.
+- [x] README progress log documentation references `.jsonl`, includes the schema, and documents token/pricing fields.
 - [x] `npm run check` passes.
 
 ### Task 1: Replace ProgressLogger with LogWriter
@@ -163,9 +163,9 @@ Session names:
 **Files:**
 - Modify: `README.md`
 
-- [ ] Replace `.txt` progress log references with `.jsonl`.
-- [ ] Update the Progress Logs section to document the JSONL schema and include example lines.
-- [ ] Explicitly document that usage events save tokens and pricing/cost.
-- [ ] Mention that logs are append-only and intended for future HTML parsing.
-- [ ] Run `npm run check`.
-- [ ] Manually inspect TypeScript import/type errors around `LogWriter`, `Phase`, `JsonlEntry`, and usage payload types.
+- [x] Replace `.txt` progress log references with `.jsonl`.
+- [x] Update the Progress Logs section to document the JSONL schema and include example lines.
+- [x] Explicitly document that usage events save tokens and pricing/cost.
+- [x] Mention that logs are append-only and intended for future HTML parsing.
+- [x] Run `npm run check`.
+- [x] Manually inspect TypeScript import/type errors around `LogWriter`, `Phase`, `JsonlEntry`, and usage payload types.

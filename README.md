@@ -81,7 +81,7 @@ What happens when you execute a plan:
 2. Plan is parsed into tasks
 3. Each task runs in an isolated `pi` session seeded from the merged ralpix config
 4. Auto-commit after each successful task
-5. Progress is logged to `./.ralpix/progress/<plan-name>.txt`
+5. Progress is logged to `./.ralpix/progress/<plan-name>.jsonl`
 6. After all tasks: review pipeline runs (first pass → optional external review → second pass)
 7. Plan checkboxes are updated automatically
 
@@ -230,7 +230,7 @@ The review uses the same multi-model pipeline as plan execution:
 - **External review** (if enabled) — independent model finds issues
 - **Second pass** — focused re-review for remaining critical/major issues
 
-Progress is logged to `.ralpix/progress/review-<date>-<branch>.txt`.
+Progress is logged to `.ralpix/progress/review-<date>-<branch>.jsonl`.
 
 Use this when you want a fresh set of eyes on a PR, a quick sanity check before committing, or an independent audit of uncommitted work.
 
@@ -399,7 +399,7 @@ cp ~/.ralpix/prompts/task-default.md .ralpix/prompts/task-default.md
 | `{{TASK_TITLE}}` | Current task title |
 | `{{TASK_DESCRIPTION}}` | Task description + checklist |
 | `{{GOAL}}` | Plan title (review prompts) |
-| `{{PROGRESS_FILE}}` | Path to progress log |
+| `{{PROGRESS_FILE}}` | Path to append-only JSONL progress log |
 | `{{DEFAULT_BRANCH}}` | Main/master branch name |
 | `{{DIFF_COMMANDS}}` | Git diff commands for reviewer context gathering |
 | `{{FIX_INSTRUCTIONS}}` | Fix step instructions (varies by review mode) |
@@ -444,43 +444,64 @@ Example config:
 
 ## Progress Logs
 
-All execution is logged to `./.ralpix/progress/<plan-name>.txt`:
+All progress is logged as append-only JSONL under `./.ralpix/progress/`:
 
-```
-============================================================
-Ralpix Plan Execution
-============================================================
-Plan:    My Feature
-Path:    /home/user/project/docs/plans/my-feature.md
-Tasks:   3
-Started: 2026-05-12T14:30:00.000Z
+- Brainstorm: `brainstorm-YYYYMMDD.jsonl`
+- Plan creation: `plan-YYYYMMDD.jsonl`
+- Plan execution + review: `<plan-name>.jsonl`
+- Standalone review: `review-YYYYMMDD-<branch>.jsonl`
 
-[2026-05-12T14:30:00.001Z] PLAN_START  My Feature (3 tasks)
-[2026-05-12T14:30:05.123Z] TASK_START  Task 1: Set up the foundation
-[2026-05-12T14:30:05.124Z] TASK_INFO   Task 1: Set up the foundation  attempt 1 launched (openai-codex/gpt-5.5)
-[2026-05-12T14:30:09.870Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: tool started: exec_command rg -n "health" src
-[2026-05-12T14:30:10.401Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: tool finished in 1s: exec_command rg -n "health" src
-[2026-05-12T14:30:12.208Z] TASK_INFO   Task 1: Set up the foundation  attempt 1: assistant: Audited the existing health-check wiring and test coverage.
-[2026-05-12T14:32:10.456Z] TASK_END    Task 1: Set up the foundation  ✓ SUCCESS — commit a1b2c3d
-[2026-05-12T14:32:10.457Z] task_usage  Task 1: Set up the foundation  step in 12.3k out 1.1k cost $0.084  total in 24.8k out 2.0k cost $0.167
-[2026-05-12T14:32:10.458Z] TASK_START  Task 2: Implement core logic
-...
-[2026-05-12T14:45:00.000Z] REVIEW_FIRST   COMPLETE (iteration 1)
-[2026-05-12T14:48:00.000Z] REVIEW_SECOND  COMPLETE (iteration 1)
-[2026-05-12T14:48:00.001Z] review_usage review pipeline  step in 8.2k out 900 cost $0.052  total in 33.0k out 2.9k cost $0.219
-[2026-05-12T14:48:00.002Z] PLAN_COMPLETE  All tasks finished
+Each line is one complete JSON object:
+
+```typescript
+interface JsonlEntry {
+  ts: string;
+  phase: "brainstorm" | "plan" | "execute" | "review";
+  event: string;
+  data: Record<string, unknown>;
+}
 ```
 
-`TASK_INFO` lines show live subprocess summaries: attempt starts, tool/command previews, short assistant status notes, and idle heartbeats.
+Usage events store numeric token and pricing data for future parsing:
 
-`task_usage` and `review_usage` lines report per-step and cumulative token counts with cost, using the format:
-
+```typescript
+interface JsonlUsageData {
+  step?: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    cost: number;
+  };
+  total?: {
+    input: number;
+    output: number;
+    cost: number;
+  };
+  breakdown?: Array<{
+    provider: string;
+    model: string;
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    cost: number;
+  }>;
+}
 ```
-task_usage  Task N: <title>  step in <input> out <output> cost $<cost>  total in <input> out <output> cost $<cost>
-review_usage review pipeline  step in <input> out <output> cost $<cost>  total in <input> out <output> cost $<cost>
+
+Example lines:
+
+```json
+{"ts":"2026-05-12T14:30:00.001Z","phase":"execute","event":"start","data":{"planTitle":"My Feature","planPath":"/home/user/project/docs/plans/my-feature.md","taskCount":3}}
+{"ts":"2026-05-12T14:30:05.123Z","phase":"execute","event":"task_start","data":{"taskId":"task-1","taskNumber":1,"taskTitle":"Set up the foundation","itemCount":3}}
+{"ts":"2026-05-12T14:30:05.124Z","phase":"execute","event":"task_info","data":{"taskId":"task-1","taskNumber":1,"taskTitle":"Set up the foundation","detail":"attempt 1 launched (openai-codex/gpt-5.5)"}}
+{"ts":"2026-05-12T14:32:10.457Z","phase":"execute","event":"task_usage","data":{"taskId":"task-1","taskNumber":1,"taskTitle":"Set up the foundation","usage":{"step":{"input":8200,"output":1100,"cacheRead":4100,"cacheWrite":0,"cost":0.084},"total":{"input":16500,"output":2000,"cost":0.167},"breakdown":[{"provider":"openai-codex","model":"gpt-5.5","input":8200,"output":1100,"cacheRead":4100,"cacheWrite":0,"cost":0.084}]}}}
+{"ts":"2026-05-12T14:45:00.000Z","phase":"review","event":"stage_start","data":{"stage":"first-pass","detail":"checking all completed tasks","agents":5,"mode":"review-and-fix"}}
+{"ts":"2026-05-12T14:48:00.001Z","phase":"review","event":"stage_usage","data":{"stage":"second-pass","stageLabel":"second pass","usage":{"step":{"input":6100,"output":900,"cacheRead":2100,"cacheWrite":0,"cost":0.052},"total":{"input":22600,"output":2900,"cost":0.219},"breakdown":[{"provider":"anthropic","model":"claude-sonnet-4-5","input":6100,"output":900,"cacheRead":2100,"cacheWrite":0,"cost":0.052}]}}}
 ```
 
-Token counts are abbreviated (e.g. `12.3k`, `150k`).
+These logs are intended to be machine-readable first: they are append-only, preserve raw token and pricing data, and are suitable for future HTML/report generation.
 
 ---
 
@@ -690,7 +711,7 @@ Each task runs as an isolated `pi` subprocess — no context contamination betwe
 │        └─► spawn pi (review-second)     Iteration 2   │
 │            └─► HEAD unchanged → done                  │
 │                                                       │
-│  Progress: ./.ralpix/progress/<plan>.txt              │
+│  Progress: ./.ralpix/progress/<plan>.jsonl            │
 └──────────────────────────────────────────────────────┘
 ```
 
