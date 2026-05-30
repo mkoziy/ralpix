@@ -84,7 +84,7 @@ Session names:
 - [ ] JSONL lines include timestamps, phase, event name, and structured data with task/stage details.
 - [ ] Logging errors are caught and reported to stderr without failing commands.
 - [ ] README progress log documentation references `.jsonl`, includes the schema, and documents token/pricing fields.
-- [ ] `npm run check` passes.
+- [x] `npm run check` passes.
 
 ### Task 1: Replace ProgressLogger with LogWriter
 
@@ -92,11 +92,11 @@ Session names:
 - Modify: `logger.ts`
 - Modify: `types.ts`
 
-- [ ] Remove `ProgressLogger` and text-file formatting/write logic from `logger.ts`.
-- [ ] Add `Phase`, `JsonlEntry`, and reusable JSONL usage payload types.
-- [ ] Implement `LogWriter` with `filePath = join(progressDirForCwd(cwd), `${sessionName}.jsonl`)`.
-- [ ] Make `LogWriter.write(phase, event, data)` append one JSON line and catch directory/write errors without throwing.
-- [ ] Preserve `UsageSummary`, `fmtTokens`, `formatUsageSummary`, and `progressDirForCwd` exports for existing TUI usage.
+- [x] Remove `ProgressLogger` and text-file formatting/write logic from `logger.ts`.
+- [x] Add `Phase`, `JsonlEntry`, and reusable JSONL usage payload types.
+- [x] Implement `LogWriter` with `filePath = join(progressDirForCwd(cwd), `${sessionName}.jsonl`)`.
+- [x] Make `LogWriter.write(phase, event, data)` append one JSON line and catch directory/write errors without throwing.
+- [x] Preserve `UsageSummary`, `fmtTokens`, `formatUsageSummary`, and `progressDirForCwd` exports for existing TUI usage.
 
 ### Task 2: Add Structured Usage Helpers
 

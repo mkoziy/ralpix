@@ -5,7 +5,7 @@
 import { execSync } from "node:child_process";
 
 import { buildSessionModelChange, resolveModel, resolvePiAgentDir } from "./config.js";
-import { ProgressLogger } from "./logger.js";
+import { LogWriter } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 import { createProgressTui, createTokenLedger } from "./tui.js";
@@ -309,7 +309,7 @@ async function runReviewProcess(
   promptName: "review-first" | "review-second" | "external-review" | "external-eval",
   config: RalpixConfig,
   plan: Plan,
-  logger: ProgressLogger,
+  logger: LogWriter,
   defaultBranch: string,
   phase: "first" | "second" | "external" | "eval",
   includeEffort = true,
@@ -354,7 +354,7 @@ async function runFirstReview(
   ctx: ExtensionCommandContext,
   config: RalpixConfig,
   plan: Plan,
-  logger: ProgressLogger,
+  logger: LogWriter,
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
   reviewOnly = false,
@@ -392,7 +392,7 @@ async function runReviewLoop(
   ctx: ExtensionCommandContext,
   config: RalpixConfig,
   plan: Plan,
-  logger: ProgressLogger,
+  logger: LogWriter,
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
   reviewOnly = false,
@@ -467,7 +467,7 @@ async function runExternalReviewLoop(
   ctx: ExtensionCommandContext,
   config: RalpixConfig,
   plan: Plan,
-  logger: ProgressLogger,
+  logger: LogWriter,
   defaultBranch: string,
   hooks?: ReviewPipelineHooks,
   reviewOnly = false,
@@ -641,7 +641,7 @@ export async function runReviewPipeline(
   _pi: ExtensionAPI,
   plan: Plan,
   config: RalpixConfig,
-  logger: ProgressLogger,
+  logger: LogWriter,
   hooks?: ReviewPipelineHooks,
   reviewOnly = false,
   diffCommands?: string,
@@ -703,7 +703,7 @@ export async function runStandaloneReview(
 
   const timestamp = new Date().toISOString().slice(0, 10).replaceAll("-", "");
   const stem = `review-${timestamp}-${currentBranch.replaceAll("/", "-")}`;
-  const logger = new ProgressLogger(ctx.cwd, stem);
+  const logger = new LogWriter(ctx.cwd, stem);
 
   const plan: Plan = {
     path: "",

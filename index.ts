@@ -19,7 +19,7 @@ import { resolve, join as pathJoin, parse as pathParse, basename as pathBasename
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
-import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
+import { LogWriter, fmtTokens, type UsageSummary } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline, runStandaloneReview } from "./reviewer.js";
@@ -1004,7 +1004,7 @@ async function runPlan(
   // Setup progress logger
   const fileName = planPath.split("/").pop() ?? "plan";
   const planStem = fileName.replace(/\.md$/, "");
-  const logger = new ProgressLogger(ctx.cwd, planStem);
+  const logger = new LogWriter(ctx.cwd, planStem);
   logger.logStart(plan);
 
   // Token ledger — accumulates usage across all subprocess calls
