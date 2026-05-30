@@ -105,11 +105,11 @@ Session names:
 - Modify: `tui.ts`
 - Modify: `index.ts`
 
-- [ ] Add helper logic to convert usage summaries and provider/model breakdowns into JSON-safe objects.
-- [ ] Ensure usage payloads include pricing via `cost`.
-- [ ] Preserve token fields already tracked by subprocess usage: `input`, `output`, `cacheRead`, and `cacheWrite`.
-- [ ] Keep existing human-readable usage formatting for TUI display unchanged.
-- [ ] Avoid storing only formatted strings when structured token/cost numbers are available.
+- [x] Add helper logic to convert usage summaries and provider/model breakdowns into JSON-safe objects.
+- [x] Ensure usage payloads include pricing via `cost`.
+- [x] Preserve token fields already tracked by subprocess usage: `input`, `output`, `cacheRead`, and `cacheWrite`.
+- [x] Keep existing human-readable usage formatting for TUI display unchanged.
+- [x] Avoid storing only formatted strings when structured token/cost numbers are available.
 
 ### Task 3: Convert Execution Logging to JSONL
 

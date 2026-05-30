@@ -9,6 +9,16 @@ export interface UsageSummary {
   cost: number;
 }
 
+export interface UsageSnapshot extends UsageSummary {
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface UsageBreakdownEntry extends UsageSnapshot {
+  provider: string;
+  model: string;
+}
+
 export function progressDirForCwd(cwd: string): string {
   return resolve(cwd, ".ralpix", "progress");
 }
@@ -49,11 +59,39 @@ function writeLogError(filePath: string, error: unknown): void {
   }
 }
 
-function usageToData(step: UsageSummary, total: UsageSummary, breakdown?: string[]): JsonlUsageData {
+export function summarizeUsageSnapshot(usage: UsageSnapshot): UsageSummary {
+  return {
+    input: usage.input + usage.cacheRead + usage.cacheWrite,
+    output: usage.output,
+    cost: usage.cost,
+  };
+}
+
+export function summarizeUsageBreakdown(entries: UsageBreakdownEntry[]): UsageSummary {
+  return entries.reduce<UsageSummary>((total, entry) => ({
+    input: total.input + entry.input + entry.cacheRead + entry.cacheWrite,
+    output: total.output + entry.output,
+    cost: total.cost + entry.cost,
+  }), { input: 0, output: 0, cost: 0 });
+}
+
+export function formatUsageBreakdownLines(entries: UsageBreakdownEntry[]): string[] {
+  return entries.map(
+    (entry) => `${entry.provider}/${entry.model}  in ${fmtTokens(entry.input + entry.cacheRead + entry.cacheWrite)}  out ${fmtTokens(entry.output)}  $${entry.cost.toFixed(3)}`,
+  );
+}
+
+export function usageToData(
+  step: UsageSnapshot,
+  total: UsageSnapshot,
+  breakdown?: UsageBreakdownEntry[],
+): JsonlUsageData {
   const data: JsonlUsageData = {
     step: {
       input: step.input,
       output: step.output,
+      cacheRead: step.cacheRead,
+      cacheWrite: step.cacheWrite,
       cost: step.cost,
     },
     total: {
@@ -64,7 +102,15 @@ function usageToData(step: UsageSummary, total: UsageSummary, breakdown?: string
   };
 
   if (breakdown !== undefined && breakdown.length > 0) {
-    data.breakdown = breakdown.map((line) => ({ provider: "unknown", model: line, input: 0, output: 0, cost: 0 }));
+    data.breakdown = breakdown.map((entry) => ({
+      provider: entry.provider,
+      model: entry.model,
+      input: entry.input,
+      output: entry.output,
+      cacheRead: entry.cacheRead,
+      cacheWrite: entry.cacheWrite,
+      cost: entry.cost,
+    }));
   }
 
   return data;
@@ -137,13 +183,13 @@ export class LogWriter {
     });
   }
 
-  logTaskUsage(task: PlanTask, step: UsageSummary, total: UsageSummary, breakdown?: string[]): void {
+  logTaskUsage(task: PlanTask, step: UsageSnapshot, total: UsageSnapshot, breakdown?: UsageBreakdownEntry[]): void {
     this.write("execute", "task_usage", {
       taskId: task.id,
       taskNumber: task.number,
       taskTitle: task.title,
       usage: usageToData(step, total, breakdown),
-      summary: formatUsageSummary(step, total),
+      summary: formatUsageSummary(summarizeUsageSnapshot(step), summarizeUsageSnapshot(total)),
     });
   }
 
@@ -155,19 +201,24 @@ export class LogWriter {
     this.write("review", "stage_update", { phase, result });
   }
 
-  logReviewUsage(step: UsageSummary, total: UsageSummary): void {
+  logReviewUsage(step: UsageSnapshot, total: UsageSnapshot): void {
     this.write("review", "usage", {
       usage: usageToData(step, total),
-      summary: formatUsageSummary(step, total),
+      summary: formatUsageSummary(summarizeUsageSnapshot(step), summarizeUsageSnapshot(total)),
     });
   }
 
-  logReviewStepUsage(stage: ReviewStageId, step: UsageSummary, total: UsageSummary, breakdown?: string[]): void {
+  logReviewStepUsage(
+    stage: ReviewStageId,
+    step: UsageSnapshot,
+    total: UsageSnapshot,
+    breakdown?: UsageBreakdownEntry[],
+  ): void {
     this.write("review", "stage_usage", {
       stage,
       stageLabel: REVIEW_STAGE_LOG_LABELS[stage],
       usage: usageToData(step, total, breakdown),
-      summary: formatUsageSummary(step, total),
+      summary: formatUsageSummary(summarizeUsageSnapshot(step), summarizeUsageSnapshot(total)),
     });
   }
 
