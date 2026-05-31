@@ -4,7 +4,14 @@
  * phase labels, step log, elapsed timer, and token-usage tracking.
  */
 
-import { fmtTokens, type UsageSummary } from "./logger.js";
+import {
+  fmtTokens,
+  formatUsageBreakdownLines,
+  summarizeUsageBreakdown,
+  type UsageBreakdownEntry,
+  type UsageSnapshot,
+  type UsageSummary,
+} from "./logger.js";
 
 import type { SubprocessUsage } from "./types.js";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -292,28 +299,38 @@ export function createProgressTui(
 // ---------------------------------------------------------------------------
 
 export function createTokenLedger() {
-  const map = new Map<string, UsageSummary>();
+  const map = new Map<string, UsageBreakdownEntry>();
 
   function add(provider: string, model: string, usage: SubprocessUsage): void {
     const key = `${provider}/${model}`;
-    const e = map.get(key) ?? { input: 0, output: 0, cost: 0 };
+    const e = map.get(key) ?? { provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     map.set(key, {
-      input: e.input + usage.input + usage.cacheRead + usage.cacheWrite,
+      provider,
+      model,
+      input: e.input + usage.input,
       output: e.output + usage.output,
+      cacheRead: e.cacheRead + usage.cacheRead,
+      cacheWrite: e.cacheWrite + usage.cacheWrite,
       cost: e.cost + usage.cost,
     });
   }
 
+  function breakdown(): UsageBreakdownEntry[] {
+    return [...map.values()].map((entry) => ({ ...entry }));
+  }
+
   function snapshot(): UsageSummary {
-    let input = 0;
-    let output = 0;
-    let cost = 0;
-    for (const e of map.values()) {
-      input += e.input;
-      output += e.output;
-      cost += e.cost;
-    }
-    return { input, output, cost };
+    return summarizeUsageBreakdown(breakdown());
+  }
+
+  function detailedSnapshot(): UsageSnapshot {
+    return breakdown().reduce<UsageSnapshot>((total, entry) => ({
+      input: total.input + entry.input,
+      output: total.output + entry.output,
+      cacheRead: total.cacheRead + entry.cacheRead,
+      cacheWrite: total.cacheWrite + entry.cacheWrite,
+      cost: total.cost + entry.cost,
+    }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
   }
 
   function diffSince(previous: UsageSummary): UsageSummary {
@@ -325,11 +342,20 @@ export function createTokenLedger() {
     };
   }
 
-  function usageLines(): string[] {
-    return [...map.entries()].map(
-      ([key, usage]) => `${key}  in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`,
-    );
+  function diffDetailedSince(previous: UsageSnapshot): UsageSnapshot {
+    const current = detailedSnapshot();
+    return {
+      input: current.input - previous.input,
+      output: current.output - previous.output,
+      cacheRead: current.cacheRead - previous.cacheRead,
+      cacheWrite: current.cacheWrite - previous.cacheWrite,
+      cost: current.cost - previous.cost,
+    };
   }
 
-  return { add, diffSince, snapshot, usageLines };
+  function usageLines(): string[] {
+    return formatUsageBreakdownLines(breakdown());
+  }
+
+  return { add, breakdown, detailedSnapshot, diffDetailedSince, diffSince, snapshot, usageLines };
 }

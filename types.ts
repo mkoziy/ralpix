@@ -153,9 +153,46 @@ export interface SubprocessUsage {
   cost: number;
 }
 
-/** Progress log entry */
-export interface ProgressEntry {
-  timestamp: string;
-  type: "plan-start" | "task-start" | "task-end" | "review-start" | "review-end" | "plan-complete";
+export type Phase = "brainstorm" | "plan" | "execute" | "review";
+
+export interface JsonlEntry {
+  ts: string;
+  phase: Phase;
+  event: string;
   data: Record<string, unknown>;
 }
+
+export interface JsonlUsageStepData {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cost: number;
+}
+
+export interface JsonlUsageTotalData {
+  input: number;
+  output: number;
+  cost: number;
+}
+
+export interface JsonlUsageBreakdownData {
+  provider: string;
+  model: string;
+  input: number;
+  output: number;
+  cost: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+export interface JsonlUsageData {
+  provider?: string;
+  model?: string;
+  step?: JsonlUsageStepData;
+  total?: JsonlUsageTotalData;
+  breakdown?: JsonlUsageBreakdownData[];
+}
+
+/** Backward-compatible alias while the rest of the codebase migrates. */
+export type ProgressEntry = JsonlEntry;

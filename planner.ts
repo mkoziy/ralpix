@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { resolveModel, resolvePiAgentDir } from "./config.js";
+import { LogWriter, usageToData } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { buildTemporalContext, createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
@@ -293,6 +294,8 @@ async function runPlanReviewSubprocess(
   draftPath: string,
   cwd: string,
   config: RalpixConfig,
+  ledger: ReturnType<typeof createTokenLedger>,
+  logger: LogWriter,
 ): Promise<string | null> {
   try {
     const planContent = readFileSync(draftPath, "utf-8");
@@ -303,6 +306,7 @@ async function runPlanReviewSubprocess(
     const piAgentDir = resolvePiAgentDir(cwd, config);
     const temporal = buildTemporalContext(config);
     const promptWithTemporal = temporal.length > 0 ? `${temporal}\n${fullPrompt}` : fullPrompt;
+    const reviewLedger = createTokenLedger();
 
     const result = await runPiSubprocessPrompt(
       cwd,
@@ -310,10 +314,18 @@ async function runPlanReviewSubprocess(
       modelCfg,
       true,
       120000,
-      undefined,
+      createPiProgressHooks(undefined, (provider, model, usage) => {
+        ledger.add(provider, model, usage);
+        reviewLedger.add(provider, model, usage);
+      }),
       piAgentDir,
       config,
     );
+
+    logger.write("plan", "usage", {
+      source: "review",
+      usage: usageToData(reviewLedger.detailedSnapshot(), ledger.detailedSnapshot(), reviewLedger.breakdown()),
+    });
 
     if (result.exitCode !== 0) return null;
     return result.output;
@@ -365,8 +377,20 @@ export async function runPlanCreation(
   brainstormContext?: string,
 ): Promise<string | null> {
   const trimmed = description.trim();
+  const logger = new LogWriter(ctx.cwd, `plan-${formatDateStamp(new Date())}`);
+  let endWritten = false;
+  const writeEnd = (status: "accepted" | "rejected" | "cancelled" | "failed", planPath?: string): void => {
+    if (endWritten) return;
+    endWritten = true;
+    logger.write("plan", "end", {
+      status,
+      ...(planPath === undefined ? {} : { planPath }),
+    });
+  };
+
   if (trimmed.length < 5) {
     ctx.ui.notify("Plan description too short (min 5 characters)", "error");
+    writeEnd("failed");
     return null;
   }
 
@@ -376,6 +400,12 @@ export async function runPlanCreation(
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: start description=${JSON.stringify(description)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: debug file ${planCreationDebugFilePath(ctx.cwd)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: plansDir=${config.plansDir}`);
+  logger.write("plan", "start", {
+    description: trimmed,
+    mode: isUpdate ? "update" : "create",
+    ...(existingPlanPath === undefined ? {} : { existingPlanPath }),
+    brainstormContextProvided: brainstormContext !== undefined && brainstormContext.length > 0,
+  });
 
   // ── Optional brainstorm phase (if enabled and not updating) ──
   let effectiveContext = brainstormContext ?? "";
@@ -424,6 +454,12 @@ export async function runPlanCreation(
 
   try {
     for (let round = isUpdate ? 2 : 1; round <= 5; round++) {
+      logger.write("plan", "round_start", {
+        round,
+        mode: isUpdate ? "update" : "create",
+        clarificationCount: clarifications.length,
+        hasPreviousDraft: previousDraft !== undefined,
+      });
       const prompt = buildPlanGenerationPrompt(basePrompt, round, clarifications, previousDraft, feedback);
       let result: { exitCode: number; output: string; error: string } | null = null;
 
@@ -431,7 +467,7 @@ export async function runPlanCreation(
         const modelCfg = launchConfig.modelPhase === null
           ? { model: null, provider: null, effort: null }
           : resolveModel(config, launchConfig.modelPhase);
-        const usageBefore = ledger.snapshot();
+        const roundLedger = createTokenLedger();
 
         tui.setPhase("drafting");
         tui.setCurrent(`Round ${round}: AI drafting...`);
@@ -446,6 +482,7 @@ export async function runPlanCreation(
           },
           (provider, model, usage) => {
             ledger.add(provider, model, usage);
+            roundLedger.add(provider, model, usage);
             tui.setTotalUsage(ledger.snapshot());
             tui.refresh();
           },
@@ -462,11 +499,18 @@ export async function runPlanCreation(
           config,
         );
 
+        logger.write("plan", "usage", {
+          round,
+          source: "draft",
+          launchIndex: launchIndex + 1,
+          usage: usageToData(roundLedger.detailedSnapshot(), ledger.detailedSnapshot(), roundLedger.breakdown()),
+        });
+
         if (result.exitCode === 0) {
           tui.pushStep({
             title: `Round ${round}: draft generated`,
-            usageSummary: ledger.diffSince(usageBefore),
-            usageLines: ledger.usageLines(),
+            usageSummary: roundLedger.snapshot(),
+            usageLines: roundLedger.usageLines(),
           });
           break;
         }
@@ -485,6 +529,7 @@ export async function runPlanCreation(
           `Plan creation failed in subprocess. See ${planCreationDebugFilePath(ctx.cwd)} and stderr in debug log.`,
           "error",
         );
+        writeEnd("failed", draftPath);
         return null;
       }
 
@@ -506,10 +551,17 @@ export async function runPlanCreation(
         const answer = await askClarification(ctx, clarification);
         if (answer == null || answer.length === 0) {
           ctx.ui.notify("Plan creation cancelled (clarification unanswered)", "warning");
+          writeEnd("cancelled", draftPath);
           return null;
         }
         clarifications.push({ question: clarification.question, answer });
         appendPlanCreationDebug(ctx.cwd, `round ${round}: clarification answered ${JSON.stringify(answer)}`);
+        logger.write("plan", "clarification", {
+          round,
+          question: clarification.question,
+          options: clarification.options,
+          answer,
+        });
         tui.pushStep({ title: `Clarified: ${clarification.question} → ${answer}` });
         continue;
       }
@@ -519,6 +571,7 @@ export async function runPlanCreation(
           `Plan creation produced no draft. See ${planCreationDebugFilePath(ctx.cwd)}`,
           "error",
         );
+        writeEnd("failed", draftPath);
         return null;
       }
 
@@ -543,6 +596,14 @@ export async function runPlanCreation(
       }
       const summary = summarizeDraft(draft);
       appendPlanCreationDebug(ctx.cwd, `round ${round}: saved draft ${draftPath}`);
+      logger.write("plan", "draft_generated", {
+        round,
+        draftPath,
+        title: summary.title,
+        tasks: summary.tasks,
+        items: summary.items,
+        mode: isUpdate ? "update" : "create",
+      });
       ctx.ui.notify(
         isUpdate ? `Plan updated at ${draftPath}` : `Plan saved to ${draftPath}`,
         "success",
@@ -559,6 +620,8 @@ export async function runPlanCreation(
         if (review.action === "reject") {
           tui.pushStep({ title: "Plan rejected by user" });
           ctx.ui.notify("Plan creation cancelled (user rejected)", "warning");
+          logger.write("plan", "review_result", { source: "user", action: "reject", draftPath });
+          writeEnd("rejected", draftPath);
           return null;
         }
         if (review.action === "reload") {
@@ -569,6 +632,7 @@ export async function runPlanCreation(
             continue;
           }
           ctx.ui.notify(`Reloaded edited draft from ${draftPath}`, "success");
+          logger.write("plan", "review_result", { source: "user", action: "reload", draftPath });
           tui.pushStep({ title: "Reloaded edited draft" });
           continue;
         }
@@ -581,6 +645,7 @@ export async function runPlanCreation(
           }
           tui.setPhase("complete");
           tui.pushStep({ title: "Plan accepted" });
+          logger.write("plan", "review_result", { source: "user", action: "accept", draftPath });
           appendPlanCreationDebug(ctx.cwd, `runPlanCreation: accepted ${draftPath}`);
           ctx.ui.notify(isUpdate ? `Plan updated at ${draftPath}` : `Plan saved to ${draftPath}`, "success");
 
@@ -599,10 +664,12 @@ export async function runPlanCreation(
             const next = await ctx.ui.select(selectPrompt, choices);
 
             if (typeof next === "string" && next.includes("Execute")) {
+              writeEnd("accepted", draftPath);
               return draftPath;
             }
 
             if (typeof next === "string" && next.includes("Done")) {
+              writeEnd("accepted", draftPath);
               return null;
             }
 
@@ -611,12 +678,24 @@ export async function runPlanCreation(
               appendPlanCreationDebug(ctx.cwd, "runPlanCreation: starting plan review");
               tui.setCurrent("AI reviewing plan...");
               tui.refresh();
-              const reviewResult = await runPlanReviewSubprocess(draftPath, ctx.cwd, config);
+              const reviewResult = await runPlanReviewSubprocess(draftPath, ctx.cwd, config, ledger, logger);
               if (reviewResult == null || reviewResult.trim().length === 0) {
                 ctx.ui.notify("Plan review did not return output. You can still execute or revise manually.", "warning");
+                logger.write("plan", "review_result", { source: "ai", action: "failed", draftPath });
                 continue;
               }
               const digest = digestPlanReview(reviewResult);
+              logger.write("plan", "review_result", {
+                source: "ai",
+                action: "completed",
+                draftPath,
+                verdict: digest.verdict,
+                critical: digest.critical,
+                important: digest.important,
+                minor: digest.minor,
+                overEngineering: digest.overEngineering,
+                testing: digest.testing,
+              });
               ctx.ui.notify(digest.headline, digest.verdict === "APPROVE" ? "success" : "warning");
               tui.pushStep({ title: `AI review: ${digest.headline}` });
               reviewDigest = digest;
@@ -629,12 +708,14 @@ export async function runPlanCreation(
                 previousDraft = readFileSync(draftPath, "utf-8");
                 feedback = `Apply the following AI review feedback:\n\n${postReview}`;
                 appendPlanCreationDebug(ctx.cwd, "runPlanCreation: revision from plan review");
+                logger.write("plan", "review_result", { source: "user", action: "revise_after_ai_review", draftPath });
                 tui.pushStep({ title: "Revision from AI review feedback" });
               }
               break;
             }
 
             // Fallback — treat as Done
+            writeEnd("accepted", draftPath);
             return null;
           }
 
@@ -645,6 +726,12 @@ export async function runPlanCreation(
 
         previousDraft = readFileSync(draftPath, "utf-8");
         feedback = review.feedback;
+        logger.write("plan", "review_result", {
+          source: "user",
+          action: "revise",
+          draftPath,
+          feedback: review.feedback ?? "",
+        });
         tui.pushStep({ title: "User requested revision" });
         appendPlanCreationDebug(ctx.cwd, `round ${round}: revision requested`);
         break;
@@ -652,6 +739,7 @@ export async function runPlanCreation(
     }
 
     ctx.ui.notify("Plan creation exhausted revision rounds", "error");
+    writeEnd("failed", draftPath);
     return null;
   } finally {
     tui.close();

@@ -136,10 +136,34 @@ void test("buildStatusWidgetView shows current step and totals", () => {
     [{ id: "task-1", title: "Task 1" }],
     1,
     { input: 4200, output: 2800, cost: 0.034 },
-    new Map([["task-1", new Map([["opencode-go/deepseek-v4-pro", { input: 1000, output: 2000, cost: 0.01 }]])]]),
+    new Map([["task-1", new Map([["opencode-go/deepseek-v4-pro", {
+      provider: "opencode-go",
+      model: "deepseek-v4-pro",
+      input: 1000,
+      output: 2000,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+    }]])]]),
     new Map([
-      ["first-pass", new Map([["opencode-go/glm-5.1", { input: 1000, output: 1200, cost: 0.01 }]])],
-      ["second-pass", new Map([["opencode-go/glm-5.1", { input: 3200, output: 800, cost: 0.024 }]])],
+      ["first-pass", new Map([["opencode-go/glm-5.1", {
+        provider: "opencode-go",
+        model: "glm-5.1",
+        input: 1000,
+        output: 1200,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+      }]])],
+      ["second-pass", new Map([["opencode-go/glm-5.1", {
+        provider: "opencode-go",
+        model: "glm-5.1",
+        input: 3200,
+        output: 800,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.024,
+      }]])],
     ]),
   );
 

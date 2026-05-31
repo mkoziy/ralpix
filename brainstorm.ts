@@ -7,6 +7,7 @@
  */
 
 import { resolveModel, resolvePiAgentDir } from "./config.js";
+import { LogWriter, usageToData } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug } from "./planner-debug.js";
 import { expandPrompt, loadPrompt } from "./prompt.js";
@@ -43,6 +44,13 @@ interface BrainstormState {
 
 function isTimeoutExitCode(exitCode: number): boolean {
   return exitCode === 143 || exitCode === 137 || exitCode === 9;
+}
+
+function formatDateStamp(date: Date): string {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -272,9 +280,17 @@ async function handleUnderstandPhase(
   state: BrainstormState,
   ctx: ExtensionCommandContext,
   tui: ProgressTuiRuntime,
+  logger: LogWriter,
+  round: number,
 ): Promise<"continue" | "cancel"> {
   const question = extractQuestion(output);
   if (question == null) return "continue";
+
+  logger.write("brainstorm", "question", {
+    round,
+    question: question.question,
+    options: question.options,
+  });
 
   tui.setCurrent("Waiting for user answer...");
   tui.refresh();
@@ -287,6 +303,11 @@ async function handleUnderstandPhase(
     options: question.options,
     answer,
   });
+  logger.write("brainstorm", "answer", {
+    round,
+    question: question.question,
+    answer,
+  });
   tui.pushStep({ title: `Q: ${question.question} → A: ${answer}` });
   tui.refresh();
   return "continue";
@@ -297,6 +318,8 @@ async function handleApproachesPhase(
   state: BrainstormState,
   ctx: ExtensionCommandContext,
   tui: ProgressTuiRuntime,
+  logger: LogWriter,
+  round: number,
 ): Promise<"continue" | "cancel"> {
   const approachesRaw = extractApproaches(output);
   if (approachesRaw == null || approachesRaw.length === 0) return "continue";
@@ -308,6 +331,11 @@ async function handleApproachesPhase(
   const selected = await selectApproach(ctx, approachesRaw);
   if (selected == null) return "cancel";
   state.selectedApproach = selected;
+  logger.write("brainstorm", "approach_selected", {
+    round,
+    approach: selected,
+    approaches: approachesRaw,
+  });
   tui.pushStep({ title: `Approach selected: ${selected}` });
   tui.refresh();
   return "continue";
@@ -318,6 +346,8 @@ async function handleDesignPhase(
   state: BrainstormState,
   ctx: ExtensionCommandContext,
   tui: ProgressTuiRuntime,
+  logger: LogWriter,
+  round: number,
 ): Promise<"continue" | "cancel" | "done"> {
   const section = extractDesignSection(output);
   if (section == null) return "continue";
@@ -342,6 +372,11 @@ async function handleDesignPhase(
     });
     state.pendingSection = null;
     state.pendingFeedback = null;
+    logger.write("brainstorm", "section_validated", {
+      round,
+      sectionTitle: section.title,
+      outcome: "accepted",
+    });
     tui.pushStep({ title: `Design section ✓ ${section.title}` });
     tui.refresh();
     return "continue";
@@ -350,12 +385,23 @@ async function handleDesignPhase(
   if (validation === "skip") {
     state.pendingSection = null;
     state.pendingFeedback = "The user is satisfied with the design coverage so far. Please move to the summary phase.";
+    logger.write("brainstorm", "section_validated", {
+      round,
+      sectionTitle: section.title,
+      outcome: "skipped_to_summary",
+    });
     tui.pushStep({ title: "Skipped remaining design sections" });
     tui.refresh();
     return "continue";
   }
 
   state.pendingFeedback = validation;
+  logger.write("brainstorm", "section_validated", {
+    round,
+    sectionTitle: section.title,
+    outcome: "feedback_requested",
+    feedback: validation,
+  });
   return "continue";
 }
 
@@ -399,11 +445,12 @@ async function runBrainstormSubprocess(
   ctx: ExtensionCommandContext,
   tui: ProgressTuiRuntime,
   ledger: ReturnType<typeof createTokenLedger>,
+  logger: LogWriter,
 ): Promise<{ output: string } | null> {
   const prompt = buildBrainstormPrompt(template, state);
   appendPlanCreationDebug(ctx.cwd, `brainstorm round ${round}: subprocess start`);
 
-  const usageBefore = ledger.snapshot();
+  const roundLedger = createTokenLedger();
 
   tui.setPhase("thinking");
   tui.setCurrent(`Round ${round}: AI thinking...`);
@@ -416,6 +463,7 @@ async function runBrainstormSubprocess(
     },
     (provider, model, usage) => {
       ledger.add(provider, model, usage);
+      roundLedger.add(provider, model, usage);
       tui.setTotalUsage(ledger.snapshot());
       tui.refresh();
     },
@@ -432,7 +480,15 @@ async function runBrainstormSubprocess(
     config,
   );
 
-  const stepUsage = ledger.diffSince(usageBefore);
+  const stepUsage = roundLedger.snapshot();
+  const detailedStepUsage = roundLedger.detailedSnapshot();
+  const totalUsage = ledger.detailedSnapshot();
+  const breakdown = roundLedger.breakdown();
+
+  logger.write("brainstorm", "usage", {
+    round,
+    usage: usageToData(detailedStepUsage, totalUsage, breakdown),
+  });
 
   if (result.exitCode !== 0) {
     const errMsg = isTimeoutExitCode(result.exitCode)
@@ -477,9 +533,17 @@ async function runBrainstormRound(
   ctx: ExtensionCommandContext,
   tui: ProgressTuiRuntime,
   ledger: ReturnType<typeof createTokenLedger>,
+  logger: LogWriter,
 ): Promise<{ action: "continue" } | { action: "return"; value: string | null }> {
+  logger.write("brainstorm", "round_start", {
+    round,
+    qaCount: state.qaHistory.length,
+    designSectionCount: state.designSections.length,
+    selectedApproach: state.selectedApproach,
+  });
+
   const subprocessResult = await runBrainstormSubprocess(
-    round, state, template, modelCfg, piAgentDir, config, ctx, tui, ledger,
+    round, state, template, modelCfg, piAgentDir, config, ctx, tui, ledger, logger,
   );
   if (subprocessResult == null) {
     return { action: "return", value: null };
@@ -489,17 +553,17 @@ async function runBrainstormRound(
   const phase = extractPhase(output);
 
   if (phase === "understand" || phase === null) {
-    const status = await handleUnderstandPhase(output, state, ctx, tui);
+    const status = await handleUnderstandPhase(output, state, ctx, tui, logger, round);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
   if (phase === "approaches") {
-    const status = await handleApproachesPhase(output, state, ctx, tui);
+    const status = await handleApproachesPhase(output, state, ctx, tui, logger, round);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
   if (phase === "design") {
-    const status = await handleDesignPhase(output, state, ctx, tui);
+    const status = await handleDesignPhase(output, state, ctx, tui, logger, round);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
@@ -549,6 +613,8 @@ export async function runBrainstorm(
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   const ledger = createTokenLedger();
   const tui = createProgressTui(ctx, "brainstorm-progress", `brainstorm: ${trimmed}`);
+  const logger = new LogWriter(ctx.cwd, `brainstorm-${formatDateStamp(new Date())}`);
+  logger.write("brainstorm", "start", { description: trimmed });
 
   const MAX_ROUNDS = 15;
 
@@ -563,14 +629,28 @@ export async function runBrainstorm(
       ctx,
       tui,
       ledger,
+      logger,
     );
 
     if (outcome.action === "return") {
-      if (outcome.value != null) {
+      if (outcome.value == null) {
+        logger.write("brainstorm", "end", {
+          status: "cancelled",
+          rounds: round,
+          selectedApproach: state.selectedApproach,
+          designSectionCount: state.designSections.length,
+        });
+      } else {
         tui.setPhase("complete");
         tui.setCurrent("Brainstorm complete!");
         tui.refresh();
         ctx.ui.notify("Brainstorm complete!", "success");
+        logger.write("brainstorm", "end", {
+          status: "complete",
+          rounds: round,
+          selectedApproach: state.selectedApproach,
+          designSectionCount: state.designSections.length,
+        });
       }
       tui.close();
       return outcome.value;
@@ -581,5 +661,12 @@ export async function runBrainstorm(
   tui.setCurrent("");
   tui.close();
   ctx.ui.notify("Brainstorm exhausted available rounds", "warning");
+  logger.write("brainstorm", "end", {
+    status: "cancelled",
+    reason: "max_rounds_exhausted",
+    rounds: MAX_ROUNDS,
+    selectedApproach: state.selectedApproach,
+    designSectionCount: state.designSections.length,
+  });
   return null;
 }

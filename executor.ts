@@ -10,7 +10,7 @@ import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js
 import { loadPrompt, expandPrompt } from "./prompt.js";
 import { createProgressTui, createTokenLedger } from "./tui.js";
 
-import type { ProgressLogger } from "./logger.js";
+import type { LogWriter } from "./logger.js";
 import type { PiSubprocessHooks } from "./pi-subprocess.js";
 import type { ModelConfig, Plan, PlanTask, RalpixConfig, SubprocessUsage, TaskResult } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -145,7 +145,7 @@ export async function executeTask(
   task: PlanTask,
   config: RalpixConfig,
   plan: Plan,
-  logger: ProgressLogger,
+  logger: LogWriter,
   hooks?: TaskExecutionHooks,
 ): Promise<TaskResult> {
   hooks?.onTaskStart?.(task);
@@ -279,7 +279,7 @@ export async function executeAllTasks(
   pi: ExtensionAPI,
   plan: Plan,
   config: RalpixConfig,
-  logger: ProgressLogger,
+  logger: LogWriter,
   hooks?: TaskExecutionHooks,
 ): Promise<TaskResult[]> {
   const results: TaskResult[] = [];

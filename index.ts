@@ -19,7 +19,15 @@ import { resolve, join as pathJoin, parse as pathParse, basename as pathBasename
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
 import { executeAllTasks } from "./executor.js";
-import { ProgressLogger, fmtTokens, type UsageSummary } from "./logger.js";
+import {
+  LogWriter,
+  fmtTokens,
+  formatUsageBreakdownLines,
+  summarizeUsageBreakdown,
+  type UsageBreakdownEntry,
+  type UsageSnapshot,
+  type UsageSummary,
+} from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline, runStandaloneReview } from "./reviewer.js";
@@ -63,7 +71,7 @@ const noopFn = (): void => {
   return;
 };
 
-type UsageByModel = Map<string, UsageSummary>;
+type UsageByModel = Map<string, UsageBreakdownEntry>;
 type UsageById = Map<string, UsageByModel>;
 
 interface CurrentStepView {
@@ -252,28 +260,38 @@ class RalpixProgressComponent implements PiTuiComponent {
 // ---------------------------------------------------------------------------
 
 function createTokenLedger() {
-  const map = new Map<string, UsageSummary>();
+  const map = new Map<string, UsageBreakdownEntry>();
 
   function add(provider: string, model: string, usage: SubprocessUsage): void {
     const key = `${provider}/${model}`;
-    const e = map.get(key) ?? { input: 0, output: 0, cost: 0 };
+    const e = map.get(key) ?? { provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     map.set(key, {
-      input: e.input + usage.input + usage.cacheRead + usage.cacheWrite,
+      provider,
+      model,
+      input: e.input + usage.input,
       output: e.output + usage.output,
+      cacheRead: e.cacheRead + usage.cacheRead,
+      cacheWrite: e.cacheWrite + usage.cacheWrite,
       cost: e.cost + usage.cost,
     });
   }
 
+  function breakdown(): UsageBreakdownEntry[] {
+    return [...map.values()].map((entry) => ({ ...entry }));
+  }
+
   function snapshot(): UsageSummary {
-    let input = 0;
-    let output = 0;
-    let cost = 0;
-    for (const e of map.values()) {
-      input += e.input;
-      output += e.output;
-      cost += e.cost;
-    }
-    return { input, output, cost };
+    return summarizeUsageBreakdown(breakdown());
+  }
+
+  function detailedSnapshot(): UsageSnapshot {
+    return breakdown().reduce<UsageSnapshot>((total, entry) => ({
+      input: total.input + entry.input,
+      output: total.output + entry.output,
+      cacheRead: total.cacheRead + entry.cacheRead,
+      cacheWrite: total.cacheWrite + entry.cacheWrite,
+      cost: total.cost + entry.cost,
+    }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
   }
 
   function diffSince(previous: UsageSummary): UsageSummary {
@@ -285,7 +303,18 @@ function createTokenLedger() {
     };
   }
 
-  return { add, diffSince, snapshot };
+  function diffDetailedSince(previous: UsageSnapshot): UsageSnapshot {
+    const current = detailedSnapshot();
+    return {
+      input: current.input - previous.input,
+      output: current.output - previous.output,
+      cacheRead: current.cacheRead - previous.cacheRead,
+      cacheWrite: current.cacheWrite - previous.cacheWrite,
+      cost: current.cost - previous.cost,
+    };
+  }
+
+  return { add, breakdown, detailedSnapshot, diffDetailedSince, diffSince, snapshot };
 }
 
 function recordUsage(
@@ -296,11 +325,15 @@ function recordUsage(
   usage: SubprocessUsage,
 ): void {
   const key = `${provider}/${model}`;
-  const perModel = usageById.get(id) ?? new Map<string, UsageSummary>();
-  const previous = perModel.get(key) ?? { input: 0, output: 0, cost: 0 };
+  const perModel = usageById.get(id) ?? new Map<string, UsageBreakdownEntry>();
+  const previous = perModel.get(key) ?? { provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   perModel.set(key, {
-    input: previous.input + usage.input + usage.cacheRead + usage.cacheWrite,
+    provider,
+    model,
+    input: previous.input + usage.input,
     output: previous.output + usage.output,
+    cacheRead: previous.cacheRead + usage.cacheRead,
+    cacheWrite: previous.cacheWrite + usage.cacheWrite,
     cost: previous.cost + usage.cost,
   });
   usageById.set(id, perModel);
@@ -309,23 +342,19 @@ function recordUsage(
 function usageLinesFor(id: string, usageById: UsageById): string[] {
   const perModel = usageById.get(id);
   if (perModel === undefined) return [];
-  return [...perModel.entries()].map(
-    ([key, usage]) => `${key}  in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`,
-  );
+  return formatUsageBreakdownLines([...perModel.values()]);
 }
 
 function usageSummaryFor(id: string, usageById: UsageById): UsageSummary | undefined {
   const perModel = usageById.get(id);
   if (perModel === undefined) return undefined;
-  let input = 0;
-  let output = 0;
-  let cost = 0;
-  for (const usage of perModel.values()) {
-    input += usage.input;
-    output += usage.output;
-    cost += usage.cost;
-  }
-  return { input, output, cost };
+  return summarizeUsageBreakdown([...perModel.values()]);
+}
+
+function usageBreakdownFor(id: string, usageById: UsageById): UsageBreakdownEntry[] {
+  const perModel = usageById.get(id);
+  if (perModel === undefined) return [];
+  return [...perModel.values()].map((entry) => ({ ...entry }));
 }
 
 const REVIEW_STAGE_LABELS: Record<ReviewStageId, string> = {
@@ -548,9 +577,9 @@ export function buildStatusWidgetView(
 }
 
 function snapshotUsageById(usageById: UsageById): UsageById {
-  const snap = new Map<string, Map<string, UsageSummary>>();
+  const snap = new Map<string, Map<string, UsageBreakdownEntry>>();
   for (const [id, perModel] of usageById.entries()) {
-    const copy = new Map<string, UsageSummary>();
+    const copy = new Map<string, UsageBreakdownEntry>();
     for (const [key, usage] of perModel.entries()) {
       copy.set(key, { ...usage });
     }
@@ -559,21 +588,33 @@ function snapshotUsageById(usageById: UsageById): UsageById {
   return snap;
 }
 
-function diffUsageLines(id: string, before: UsageById, after: UsageById): string[] {
+function diffUsageBreakdown(id: string, before: UsageById, after: UsageById): UsageBreakdownEntry[] {
   const afterModels = after.get(id);
   if (afterModels === undefined) return [];
   const beforeModels = before.get(id);
-  const lines: string[] = [];
+  const entries: UsageBreakdownEntry[] = [];
   for (const [key, afterUsage] of afterModels.entries()) {
     const beforeUsage = beforeModels?.get(key);
-    const input = afterUsage.input - (beforeUsage?.input ?? 0);
-    const output = afterUsage.output - (beforeUsage?.output ?? 0);
-    const cost = afterUsage.cost - (beforeUsage?.cost ?? 0);
-    if (input > 0 || output > 0 || cost > 0) {
-      lines.push(`${key}  in ${fmtTokens(input)}  out ${fmtTokens(output)}  $${cost.toFixed(3)}`);
+    const entry = {
+      provider: afterUsage.provider,
+      model: afterUsage.model,
+      input: afterUsage.input - (beforeUsage?.input ?? 0),
+      output: afterUsage.output - (beforeUsage?.output ?? 0),
+      cacheRead: afterUsage.cacheRead - (beforeUsage?.cacheRead ?? 0),
+      cacheWrite: afterUsage.cacheWrite - (beforeUsage?.cacheWrite ?? 0),
+      cost: afterUsage.cost - (beforeUsage?.cost ?? 0),
+    };
+    if (
+      entry.input > 0 ||
+      entry.output > 0 ||
+      entry.cacheRead > 0 ||
+      entry.cacheWrite > 0 ||
+      entry.cost > 0
+    ) {
+      entries.push(entry);
     }
   }
-  return lines;
+  return entries;
 }
 
 export function normalizePlanPathArg(rawPath: string): string {
@@ -1004,14 +1045,14 @@ async function runPlan(
   // Setup progress logger
   const fileName = planPath.split("/").pop() ?? "plan";
   const planStem = fileName.replace(/\.md$/, "");
-  const logger = new ProgressLogger(ctx.cwd, planStem);
+  const logger = new LogWriter(ctx.cwd, planStem);
   logger.logStart(plan);
 
   // Token ledger — accumulates usage across all subprocess calls
   const ledger = createTokenLedger();
   const taskUsageById: UsageById = new Map();
   const reviewUsageById: UsageById = new Map();
-  const reviewUsageStartById = new Map<ReviewStageId, UsageSummary>();
+  const reviewUsageStartById = new Map<ReviewStageId, UsageSnapshot>();
   const reviewUsageByIdStart = new Map<ReviewStageId, UsageById>();
   const onUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
     ledger.add(provider, model, usage);
@@ -1025,7 +1066,7 @@ async function runPlan(
     }
     progressTui.refresh();
   };
-  let taskUsageStart = ledger.snapshot();
+  let taskUsageStart = ledger.detailedSnapshot();
 
   // Initial state
   const state: RalpixState = {
@@ -1058,7 +1099,7 @@ async function runPlan(
 
     const results = await executeAllTasks(ctx, pi, plan, config, logger, {
       onTaskStart(task) {
-        taskUsageStart = ledger.snapshot();
+        taskUsageStart = ledger.detailedSnapshot();
         const nextState = markTaskExecutionStarted(state, task.id);
         state.currentTaskId = nextState.currentTaskId;
         persistState(pi, state);
@@ -1067,10 +1108,11 @@ async function runPlan(
         progressTui.refresh();
       },
       onTaskFinish(task, result) {
-        const stepUsage = ledger.diffSince(taskUsageStart);
-        const totalUsage = ledger.snapshot();
-        const taskUsageLines = usageLinesFor(task.id, taskUsageById);
-        logger.logTaskUsage(task, stepUsage, totalUsage, taskUsageLines);
+        const stepUsage = ledger.diffDetailedSince(taskUsageStart);
+        const totalUsage = ledger.detailedSnapshot();
+        const taskUsageBreakdown = usageBreakdownFor(task.id, taskUsageById);
+        const taskUsageLines = formatUsageBreakdownLines(taskUsageBreakdown);
+        logger.logTaskUsage(task, stepUsage, totalUsage, taskUsageBreakdown);
         const nextState = markTaskExecutionFinished(state, task.id, result.success);
         state.currentTaskId = nextState.currentTaskId;
         state.completedTasks = nextState.completedTasks;
@@ -1110,13 +1152,13 @@ async function runPlan(
   progressTui.refresh();
 
   ctx.ui.notify("All tasks complete. Starting review pipeline...", "info");
-  const reviewUsageStart = ledger.snapshot();
+  const reviewUsageStart = ledger.detailedSnapshot();
 
   try {
     await runReviewPipeline(ctx, pi, plan, config, logger, {
       onUsage,
       onStageStart(stage, detail) {
-        reviewUsageStartById.set(stage, ledger.snapshot());
+        reviewUsageStartById.set(stage, ledger.detailedSnapshot());
         reviewUsageByIdStart.set(stage, snapshotUsageById(reviewUsageById));
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
@@ -1142,13 +1184,14 @@ async function runPlan(
       },
       onStageFinish(stage, status, detail) {
         const stageUsageStart = reviewUsageStartById.get(stage);
-        const totalUsage = ledger.snapshot();
-        const stepUsage = stageUsageStart === undefined ? undefined : ledger.diffSince(stageUsageStart);
+        const totalUsage = ledger.detailedSnapshot();
+        const stepUsage = stageUsageStart === undefined ? undefined : ledger.diffDetailedSince(stageUsageStart);
         const stageUsageStartById = reviewUsageByIdStart.get(stage) ??
-          new Map<string, Map<string, UsageSummary>>();
-        const stageUsageLines = diffUsageLines(stage, stageUsageStartById, reviewUsageById);
+          new Map<string, Map<string, UsageBreakdownEntry>>();
+        const stageUsageBreakdown = diffUsageBreakdown(stage, stageUsageStartById, reviewUsageById);
+        const stageUsageLines = formatUsageBreakdownLines(stageUsageBreakdown);
         if (stepUsage !== undefined) {
-          logger.logReviewStepUsage(stage, stepUsage, totalUsage, stageUsageLines);
+          logger.logReviewStepUsage(stage, stepUsage, totalUsage, stageUsageBreakdown);
         }
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
@@ -1171,9 +1214,9 @@ async function runPlan(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Review pipeline error: ${msg}`, "warning");
-    logger.logReview("first", `ERROR: ${msg}`);
+    logger.logReviewComplete({ status: "failed", error: msg });
   }
-  logger.logReviewUsage(ledger.diffSince(reviewUsageStart), ledger.snapshot());
+  logger.logReviewUsage(ledger.diffDetailedSince(reviewUsageStart), ledger.detailedSnapshot());
 
   // ---- Complete -----------------------------------------------------------
   state.phase = "complete";
