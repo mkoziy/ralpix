@@ -8,9 +8,9 @@ import { buildSessionModelChange, resolveModel, resolvePiAgentDir } from "./conf
 import { LogWriter } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
-import { createProgressTui, createTokenLedger } from "./tui.js";
+import { createCliSession, formatTotalUsageText } from "./session.js";
+import { createTokenLedger } from "./tui.js";
 
-import type { ProgressStep } from "./tui.js";
 import type {
   ModelConfig,
   Plan,
@@ -24,6 +24,12 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 interface ReviewSessionReport {
   success: boolean;
   summary: string;
+  fullSummary?: string;
+}
+
+function previewSummary(text: string, limit = 500): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}...`;
 }
 
 export interface ReviewPipelineHooks {
@@ -218,6 +224,7 @@ export function parseReviewSessionReport(text: string): ReviewSessionReport | nu
   return {
     success: successRaw === "true",
     summary,
+    fullSummary: summary,
   };
 }
 
@@ -232,6 +239,7 @@ async function runReviewSessionOnce(
   onProgress?: (detail: string) => void,
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
   timeoutMs = 30 * 60 * 1000,
+  onLogProgress?: (detail: string) => void,
 ): Promise<ReviewSessionReport> {
   const result = await runPiSubprocessPrompt(
     ctx.cwd,
@@ -239,7 +247,7 @@ async function runReviewSessionOnce(
     modelCfg,
     includeEffort,
     timeoutMs,
-    createPiProgressHooks(onProgress, onUsage),
+    createPiProgressHooks(onProgress, onUsage, onLogProgress),
     piAgentDir,
     config,
   );
@@ -255,19 +263,21 @@ async function runReviewSessionOnce(
     const partial = parseReviewSessionReport(result.lastAssistantText);
     if (partial !== null) return partial;
 
-    let summary = `Review session timed out (exit code ${String(result.exitCode)})`;
-    if (assistantText.length > 0) summary += `. Partial output: ${assistantText.slice(0, 200)}`;
-    if (stderr.length > 0) summary += ` | stderr: ${stderr.slice(0, 200)}`;
-    return { success: false, summary: summary.slice(0, 500) };
+    let fullSummary = `Review session timed out (exit code ${String(result.exitCode)})`;
+    if (assistantText.length > 0) fullSummary += `. Partial output: ${assistantText}`;
+    if (stderr.length > 0) fullSummary += ` | stderr: ${stderr}`;
+    return { success: false, summary: previewSummary(fullSummary), fullSummary };
   }
 
   let detail = `pi exited with code ${String(result.exitCode)}`;
   if (assistantText.length > 0) detail = assistantText;
   if (stderr.length > 0) detail = stderr;
 
+  const fullSummary = `Review session did not report a structured result. ${detail}`;
   return {
     success: false,
-    summary: `Review session did not report a structured result. ${detail}`.slice(0, 500),
+    summary: previewSummary(fullSummary),
+    fullSummary,
   };
 }
 
@@ -282,9 +292,11 @@ async function runReviewSession(
   onProgress?: (detail: string) => void,
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
   timeoutMs = 30 * 60 * 1000,
+  onLogProgress?: (detail: string) => void,
 ): Promise<ReviewSessionReport> {
   const maxRetries = config.reviewMaxRetries;
   let lastError = "";
+  let lastErrorFull = "";
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     if (attempt > 1 && onProgress != null) {
@@ -293,17 +305,18 @@ async function runReviewSession(
 
     const report = await runReviewSessionOnce(
       ctx, promptContent, phase, modelCfg, piAgentDir, config, includeEffort, onProgress, onUsage,
-      timeoutMs,
+      timeoutMs, onLogProgress,
     );
     if (report.success) return report;
 
     lastError = report.summary;
+    lastErrorFull = report.fullSummary ?? report.summary;
     if (attempt <= maxRetries) {
       await new Promise((r) => setTimeout(r, 3000));
     }
   }
 
-  return { success: false, summary: lastError };
+  return { success: false, summary: lastError, fullSummary: lastErrorFull.length > 0 ? lastErrorFull : lastError };
 }
 
 function stageForPhase(phase: "first" | "second" | "external" | "eval"): ReviewStageId {
@@ -337,6 +350,7 @@ async function runReviewProcess(
   timeoutMs = 30 * 60 * 1000,
   reviewOnly = false,
   diffCommands?: string,
+  onStageUpdate?: (detail: string) => void,
 ): Promise<ReviewSessionReport> {
   const template = loadPrompt(promptName, ctx.cwd);
 
@@ -365,9 +379,21 @@ async function runReviewProcess(
   const modelCfg = resolveModel(config, phaseToModelKey[phase]);
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   const stage = stageForPhase(phase);
-  return runReviewSession(ctx, prompt, phase, modelCfg, piAgentDir, config, includeEffort, (detail) => {
-    logger.logReviewStageUpdate(stage, detail, { phase });
-  }, onUsage, timeoutMs);
+  return runReviewSession(
+    ctx,
+    prompt,
+    phase,
+    modelCfg,
+    piAgentDir,
+    config,
+    includeEffort,
+    onStageUpdate,
+    onUsage,
+    timeoutMs,
+    (detail) => {
+      logger.logReviewStageUpdate(stage, detail, { phase });
+    },
+  );
 }
 
 async function runFirstReview(
@@ -396,19 +422,24 @@ async function runFirstReview(
     timeoutMs,
     reviewOnly,
     diffCommands,
+    (detail) => {
+      hooks?.onStageUpdate?.(REVIEW_STAGES.firstPass, detail);
+    },
   );
 
   if (result.success) {
     const detail = result.summary.slice(0, 120);
     const msg = "COMPLETE";
-    logger.logReviewStageFinish(REVIEW_STAGES.firstPass, "complete", detail, { result: msg });
+    logger.logReviewStageFinish(REVIEW_STAGES.firstPass, "complete", result.fullSummary ?? result.summary, { result: msg });
     hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "complete", detail);
     hooks?.onStageReport?.(REVIEW_STAGES.firstPass, result.summary);
     return msg;
   }
 
   const msg = `ERROR: ${result.summary.slice(0, 200)}`;
-  logger.logReviewStageFinish(REVIEW_STAGES.firstPass, "failed", result.summary.slice(0, 120), { result: msg });
+  logger.logReviewStageFinish(REVIEW_STAGES.firstPass, "failed", result.fullSummary ?? result.summary, {
+    result: `ERROR: ${result.fullSummary ?? result.summary}`,
+  });
   hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "failed", result.summary.slice(0, 120));
   return msg;
 }
@@ -452,11 +483,16 @@ async function runReviewLoop(
       timeoutMs,
       reviewOnly,
       diffCommands,
+      (detail) => {
+        hooks?.onStageUpdate?.(REVIEW_STAGES.secondPass, detail);
+      },
     );
 
     if (!result.success) {
       const msg = `ERROR: ${result.summary.slice(0, 200)}`;
-      logger.logReviewStageFinish(REVIEW_STAGES.secondPass, "failed", result.summary.slice(0, 120), { result: msg });
+      logger.logReviewStageFinish(REVIEW_STAGES.secondPass, "failed", result.fullSummary ?? result.summary, {
+        result: `ERROR: ${result.fullSummary ?? result.summary}`,
+      });
       hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "failed", result.summary.slice(0, 120));
       return msg;
     }
@@ -585,10 +621,15 @@ git diff ${lastReviewHead}..HEAD
       undefined,
       hooks?.onUsage,
       timeoutMs,
+      (detail) => {
+        logger.logReviewStageUpdate(REVIEW_STAGES.externalReview, detail);
+      },
     );
     if (!reviewResult.success) {
       const msg = `ERROR: ${reviewResult.summary.slice(0, 200)}`;
-      logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "failed", reviewResult.summary.slice(0, 120), { result: msg });
+      logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "failed", reviewResult.fullSummary ?? reviewResult.summary, {
+        result: `ERROR: ${reviewResult.fullSummary ?? reviewResult.summary}`,
+      });
       logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "failed", "external reviewer failed");
       hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "failed", reviewResult.summary.slice(0, 120));
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "failed", "external reviewer failed");
@@ -636,11 +677,18 @@ git diff ${lastReviewHead}..HEAD
       { FINDINGS: findings },
       hooks?.onUsage,
       timeoutMs,
+      reviewOnly,
+      diffCommands,
+      (detail) => {
+        hooks?.onStageUpdate?.(REVIEW_STAGES.externalEval, detail);
+      },
     );
 
     if (!evalResult.success) {
       const msg = `ERROR: ${evalResult.summary.slice(0, 200)}`;
-      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "failed", evalResult.summary.slice(0, 120), { result: msg });
+      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "failed", evalResult.fullSummary ?? evalResult.summary, {
+        result: `ERROR: ${evalResult.fullSummary ?? evalResult.summary}`,
+      });
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "failed", evalResult.summary.slice(0, 120));
       return msg;
     }
@@ -770,11 +818,10 @@ export async function runStandaloneReview(
 
   const diffCommands = buildDiffCommands(defaultBranch, reviewTarget);
 
-  // ---- TUI ----------------------------------------------------------------
+  const session = createCliSession(ctx, title, "review");
   const ledger = createTokenLedger();
-  const progressTui = createProgressTui(ctx, "ralpix-review", `ralpix: ${title}`);
-  progressTui.setPhase("reviewing");
-  progressTui.refresh();
+  session.message("info", `Starting ${title}`);
+  session.status("reviewing", "Starting review...");
 
   const stageLedgers = new Map<ReviewStageId, ReturnType<typeof createTokenLedger>>();
   const stageReports = new Map<ReviewStageId, string>();
@@ -782,13 +829,12 @@ export async function runStandaloneReview(
 
   const recordUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
     ledger.add(provider, model, usage);
-    progressTui.setTotalUsage(ledger.snapshot());
+    session.usage(formatTotalUsageText(ledger.snapshot()));
     if (activeStage !== null) {
       const stageLedger = stageLedgers.get(activeStage) ?? createTokenLedger();
       stageLedger.add(provider, model, usage);
       stageLedgers.set(activeStage, stageLedger);
     }
-    progressTui.refresh();
   };
 
   const pushReportStep = (_stage: ReviewStageId, report: string): void => {
@@ -799,9 +845,8 @@ export async function runStandaloneReview(
     const lines = preview.split("\n").filter((line) => line.trim().length > 0).slice(0, 6);
     if (lines.length === 0) return;
     for (const line of lines) {
-      progressTui.pushStep({ title: line });
+      session.message("result", line);
     }
-    progressTui.refresh();
   };
 
   const hooks: ReviewPipelineHooks = {
@@ -810,15 +855,14 @@ export async function runStandaloneReview(
       stageLedgers.set(stage, createTokenLedger());
       const label = REVIEW_STAGE_LABELS[stage];
       const detailText = detail != null && detail.length > 0 ? ` — ${detail}` : "";
-      progressTui.setCurrent(`${label}${detailText}`);
-      progressTui.refresh();
+      session.status("reviewing", `${label}${detailText}`);
+      session.message("info", `${label}${detailText}`);
     },
     onStageUpdate(stage, detail) {
       activeStage = stage;
       const label = REVIEW_STAGE_LABELS[stage];
       const detailText = detail.length > 0 ? ` — ${detail}` : "";
-      progressTui.setCurrent(`${label}${detailText}`);
-      progressTui.refresh();
+      session.status("reviewing", `${label}${detailText}`);
     },
     onStageFinish(stage, status, detail) {
       activeStage = null;
@@ -832,18 +876,16 @@ export async function runStandaloneReview(
       if (detailedStepUsage !== undefined) {
         logger.logReviewStepUsage(stage, detailedStepUsage, ledger.detailedSnapshot(), stageLedger?.breakdown() ?? []);
       }
-      const step: ProgressStep = {
-        title: `${label}${statusSuffix}${detailSuffix}`,
-        ...(stepUsage === undefined ? {} : { usageSummary: stepUsage }),
-        ...(lines.length > 0 ? { usageLines: lines } : {}),
-      };
-      progressTui.pushStep(step);
+      const usageSummary = stepUsage == null
+        ? ""
+        : `\nin ${stepUsage.input} out ${stepUsage.output} $${stepUsage.cost.toFixed(3)}`;
+      const usageLines = lines.length === 0 ? "" : `\n${lines.join("\n")}`;
+      session.message(status === "failed" ? "warning" : "result", `${label}${statusSuffix}${detailSuffix}${usageSummary}${usageLines}`);
       const report = stageReports.get(stage);
       if (report !== undefined) {
         pushReportStep(stage, report);
       }
-      progressTui.setCurrent("");
-      progressTui.refresh();
+      session.clearStatus();
       stageLedgers.delete(stage);
     },
     onStageReport(stage, report) {
@@ -854,16 +896,13 @@ export async function runStandaloneReview(
 
   const result = await runReviewPipeline(ctx, _pi, plan, config, logger, hooks, reviewOnly, diffCommands);
 
-  // ---- Finalize TUI -------------------------------------------------------
+  // ---- Finalize transcript ------------------------------------------------
   const totalLines = ledger.usageLines();
-  progressTui.pushStep({
-    title: `Review complete — ${modeLabel}`,
-    usageSummary: ledger.snapshot(),
-    ...(totalLines.length > 0 ? { usageLines: totalLines } : {}),
-  });
-  progressTui.setPhase("complete");
-  progressTui.setCurrent("");
-  progressTui.refresh();
+  session.status("complete", "Review complete");
+  session.message("success", `Review complete - ${modeLabel}`);
+  if (totalLines.length > 0) {
+    session.message("result", totalLines.join("\n"));
+  }
 
   // ---- Build rich notification with findings --------------------------------
   const reportParts: string[] = [];
@@ -885,7 +924,8 @@ export async function runStandaloneReview(
   const notifyText = reportParts.length > 0
     ? `${summaryLines.join("\n")}\n${reportParts.join("\n")}`
     : summaryLines.join("\n");
-  ctx.ui.notify(notifyText, "success");
+  session.message("success", notifyText);
+  session.close();
 
   return result;
 }

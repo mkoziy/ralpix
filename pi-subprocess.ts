@@ -60,6 +60,31 @@ function truncateForLog(text: string, limit = 120): string {
   return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}...`;
 }
 
+export function extractPiToolText(args: unknown): string | null {
+  if (typeof args === "string") {
+    const compact = compactWhitespace(args);
+    return compact.length === 0 ? null : compact;
+  }
+
+  if (args !== null && typeof args === "object") {
+    const record = args as Record<string, unknown>;
+    const command = record["cmd"] ?? record["command"];
+    if (typeof command === "string" && command.trim().length > 0) {
+      return compactWhitespace(command.trim());
+    }
+
+    const query = record["q"];
+    if (typeof query === "string" && query.trim().length > 0) {
+      return compactWhitespace(query.trim());
+    }
+
+    const preview = summarizeObjectArgs(record);
+    if (preview.length > 0) return preview;
+  }
+
+  return null;
+}
+
 function stringifyArgValue(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
@@ -80,23 +105,9 @@ function summarizeObjectArgs(args: Record<string, unknown>): string {
   return compactWhitespace(preview.join(" "));
 }
 
-export function summarizePiToolCall(toolName: string, args: unknown): string {
-  if (args !== null && typeof args === "object") {
-    const record = args as Record<string, unknown>;
-    const command = record["cmd"] ?? record["command"];
-    if (typeof command === "string" && command.trim().length > 0) {
-      return compactWhitespace(`${toolName} ${truncateForLog(command.trim(), 100)}`);
-    }
-
-    const query = record["q"];
-    if (typeof query === "string" && query.trim().length > 0) {
-      return compactWhitespace(`${toolName} ${truncateForLog(query.trim(), 100)}`);
-    }
-
-    const preview = summarizeObjectArgs(record);
-    if (preview.length > 0) return `${toolName} ${truncateForLog(preview, 100)}`;
-  }
-
+export function summarizePiToolCall(toolName: string, args: unknown, limit = 100): string {
+  const text = extractPiToolText(args);
+  if (text != null) return compactWhitespace(`${toolName} ${truncateForLog(text, limit)}`);
   return toolName;
 }
 
@@ -107,7 +118,7 @@ function stripRalpixCompletionBlocks(text: string): string {
     .trim();
 }
 
-export function summarizeAssistantProgress(text: string): string | null {
+export function summarizeAssistantProgress(text: string, limit = 120): string | null {
   const stripped = stripRalpixCompletionBlocks(text);
   if (stripped.length === 0) return null;
 
@@ -117,43 +128,56 @@ export function summarizeAssistantProgress(text: string): string | null {
     .find((line) => line.length > 0);
 
   if (firstLine == null) return null;
-  return truncateForLog(compactWhitespace(firstLine));
+  return truncateForLog(compactWhitespace(firstLine), limit);
 }
 
 export function createPiProgressHooks(
   onProgress?: (detail: string) => void,
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void,
+  onLogProgress?: (detail: string) => void,
 ): PiSubprocessHooks {
-  const activeTools = new Map<string, { label: string; startedAt: number }>();
+  const activeTools = new Map<string, { previewLabel: string; fullLabel: string; startedAt: number }>();
+
+  const emitProgress = (preview: string, full = preview): void => {
+    onProgress?.(preview);
+    onLogProgress?.(full);
+  };
 
   const logToolStart = (event: JsonEvent): void => {
     if (event.toolCallId == null || event.toolName == null) return;
-    const label = summarizePiToolCall(event.toolName, event.args);
-    activeTools.set(event.toolCallId, { label, startedAt: Date.now() });
-    onProgress?.(`tool started: ${label}`);
+    const previewLabel = summarizePiToolCall(event.toolName, event.args, 100);
+    const fullLabel = summarizePiToolCall(event.toolName, event.args, Number.POSITIVE_INFINITY);
+    activeTools.set(event.toolCallId, { previewLabel, fullLabel, startedAt: Date.now() });
+    emitProgress(`tool started: ${previewLabel}`, `tool started: ${fullLabel}`);
   };
 
   const logToolEnd = (event: JsonEvent): void => {
     if (event.toolCallId == null) return;
     const active = activeTools.get(event.toolCallId);
     activeTools.delete(event.toolCallId);
-    const label = active?.label ?? summarizePiToolCall(event.toolName ?? "tool", event.args);
+    const previewLabel = active?.previewLabel ?? summarizePiToolCall(event.toolName ?? "tool", event.args, 100);
+    const fullLabel = active?.fullLabel ?? summarizePiToolCall(event.toolName ?? "tool", event.args, Number.POSITIVE_INFINITY);
     const durationSeconds = active == null ? null : Math.max(1, Math.round((Date.now() - active.startedAt) / 1000));
     const durationLabel = durationSeconds == null ? "" : ` in ${String(durationSeconds)}s`;
-    onProgress?.(`${event.isError === true ? "tool failed" : "tool finished"}${durationLabel}: ${label}`);
+    emitProgress(
+      `${event.isError === true ? "tool failed" : "tool finished"}${durationLabel}: ${previewLabel}`,
+      `${event.isError === true ? "tool failed" : "tool finished"}${durationLabel}: ${fullLabel}`,
+    );
   };
 
   const logAssistantSummary = (event: JsonEvent): void => {
     if (event.message?.role !== "assistant") return;
-    const summary = summarizeAssistantProgress(parseAssistantTextParts(event.message.content).join("\n"));
-    if (summary !== null) onProgress?.(`assistant: ${summary}`);
+    const content = parseAssistantTextParts(event.message.content).join("\n");
+    const previewSummary = summarizeAssistantProgress(content, 120);
+    const fullSummary = summarizeAssistantProgress(content, Number.POSITIVE_INFINITY);
+    if (previewSummary !== null) emitProgress(`assistant: ${previewSummary}`, `assistant: ${fullSummary ?? previewSummary}`);
   };
 
   const logQueueUpdate = (event: JsonEvent): void => {
     const steering = event.steering?.length ?? 0;
     const followUp = event.followUp?.length ?? 0;
     if (steering > 0 || followUp > 0) {
-      onProgress?.(`queue updated: steering ${String(steering)}, follow-up ${String(followUp)}`);
+      emitProgress(`queue updated: steering ${String(steering)}, follow-up ${String(followUp)}`);
     }
   };
 

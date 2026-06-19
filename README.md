@@ -17,7 +17,7 @@ Inspired by [ralphex](https://github.com/umputun/ralphex).
 - **Interactive brainstorm phase** — collaborative Q&A to explore approaches and validate design before writing a plan
 - **Interactive plan creation** — describe a feature in one line, get a validated markdown plan back
 - **Multi-model review pipeline** — first pass (5 parallel agents) → optional external review (different provider) → second pass (critical issues only)
-- **Live progress widget** — animated spinner, phase labels, step log, and token usage across brainstorm, plan creation, and task execution
+- **Readable live transcript** — append-only session history in the main transcript, plus a compact sticky summary shared across brainstorm, plan creation, execution, and review
 - **Stalemate detection** — exits the external review loop when two models keep disagreeing, saving tokens
 - **Three-layer config** — bundled defaults → `~/.ralpix/config.json` → `./.ralpix/config.json`
 - **Prompt customization** — override any prompt globally or per-project
@@ -80,10 +80,11 @@ What happens when you execute a plan:
 1. If you're on `main` or `master`, ralpix offers to create a feature branch (e.g. `ralpix/20260523-add-health-check`)
 2. Plan is parsed into tasks
 3. Each task runs in an isolated `pi` session seeded from the merged ralpix config
-4. Auto-commit after each successful task
-5. Progress is logged to `./.ralpix/progress/<plan-name>.jsonl`
-6. After all tasks: review pipeline runs (first pass → optional external review → second pass)
-7. Plan checkboxes are updated automatically
+4. A task counts as successful only if the agent reports `Success: true` and the host did not observe any tool failures or a non-zero child exit
+5. Auto-commit after each successful task
+6. Progress is logged to `./.ralpix/progress/<plan-name>.jsonl`
+7. After all tasks: review pipeline runs (first pass → optional external review → second pass)
+8. Plan checkboxes are updated automatically
 
 ---
 
@@ -209,6 +210,8 @@ The brainstorm phase runs in four stages, driven by an AI design partner:
 
 You control the flow — answer questions, pick an approach, validate or reject design sections. There is no fixed question limit; the AI transitions between phases when it has enough context. A safety cap of 15 rounds prevents runaway subprocesses.
 
+If a brainstorm is interrupted or a subprocess fails, ralpix saves an unfinished checkpoint under `.ralpix/progress/brainstorm/`. The next brainstorm start shows a picker of unfinished sessions plus `Start new brainstorm`, so you can resume from the last confirmed Q&A/approach/design state. Completed brainstorms are hidden from the picker. If you delete an old unfinished checkpoint file manually, it disappears from the picker.
+
 After completion, ralpix offers to create a plan using the brainstorm context. The design decisions, selected approach, and validated sections are injected into the plan creation prompt so the generated plan is grounded in the work you just did.
 
 When `brainstormEnabled: true` (default), creating a plan directly with `/ralpix plan` also offers the brainstorm phase first.
@@ -250,6 +253,8 @@ You can also update an existing plan by pointing to its file:
 
 ralpix loads the existing plan, treats your description as revision instructions, and generates an updated draft. The original file is overwritten once you accept.
 
+If you pass only an existing plan path with no extra instructions, ralpix opens the same post-save menu you get after creating a plan: review it, execute it now, or exit and run it later. Paths prefixed with `@` such as `@docs/plans/20260523-jwt-auth.md` are treated the same way.
+
 The model will:
 
 1. **Ask clarifying questions** in the UI when needed (option picker + free-form answer)
@@ -257,8 +262,9 @@ The model will:
 3. **Validate** the draft structure before saving
 4. **Save** it to `docs/plans/YYYYMMDD-<plan-title>.md`
 5. **Pause for review** — Accept, Revise (with feedback), Reload after editing the file elsewhere, or Reject
-6. **Offer AI plan review** after you accept — an independent agent checks for over-engineering, missing tests, YAGNI violations, and convention mismatches before execution
-7. **Offer execution** only after you explicitly accept (or skip review)
+6. **Offer AI plan review** after you accept — a plan-review agent plus a critic agent inspect the saved plan for over-engineering, missing tests, weak assumptions, and convention mismatches
+7. **Auto-revise from review feedback** when those agents find issues — the planner rewrites the saved draft automatically, then returns control with the updated file
+8. **Offer execution** only after you explicitly accept (or skip review)
 
 The saved file is the source of truth, so you can inspect or edit it in any editor before continuing.
 
@@ -680,7 +686,7 @@ EOF
 
 ### Task execution
 
-Each task runs as an isolated `pi` subprocess — no context contamination between tasks. A live TUI panel shows the current activity, elapsed timer, step log, and cumulative token usage for every brainstorm round, plan creation draft, and task attempt:
+Each task runs as an isolated `pi` subprocess — no context contamination between tasks. ralpix now writes a readable session transcript as it works, while a small sticky status line shows what is currently active. The transcript preserves the full history of brainstorm Q&A, plan revisions, task attempts, and review stages:
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -690,11 +696,11 @@ Each task runs as an isolated `pi` subprocess — no context contamination betwe
 │    │   └─► e.g. ralpix/20260523-add-health-check    │
 │    │                                                  │
 │    ├─► spawn pi (task-default)          Task 1        │
-│    │   ├─► TUI: running → retrying → complete       │
+│    │   ├─► Transcript: running → retrying → complete│
 │    │   └─► auto-commit                                │
 │    │                                                  │
 │    ├─► spawn pi (task-default)          Task 2        │
-│    │   ├─► TUI: running → complete                  │
+│    │   ├─► Transcript: running → complete           │
 │    │   └─► auto-commit                                │
 │    │                                                  │
 │    ├─► spawn pi (review-first)          Review 1      │

@@ -6,12 +6,16 @@
  * context string that feeds into plan creation.
  */
 
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { resolveModel, resolvePiAgentDir } from "./config.js";
-import { LogWriter, usageToData } from "./logger.js";
+import { LogWriter, progressDirForCwd, usageToData } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug } from "./planner-debug.js";
 import { expandPrompt, loadPrompt } from "./prompt.js";
-import { createProgressTui, createTokenLedger, type ProgressTuiRuntime } from "./tui.js";
+import { createCliSession, formatOptions, formatTotalUsageText, type RunSession } from "./session.js";
+import { createTokenLedger } from "./tui.js";
 
 import type { ModelConfig, RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -42,15 +46,227 @@ interface BrainstormState {
   pendingFeedback: string | null;
 }
 
+type BrainstormCheckpointStatus = "active" | "complete";
+
+interface BrainstormCheckpoint {
+  version: 1;
+  sessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  status: BrainstormCheckpointStatus;
+  round: number;
+  description: string;
+  logSessionName: string;
+  state: BrainstormState;
+  lastError: string | null;
+}
+
 function isTimeoutExitCode(exitCode: number): boolean {
   return exitCode === 143 || exitCode === 137 || exitCode === 9;
 }
 
-function formatDateStamp(date: Date): string {
+function formatDateTimeStamp(date: Date): string {
   const year = String(date.getFullYear());
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
-  return `${year}${month}${day}`;
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+function slugifyBrainstormDescription(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .replaceAll(/[^\da-z]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug.length > 0 ? slug : "brainstorm";
+}
+
+function brainstormSessionDir(cwd: string): string {
+  return join(progressDirForCwd(cwd), "brainstorm");
+}
+
+function brainstormCheckpointPath(cwd: string, sessionId: string): string {
+  return join(brainstormSessionDir(cwd), `${sessionId}.json`);
+}
+
+function ensureBrainstormSessionDir(cwd: string): void {
+  const dir = brainstormSessionDir(cwd);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
+function cloneBrainstormState(state: BrainstormState): BrainstormState {
+  return structuredClone(state);
+}
+
+function createBrainstormSessionId(description: string): string {
+  return `${formatDateTimeStamp(new Date())}-${slugifyBrainstormDescription(description)}`;
+}
+
+function createCheckpoint(description: string): BrainstormCheckpoint {
+  const sessionId = createBrainstormSessionId(description);
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    sessionId,
+    createdAt: now,
+    updatedAt: now,
+    status: "active",
+    round: 0,
+    description,
+    logSessionName: `brainstorm-${sessionId}`,
+    state: {
+      description,
+      qaHistory: [],
+      approachesText: null,
+      selectedApproach: null,
+      designSections: [],
+      pendingSection: null,
+      pendingFeedback: null,
+    },
+    lastError: null,
+  };
+}
+
+function saveCheckpoint(cwd: string, checkpoint: BrainstormCheckpoint): void {
+  ensureBrainstormSessionDir(cwd);
+  checkpoint.updatedAt = new Date().toISOString();
+  writeFileSync(
+    brainstormCheckpointPath(cwd, checkpoint.sessionId),
+    `${JSON.stringify(checkpoint, null, 2)}\n`,
+    "utf-8",
+  );
+}
+
+function loadCheckpoint(path: string): BrainstormCheckpoint | null {
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as Partial<BrainstormCheckpoint>;
+    if (
+      raw.version !== 1 ||
+      typeof raw.sessionId !== "string" ||
+      typeof raw.createdAt !== "string" ||
+      typeof raw.updatedAt !== "string" ||
+      (raw.status !== "active" && raw.status !== "complete") ||
+      typeof raw.round !== "number" ||
+      typeof raw.description !== "string" ||
+      typeof raw.logSessionName !== "string" ||
+      raw.state == null
+    ) {
+      return null;
+    }
+    return raw as BrainstormCheckpoint;
+  } catch {
+    return null;
+  }
+}
+
+function listActiveCheckpoints(cwd: string): BrainstormCheckpoint[] {
+  const dir = brainstormSessionDir(cwd);
+  if (!existsSync(dir)) return [];
+
+  const checkpoints: BrainstormCheckpoint[] = [];
+  try {
+    for (const fileName of readdirSync(dir)) {
+      if (!fileName.endsWith(".json")) continue;
+      const checkpoint = loadCheckpoint(join(dir, fileName));
+      if (checkpoint != null && checkpoint.status !== "complete") {
+        checkpoints.push(checkpoint);
+      }
+    }
+  } catch {
+    return [];
+  }
+
+  return checkpoints.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function describeCheckpointPhase(state: BrainstormState): string {
+  if (state.pendingSection != null) return `design: ${state.pendingSection.title}`;
+  if (state.pendingFeedback != null && state.pendingFeedback.length > 0) return "revising design";
+  if (state.selectedApproach != null) return "design";
+  if (state.approachesText != null) return "approach selection";
+  if (state.qaHistory.length > 0) return "understanding";
+  return "starting";
+}
+
+function summarizeCheckpointState(state: BrainstormState): string {
+  const parts: string[] = [];
+  if (state.qaHistory.length > 0) parts.push(`${String(state.qaHistory.length)} Q&A`);
+  if (state.selectedApproach != null) parts.push("approach selected");
+  if (state.designSections.length > 0) parts.push(`${String(state.designSections.length)} sections accepted`);
+  if (parts.length === 0) return "no confirmed progress yet";
+  return parts.join(", ");
+}
+
+function formatRelativeUpdatedAt(iso: string): string {
+  const updated = Date.parse(iso);
+  if (Number.isNaN(updated)) return iso;
+
+  const diffMs = Date.now() - updated;
+  const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
+  if (diffMinutes < 1) return "updated just now";
+  if (diffMinutes < 60) return `updated ${String(diffMinutes)}m ago`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `updated ${String(diffHours)}h ago`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  return `updated ${String(diffDays)}d ago`;
+}
+
+function checkpointChoiceLabel(checkpoint: BrainstormCheckpoint): string {
+  return `${checkpoint.description} — ${describeCheckpointPhase(checkpoint.state)} — ${formatRelativeUpdatedAt(checkpoint.updatedAt)}`;
+}
+
+async function chooseCheckpoint(
+  session: RunSession,
+  description: string,
+  checkpoints: BrainstormCheckpoint[],
+): Promise<BrainstormCheckpoint | "new" | null> {
+  if (checkpoints.length === 0) return "new";
+
+  const options = [
+    ...checkpoints.map((checkpoint) => `${checkpointChoiceLabel(checkpoint)}\n${summarizeCheckpointState(checkpoint.state)}`),
+    `Start new brainstorm for "${description}"`,
+  ];
+  const selected = await session.choose("Resume an unfinished brainstorm or start a new one?", options);
+  if (selected == null) return null;
+
+  if (selected === options.at(-1)) return "new";
+
+  const index = options.indexOf(selected);
+  return index >= 0 ? checkpoints[index] ?? null : null;
+}
+
+function hydrateSessionFromState(session: RunSession, checkpoint: BrainstormCheckpoint): void {
+  for (const qa of checkpoint.state.qaHistory) {
+    session.message("question", qa.question);
+    session.message("answer", qa.answer);
+  }
+  if (checkpoint.state.selectedApproach != null) {
+    session.message("result", `Approach selected: ${checkpoint.state.selectedApproach}`);
+  }
+  for (const section of checkpoint.state.designSections) {
+    session.message("result", `Design section accepted: ${section.title}`);
+  }
+  session.status("running", `Resumed session from round ${String(Math.max(1, checkpoint.round))}`);
+}
+
+function persistCheckpoint(
+  cwd: string,
+  checkpoint: BrainstormCheckpoint,
+  state: BrainstormState,
+  round: number,
+  lastError: string | null = null,
+): void {
+  checkpoint.state = cloneBrainstormState(state);
+  checkpoint.round = round;
+  checkpoint.lastError = lastError;
+  saveCheckpoint(cwd, checkpoint);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,46 +431,49 @@ function formatBrainstormResult(state: BrainstormState, summary: string): string
 // ---------------------------------------------------------------------------
 
 async function askBrainstormQuestion(
-  ctx: ExtensionCommandContext,
+  session: RunSession,
   question: string,
   options: string[],
 ): Promise<string | null> {
   if (options.length >= 2) {
     const customLabel = "Other (type your own answer)";
-    const selected = await ctx.ui.select(question, [...options, customLabel]);
+    const selected = await session.choose(question, [...options, customLabel]);
     if (selected == null) return null;
     if (selected === customLabel) {
-      const custom = await ctx.ui.input(question, "Type your custom answer");
+      const custom = await session.input(question, { placeholder: "Type your custom answer" });
       return custom?.trim() ?? null;
     }
     return selected.trim();
   }
-  const answer = await ctx.ui.input(question, "Your answer");
+  const answer = await session.input(question, { placeholder: "Your answer" });
   return answer?.trim() ?? null;
 }
 
 async function selectApproach(
-  ctx: ExtensionCommandContext,
+  session: RunSession,
   raw: string,
 ): Promise<string | null> {
   const names = extractApproachNames(raw);
-  ctx.ui.notify(`Proposed approaches:\n\n${raw}`, "info");
+  session.message("info", `Proposed approaches\n${raw}`);
 
   if (names.length >= 2) {
-    return (await ctx.ui.select("Which approach do you prefer?", names)) ?? null;
+    return (await session.choose("Which approach do you prefer?", names)) ?? null;
   }
 
-  const custom = await ctx.ui.input("Which approach do you prefer?", "Type the approach name or describe your own");
+  const custom = await session.input(
+    "Which approach do you prefer?",
+    { placeholder: "Type the approach name or describe your own" },
+  );
   return custom?.trim() ?? null;
 }
 
 async function validateDesignSection(
-  ctx: ExtensionCommandContext,
+  session: RunSession,
   section: { title: string; raw: string },
 ): Promise<string | null> {
-  ctx.ui.notify(`Design section: ${section.title}\n\n${section.raw}`, "info");
+  session.message("info", `Design section: ${section.title}\n${section.raw}`);
 
-  const choice = await ctx.ui.select("Validate this section?", [
+  const choice = await session.choose("Validate this section?", [
     "✓ Looks good — continue",
     "✎ Needs changes — provide feedback",
     "⏩ Skip to summary",
@@ -264,9 +483,9 @@ async function validateDesignSection(
   if (choice.includes("Looks good")) return "good";
   if (choice.includes("Skip")) return "skip";
 
-  const feedback = await ctx.ui.input(
+  const feedback = await session.input(
     `Feedback on "${section.title}"`,
-    "What needs to change?",
+    { placeholder: "What needs to change?" },
   );
   return feedback?.trim() ?? "";
 }
@@ -278,10 +497,11 @@ async function validateDesignSection(
 async function handleUnderstandPhase(
   output: string,
   state: BrainstormState,
-  ctx: ExtensionCommandContext,
-  tui: ProgressTuiRuntime,
+  cwd: string,
+  session: RunSession,
   logger: LogWriter,
   round: number,
+  checkpoint: BrainstormCheckpoint,
 ): Promise<"continue" | "cancel"> {
   const question = extractQuestion(output);
   if (question == null) return "continue";
@@ -292,11 +512,12 @@ async function handleUnderstandPhase(
     options: question.options,
   });
 
-  tui.setCurrent("Waiting for user answer...");
-  tui.refresh();
-
-  ctx.ui.notify(`Brainstorm: ${question.question}`, "info");
-  const answer = await askBrainstormQuestion(ctx, question.question, question.options);
+  session.clearStatus();
+  session.status("waiting", `Waiting for answer to: ${question.question}`);
+  if (question.options.length > 0) {
+    session.message("info", `Options\n${formatOptions(question.options)}`);
+  }
+  const answer = await askBrainstormQuestion(session, question.question, question.options);
   if (answer == null) return "cancel";
   state.qaHistory.push({
     question: question.question,
@@ -308,27 +529,28 @@ async function handleUnderstandPhase(
     question: question.question,
     answer,
   });
-  tui.pushStep({ title: `Q: ${question.question} → A: ${answer}` });
-  tui.refresh();
+  persistCheckpoint(cwd, checkpoint, state, round);
+  session.message("result", `Recorded answer for: ${question.question}`);
   return "continue";
 }
 
 async function handleApproachesPhase(
   output: string,
   state: BrainstormState,
-  ctx: ExtensionCommandContext,
-  tui: ProgressTuiRuntime,
+  cwd: string,
+  session: RunSession,
   logger: LogWriter,
   round: number,
+  checkpoint: BrainstormCheckpoint,
 ): Promise<"continue" | "cancel"> {
   const approachesRaw = extractApproaches(output);
   if (approachesRaw == null || approachesRaw.length === 0) return "continue";
 
   state.approachesText = approachesRaw;
-  tui.setCurrent("Waiting for approach selection...");
-  tui.refresh();
+  session.clearStatus();
+  session.status("waiting", "Waiting for approach selection...");
 
-  const selected = await selectApproach(ctx, approachesRaw);
+  const selected = await selectApproach(session, approachesRaw);
   if (selected == null) return "cancel";
   state.selectedApproach = selected;
   logger.write("brainstorm", "approach_selected", {
@@ -336,18 +558,19 @@ async function handleApproachesPhase(
     approach: selected,
     approaches: approachesRaw,
   });
-  tui.pushStep({ title: `Approach selected: ${selected}` });
-  tui.refresh();
+  persistCheckpoint(cwd, checkpoint, state, round);
+  session.message("result", `Approach selected: ${selected}`);
   return "continue";
 }
 
 async function handleDesignPhase(
   output: string,
   state: BrainstormState,
-  ctx: ExtensionCommandContext,
-  tui: ProgressTuiRuntime,
+  cwd: string,
+  session: RunSession,
   logger: LogWriter,
   round: number,
+  checkpoint: BrainstormCheckpoint,
 ): Promise<"continue" | "cancel" | "done"> {
   const section = extractDesignSection(output);
   if (section == null) return "continue";
@@ -358,10 +581,10 @@ async function handleDesignPhase(
     raw: section.raw,
   };
 
-  tui.setCurrent("Waiting for section validation...");
-  tui.refresh();
+  session.clearStatus();
+  session.status("waiting", `Waiting for validation: ${section.title}`);
 
-  const validation = await validateDesignSection(ctx, section);
+  const validation = await validateDesignSection(session, section);
   if (validation == null) return "cancel";
 
   if (validation === "good") {
@@ -377,8 +600,8 @@ async function handleDesignPhase(
       sectionTitle: section.title,
       outcome: "accepted",
     });
-    tui.pushStep({ title: `Design section ✓ ${section.title}` });
-    tui.refresh();
+    persistCheckpoint(cwd, checkpoint, state, round);
+    session.message("success", `Design section accepted: ${section.title}`);
     return "continue";
   }
 
@@ -390,8 +613,8 @@ async function handleDesignPhase(
       sectionTitle: section.title,
       outcome: "skipped_to_summary",
     });
-    tui.pushStep({ title: "Skipped remaining design sections" });
-    tui.refresh();
+    persistCheckpoint(cwd, checkpoint, state, round);
+    session.message("info", "Skipped remaining design sections");
     return "continue";
   }
 
@@ -402,6 +625,8 @@ async function handleDesignPhase(
     outcome: "feedback_requested",
     feedback: validation,
   });
+  persistCheckpoint(cwd, checkpoint, state, round);
+  session.message("warning", `Revision requested for section: ${section.title}`);
   return "continue";
 }
 
@@ -443,29 +668,26 @@ async function runBrainstormSubprocess(
   piAgentDir: string | null,
   config: RalpixConfig,
   ctx: ExtensionCommandContext,
-  tui: ProgressTuiRuntime,
+  session: RunSession,
   ledger: ReturnType<typeof createTokenLedger>,
   logger: LogWriter,
+  checkpoint: BrainstormCheckpoint,
 ): Promise<{ output: string } | null> {
   const prompt = buildBrainstormPrompt(template, state);
   appendPlanCreationDebug(ctx.cwd, `brainstorm round ${round}: subprocess start`);
 
   const roundLedger = createTokenLedger();
 
-  tui.setPhase("thinking");
-  tui.setCurrent(`Round ${round}: AI thinking...`);
-  tui.refresh();
+  session.status("thinking", `Round ${round}: AI thinking...`);
 
   const progressHooks = createPiProgressHooks(
     (detail) => {
-      tui.setCurrent(`Round ${round}: ${detail}`);
-      tui.refresh();
+      session.status("thinking", `Round ${round}: ${detail}`);
     },
     (provider, model, usage) => {
       ledger.add(provider, model, usage);
       roundLedger.add(provider, model, usage);
-      tui.setTotalUsage(ledger.snapshot());
-      tui.refresh();
+      session.usage(formatTotalUsageText(ledger.snapshot()));
     },
   );
 
@@ -480,7 +702,6 @@ async function runBrainstormSubprocess(
     config,
   );
 
-  const stepUsage = roundLedger.snapshot();
   const detailedStepUsage = roundLedger.detailedSnapshot();
   const totalUsage = ledger.detailedSnapshot();
   const breakdown = roundLedger.breakdown();
@@ -494,14 +715,11 @@ async function runBrainstormSubprocess(
     const errMsg = isTimeoutExitCode(result.exitCode)
       ? `brainstorm timed out after ${String(Math.round((config.brainstormTimeoutMs ?? 10 * 60 * 1000) / 1000))}s`
       : `subprocess failed exit=${String(result.exitCode)}`;
-    ctx.ui.notify(`Brainstorm error: ${errMsg}`, "error");
+    session.message("error", `Brainstorm error: ${errMsg}`);
     appendPlanCreationDebug(ctx.cwd, `brainstorm round ${round}: ${errMsg}`);
-    tui.pushStep({
-      title: `Round ${round}: ${errMsg}`,
-      usageSummary: stepUsage,
-      usageLines: ledger.usageLines(),
-    });
-    tui.refresh();
+    persistCheckpoint(ctx.cwd, checkpoint, state, round, errMsg);
+    session.status("failed", `Round ${round}: ${errMsg}`);
+    session.message("result", `Round ${round}: ${errMsg}\n${ledger.usageLines().join("\n")}`);
     return null;
   }
 
@@ -511,14 +729,8 @@ async function runBrainstormSubprocess(
   const phase = extractPhase(output);
   const phaseDisplay = formatPhaseName(phase);
 
-  tui.setPhase(phaseDisplay);
-  tui.pushStep({
-    title: `Round ${round}: ${phaseDisplay}`,
-    usageSummary: stepUsage,
-    usageLines: ledger.usageLines(),
-  });
-  tui.setTotalUsage(ledger.snapshot());
-  tui.refresh();
+  session.status("thinking", `Round ${round}: ${phaseDisplay}`);
+  session.message("result", `Round ${round}: ${phaseDisplay}\n${ledger.usageLines().join("\n")}`);
 
   return { output };
 }
@@ -531,9 +743,10 @@ async function runBrainstormRound(
   piAgentDir: string | null,
   config: RalpixConfig,
   ctx: ExtensionCommandContext,
-  tui: ProgressTuiRuntime,
+  session: RunSession,
   ledger: ReturnType<typeof createTokenLedger>,
   logger: LogWriter,
+  checkpoint: BrainstormCheckpoint,
 ): Promise<{ action: "continue" } | { action: "return"; value: string | null }> {
   logger.write("brainstorm", "round_start", {
     round,
@@ -543,7 +756,7 @@ async function runBrainstormRound(
   });
 
   const subprocessResult = await runBrainstormSubprocess(
-    round, state, template, modelCfg, piAgentDir, config, ctx, tui, ledger, logger,
+    round, state, template, modelCfg, piAgentDir, config, ctx, session, ledger, logger, checkpoint,
   );
   if (subprocessResult == null) {
     return { action: "return", value: null };
@@ -553,17 +766,17 @@ async function runBrainstormRound(
   const phase = extractPhase(output);
 
   if (phase === "understand" || phase === null) {
-    const status = await handleUnderstandPhase(output, state, ctx, tui, logger, round);
+    const status = await handleUnderstandPhase(output, state, ctx.cwd, session, logger, round, checkpoint);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
   if (phase === "approaches") {
-    const status = await handleApproachesPhase(output, state, ctx, tui, logger, round);
+    const status = await handleApproachesPhase(output, state, ctx.cwd, session, logger, round, checkpoint);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
   if (phase === "design") {
-    const status = await handleDesignPhase(output, state, ctx, tui, logger, round);
+    const status = await handleDesignPhase(output, state, ctx.cwd, session, logger, round, checkpoint);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
@@ -573,8 +786,9 @@ async function runBrainstormRound(
   }
 
   appendPlanCreationDebug(ctx.cwd, `brainstorm round ${round}: unparseable output`);
-  ctx.ui.notify("Brainstorm produced unexpected output. Trying again...", "warning");
+  session.message("warning", "Brainstorm produced unexpected output. Trying again...");
   state.pendingFeedback = "Please use the correct output format for your current phase.";
+  persistCheckpoint(ctx.cwd, checkpoint, state, checkpoint.round, "unexpected output format");
   return { action: "continue" };
 }
 
@@ -594,31 +808,43 @@ export async function runBrainstorm(
     return null;
   }
 
-  ctx.ui.notify(`Brainstorming: "${trimmed}"...`, "info");
-  appendPlanCreationDebug(ctx.cwd, `runBrainstorm: start description=${JSON.stringify(trimmed)}`);
-
   const template = loadPrompt("brainstorm", ctx.cwd);
-
-  const state: BrainstormState = {
-    description: trimmed,
-    qaHistory: [],
-    approachesText: null,
-    selectedApproach: null,
-    designSections: [],
-    pendingSection: null,
-    pendingFeedback: null,
-  };
-
   const modelCfg = resolveModel(config, "brainstorm");
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   const ledger = createTokenLedger();
-  const tui = createProgressTui(ctx, "brainstorm-progress", `brainstorm: ${trimmed}`);
-  const logger = new LogWriter(ctx.cwd, `brainstorm-${formatDateStamp(new Date())}`);
-  logger.write("brainstorm", "start", { description: trimmed });
+  const session = createCliSession(ctx, `brainstorm: ${trimmed}`, "brainstorm");
+  const activeCheckpoints = listActiveCheckpoints(ctx.cwd);
+  const selected = await chooseCheckpoint(session, trimmed, activeCheckpoints);
+  if (selected == null) {
+    session.message("info", "Brainstorm cancelled");
+    session.close();
+    return null;
+  }
+
+  const checkpoint = selected === "new" ? createCheckpoint(trimmed) : selected;
+  const state = cloneBrainstormState(checkpoint.state);
+  const startRound = Math.max(1, checkpoint.round + (selected === "new" ? 1 : 0));
+  const logger = new LogWriter(ctx.cwd, checkpoint.logSessionName);
+
+  if (selected === "new") {
+    session.message("info", `Brainstorming: "${trimmed}"...`);
+    appendPlanCreationDebug(ctx.cwd, `runBrainstorm: start description=${JSON.stringify(trimmed)}`);
+    persistCheckpoint(ctx.cwd, checkpoint, state, 0);
+    logger.write("brainstorm", "start", { description: trimmed, sessionId: checkpoint.sessionId });
+  } else {
+    session.message("info", `Resuming brainstorm: "${state.description}"`);
+    appendPlanCreationDebug(ctx.cwd, `runBrainstorm: resume session=${checkpoint.sessionId}`);
+    logger.write("brainstorm", "resume", {
+      description: state.description,
+      sessionId: checkpoint.sessionId,
+      round: checkpoint.round,
+    });
+    hydrateSessionFromState(session, checkpoint);
+  }
 
   const MAX_ROUNDS = 15;
 
-  for (let round = 1; round <= MAX_ROUNDS; round++) {
+  for (let round = startRound; round <= MAX_ROUNDS; round++) {
     const outcome = await runBrainstormRound(
       round,
       state,
@@ -627,44 +853,48 @@ export async function runBrainstorm(
       piAgentDir,
       config,
       ctx,
-      tui,
+      session,
       ledger,
       logger,
+      checkpoint,
     );
 
     if (outcome.action === "return") {
       if (outcome.value == null) {
+        persistCheckpoint(ctx.cwd, checkpoint, state, checkpoint.round, checkpoint.lastError);
         logger.write("brainstorm", "end", {
           status: "cancelled",
           rounds: round,
+          sessionId: checkpoint.sessionId,
           selectedApproach: state.selectedApproach,
           designSectionCount: state.designSections.length,
         });
       } else {
-        tui.setPhase("complete");
-        tui.setCurrent("Brainstorm complete!");
-        tui.refresh();
-        ctx.ui.notify("Brainstorm complete!", "success");
+        checkpoint.status = "complete";
+        persistCheckpoint(ctx.cwd, checkpoint, state, round, null);
+        session.status("complete", "Brainstorm complete!");
+        session.message("success", "Brainstorm complete!");
         logger.write("brainstorm", "end", {
           status: "complete",
           rounds: round,
+          sessionId: checkpoint.sessionId,
           selectedApproach: state.selectedApproach,
           designSectionCount: state.designSections.length,
         });
       }
-      tui.close();
+      session.close();
       return outcome.value;
     }
   }
 
-  tui.setPhase("idle");
-  tui.setCurrent("");
-  tui.close();
-  ctx.ui.notify("Brainstorm exhausted available rounds", "warning");
+  session.close();
+  session.message("warning", "Brainstorm exhausted available rounds");
+  persistCheckpoint(ctx.cwd, checkpoint, state, checkpoint.round, "max rounds exhausted");
   logger.write("brainstorm", "end", {
     status: "cancelled",
     reason: "max_rounds_exhausted",
     rounds: MAX_ROUNDS,
+    sessionId: checkpoint.sessionId,
     selectedApproach: state.selectedApproach,
     designSectionCount: state.designSections.length,
   });

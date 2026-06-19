@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildTaskPrompt, parseTaskSessionReport } from "./executor.js";
+import { buildTaskPrompt, parseTaskSessionReport, resolveTaskSessionReport } from "./executor.js";
 import { buildReviewPrompt, parseReviewSessionReport } from "./reviewer.js";
 
 void test("buildTaskPrompt requires a structured task result block", () => {
@@ -24,6 +24,32 @@ void test("parseTaskSessionReport extracts success and summary", () => {
     {
       success: true,
       summary: "Updated README and config docs",
+    },
+  );
+});
+
+void test("resolveTaskSessionReport rejects structured success when the child exits non-zero", () => {
+  assert.deepEqual(
+    resolveTaskSessionReport(
+      {
+        exitCode: 1,
+        output: "",
+        error: "",
+        lastAssistantText: [
+          "<RALPIX_TASK_RESULT>",
+          "Success: true",
+          "Summary: Tests passed",
+          "</RALPIX_TASK_RESULT>",
+        ].join("\n"),
+      },
+      {
+        success: true,
+        summary: "Tests passed",
+      },
+    ),
+    {
+      success: false,
+      summary: "Task session exited with code 1 despite reporting success",
     },
   );
 });

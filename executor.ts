@@ -6,21 +6,97 @@ import { execSync } from "node:child_process";
 
 import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
 import { parsePlan, updatePlanTaskStatus } from "./parser.js";
-import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
+import {
+  createPiProgressHooks,
+  extractPiToolText,
+  runPiSubprocessPrompt,
+  summarizePiToolCall,
+} from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
-import { createProgressTui, createTokenLedger } from "./tui.js";
+import { createCliSession, formatTotalUsageText, type RunSession } from "./session.js";
+import { createTokenLedger } from "./tui.js";
 
 import type { LogWriter } from "./logger.js";
-import type { PiSubprocessHooks } from "./pi-subprocess.js";
+import type { PiSubprocessHooks, PiSubprocessResult } from "./pi-subprocess.js";
 import type { ModelConfig, Plan, PlanTask, RalpixConfig, SubprocessUsage, TaskResult } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 interface TaskSessionReport {
   success: boolean;
   summary: string;
+  fullSummary?: string;
+}
+
+function previewSummary(text: string, limit = 500): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}...`;
+}
+
+function isMaterialShellFailure(commandText: string): boolean {
+  const normalized = commandText.toLowerCase();
+  const firstToken = normalized.split(/\s+/u).find((token) => token.length > 0) ?? "";
+
+  if ((/(\b|\/)(test|check|lint|typecheck|build)(\b|$)/u).test(normalized)) return true;
+  if (normalized.includes("pytest") || normalized.includes("vitest") || normalized.includes("jest")) return true;
+
+  return [
+    "npm",
+    "pnpm",
+    "yarn",
+    "bun",
+    "bunx",
+    "go",
+    "cargo",
+    "make",
+    "tsc",
+    "eslint",
+    "ruff",
+    "biome",
+  ].includes(firstToken);
+}
+
+function isMaterialToolFailure(toolName: string, args: unknown): boolean {
+  const normalizedTool = toolName.toLowerCase();
+  if (normalizedTool === "read" || normalizedTool === "open" || normalizedTool === "find") return false;
+
+  if (normalizedTool === "bash" || normalizedTool === "exec_command" || normalizedTool === "shell") {
+    const text = extractPiToolText(args);
+    return text == null ? false : isMaterialShellFailure(text);
+  }
+
+  return false;
+}
+
+export function resolveTaskSessionReport(
+  result: PiSubprocessResult,
+  report: TaskSessionReport | null,
+): TaskSessionReport {
+  if (report !== null) {
+    if (result.exitCode !== 0) {
+      return {
+        success: false,
+        summary: `Task session exited with code ${String(result.exitCode)} despite reporting success`,
+      };
+    }
+    return { ...report, fullSummary: report.fullSummary ?? report.summary };
+  }
+
+  const stderr = result.error.trim();
+  const assistantText = result.lastAssistantText.trim();
+  let detail = `pi exited with code ${String(result.exitCode)}`;
+  if (assistantText.length > 0) detail = assistantText;
+  if (stderr.length > 0) detail = stderr;
+
+  const fullSummary = `Task session did not report a structured result. ${detail}`;
+  return {
+    success: false,
+    summary: previewSummary(fullSummary),
+    fullSummary,
+  };
 }
 
 export interface TaskExecutionHooks {
+  session?: RunSession;
   onTaskStart?: (task: PlanTask) => void;
   onTaskFinish?: (task: PlanTask, result: TaskResult) => void;
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void;
@@ -56,6 +132,7 @@ export function parseTaskSessionReport(text: string): TaskSessionReport | null {
   return {
     success: successRaw === "true",
     summary,
+    fullSummary: summary,
   };
 }
 
@@ -83,7 +160,7 @@ async function runTaskSession(
   // Detect the optional completion signal (model claims all tasks are done)
   const allDoneSignal = (/<<<ralpix:all_tasks_done>>>/i).test(result.lastAssistantText);
 
-  if (report !== null) {
+  if (report !== null && result.exitCode === 0) {
     if (report.success && allDoneSignal) {
       // Host-verified completion: re-parse plan to guard against hallucination
       try {
@@ -101,17 +178,7 @@ async function runTaskSession(
     }
     return report;
   }
-
-  const stderr = result.error.trim();
-  const assistantText = result.lastAssistantText.trim();
-  let detail = `pi exited with code ${String(result.exitCode)}`;
-  if (assistantText.length > 0) detail = assistantText;
-  if (stderr.length > 0) detail = stderr;
-
-  return {
-    success: false,
-    summary: `Task session did not report a structured result. ${detail}`.slice(0, 500),
-  };
+  return resolveTaskSessionReport(result, report);
 }
 
 function tryCommit(
@@ -151,7 +218,7 @@ export async function executeTask(
   hooks?.onTaskStart?.(task);
   logger.logTaskStart(task);
 
-  const tui = createProgressTui(ctx, `execute-task-${task.number}`, `execute: Task ${task.number} — ${task.title}`);
+  const session = hooks?.session ?? createCliSession(ctx, `execute: Task ${task.number} - ${task.title}`, "execute");
   const ledger = createTokenLedger();
 
   const template = loadPrompt("task-default", ctx.cwd);
@@ -186,44 +253,68 @@ export async function executeTask(
   const modelCfg = resolveModel(config, "task");
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   let lastError: string | undefined;
+  let lastErrorFull: string | undefined;
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
       const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
       logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
-      ctx.ui.notify(`ralpix: ${task.title} — attempt ${attempt} started`, "info");
+      session.message("info", `${task.title} - attempt ${attempt} started`);
 
-      const usageBefore = ledger.snapshot();
-      tui.setPhase("running");
-      tui.setCurrent(`Attempt ${attempt}: running...`);
-      tui.refresh();
+      session.status("running", `Attempt ${attempt}: running...`);
 
+      let toolFailureLabel: string | undefined;
       const progressHooks = createPiProgressHooks(
         (detail) => {
-          logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
-          tui.setCurrent(`Attempt ${attempt}: ${detail}`);
-          tui.refresh();
+          session.status("running", `Attempt ${attempt}: ${detail}`);
         },
         (provider, model, usage) => {
           ledger.add(provider, model, usage);
+          session.usage(formatTotalUsageText(ledger.snapshot()));
           hooks?.onUsage?.(provider, model, usage);
-          tui.setTotalUsage(ledger.snapshot());
-          tui.refresh();
+        },
+        (detail) => {
+          logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
         },
       );
+      const wrappedHooks: PiSubprocessHooks = {
+        ...progressHooks,
+        onEvent(event) {
+          progressHooks.onEvent?.(event);
+          if (
+            event.type === "tool_execution_end" &&
+            event.isError === true &&
+            isMaterialToolFailure(event.toolName ?? "tool", event.args)
+          ) {
+            toolFailureLabel = summarizePiToolCall(event.toolName ?? "tool", event.args);
+          }
+        },
+      };
 
-      const result = await runTaskSession(ctx, plan.path, prompt, modelCfg, piAgentDir, config, progressHooks);
+      const rawResult = await runTaskSession(
+        ctx,
+        plan.path,
+        prompt,
+        modelCfg,
+        piAgentDir,
+        config,
+        wrappedHooks,
+      );
+      const result = toolFailureLabel == null || !rawResult.success
+        ? rawResult
+        : {
+          success: false,
+          summary: `Task session reported success after a tool failure: ${toolFailureLabel}`,
+          fullSummary: `Task session reported success after a tool failure: ${toolFailureLabel}`,
+        };
 
       if (result.success) {
-        tui.pushStep({
-          title: `Attempt ${attempt}: ✓ ${result.summary}`,
-          usageSummary: ledger.diffSince(usageBefore),
-          usageLines: ledger.usageLines(),
-        });
-        tui.setPhase("complete");
-        tui.setCurrent("Task complete!");
-        tui.refresh();
-        tui.close();
+        session.message("success", `Attempt ${attempt}: ${result.summary}`);
+        session.message("result", ledger.usageLines().join("\n"));
+        session.status("complete", "Task complete!");
+        if (hooks?.session == null) {
+          session.close();
+        }
 
         const commitMsg = config.commitMessageTemplate
           .replaceAll("{{taskTitle}}", task.title)
@@ -244,16 +335,15 @@ export async function executeTask(
       }
 
       lastError = result.summary;
+      lastErrorFull = result.fullSummary ?? result.summary;
       if (attempt <= config.maxRetries) {
-        logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying (${lastError})`);
-        tui.pushStep({
-          title: `Attempt ${attempt}: ✗ ${lastError.slice(0, 100)}`,
-          usageSummary: ledger.diffSince(usageBefore),
-        });
-        tui.setPhase("retrying");
+        logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying (${lastErrorFull})`);
+        session.message("warning", `Attempt ${attempt}: ${lastError.slice(0, 100)}`);
+        session.status("retrying", `Retrying after attempt ${attempt}`);
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
+      lastErrorFull = lastError;
       if (attempt <= config.maxRetries) {
         logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying`);
       }
@@ -261,13 +351,14 @@ export async function executeTask(
   }
 
   const finalError = lastError ?? "Unknown error";
-  tui.pushStep({ title: `Failed after ${config.maxRetries + 1} attempts` });
-  tui.setPhase("failed");
-  tui.setCurrent("Task failed");
-  tui.refresh();
-  tui.close();
+  const finalErrorFull = lastErrorFull ?? finalError;
+  session.message("error", `Failed after ${config.maxRetries + 1} attempts`);
+  session.status("failed", "Task failed");
+  if (hooks?.session == null) {
+    session.close();
+  }
 
-  logger.logTaskEnd(task, false, finalError);
+  logger.logTaskEnd(task, false, finalErrorFull);
   updatePlanTaskStatus(plan.path, task.id, task.title, "failed");
   const taskResult = { success: false, error: finalError };
   hooks?.onTaskFinish?.(task, taskResult);

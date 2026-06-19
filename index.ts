@@ -23,14 +23,15 @@ import {
   LogWriter,
   fmtTokens,
   formatUsageBreakdownLines,
-  summarizeUsageBreakdown,
   type UsageBreakdownEntry,
   type UsageSnapshot,
   type UsageSummary,
 } from "./logger.js";
 import { parsePlan } from "./parser.js";
-import { runPlanCreation } from "./planner.js";
+import { runExistingPlanMenu, runPlanCreation } from "./planner.js";
 import { runReviewPipeline, runStandaloneReview } from "./reviewer.js";
+import { createCliSession, formatTotalUsageText } from "./session.js";
+import { createTokenLedger } from "./tui.js";
 
 import type {
   RalpixState,
@@ -56,6 +57,9 @@ interface SessionEntry {
 type NotifyLevel = "error" | "info" | "success" | "warning";
 type NotifyFn = (message: string, level: NotifyLevel) => void;
 
+type UsageByModel = Map<string, UsageBreakdownEntry>;
+type UsageById = Map<string, UsageByModel>;
+
 interface WidgetLine {
   color: string;
   text: string;
@@ -64,257 +68,6 @@ interface WidgetLine {
 interface StatusWidgetView {
   statusText: string;
   lines: WidgetLine[];
-}
-
-// Module-scope no-op function to satisfy unicorn/consistent-function-scoping
-const noopFn = (): void => {
-  return;
-};
-
-type UsageByModel = Map<string, UsageBreakdownEntry>;
-type UsageById = Map<string, UsageByModel>;
-
-interface CurrentStepView {
-  title: string;
-  detail?: string;
-  usageLines: string[];
-}
-
-interface ProgressStepEntry {
-  title: string;
-  usageSummary: UsageSummary | undefined;
-  usageLines?: string[];
-}
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPINNER_INTERVAL_MS = 80;
-
-function spinnerFrame(): string {
-  const index = Math.floor(Date.now() / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length;
-  return SPINNER_FRAMES[index] ?? " ";
-}
-
-function fmtElapsed(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-class RalpixProgressComponent implements PiTuiComponent {
-  private readonly title: string;
-  private readonly theme: PiTuiTheme;
-  private currentPhase = "idle";
-  private currentTitle = "";
-  private currentUsage: UsageSummary | undefined;
-  private totalUsage: UsageSummary = { input: 0, output: 0, cost: 0 };
-  private readonly steps: ProgressStepEntry[] = [];
-  private running = false;
-  private currentStartTime = 0;
-
-  constructor(title: string, theme: PiTuiTheme) {
-    this.title = title;
-    this.theme = theme;
-  }
-
-  setPhase(phase: string): void {
-    this.currentPhase = phase;
-  }
-
-  setCurrent(title: string, usage: UsageSummary | undefined): void {
-    this.currentTitle = title;
-    this.currentUsage = usage;
-  }
-
-  clearCurrent(): void {
-    this.currentTitle = "";
-    this.currentUsage = undefined;
-  }
-
-  setRunning(running: boolean): void {
-    this.running = running;
-    if (running) {
-      this.currentStartTime = Date.now();
-    }
-  }
-
-  setTotalUsage(usage: UsageSummary): void {
-    this.totalUsage = usage;
-  }
-
-  pushStep(step: ProgressStepEntry): void {
-    this.steps.push(step);
-  }
-
-  render(width: number): string[] {
-    const lines: string[] = [];
-    const maxWidth = Math.max(20, width);
-    const border = this.theme.fg("borderAccent", "─".repeat(maxWidth));
-    const bold = this.theme.bold ?? ((text: string) => text);
-    const spin = this.running ? this.theme.fg("accent", spinnerFrame()) : "";
-    const spinPad = this.running ? " " : "";
-    lines.push(border);
-    lines.push(this.fit(this.theme.fg("accent", bold(`ralpix: ${this.title}`)), maxWidth));
-    lines.push(this.fit(this.theme.fg("muted", `${spin}${spinPad}Phase: ${this.currentPhase}`), maxWidth));
-    lines.push(border);
-
-    lines.push(this.fit(this.theme.fg("accent", "Steps"), maxWidth));
-    const visibleSteps = this.steps.slice(-12);
-    if (visibleSteps.length === 0) {
-      lines.push(this.fit(this.theme.fg("dim", "No completed steps yet"), maxWidth));
-    } else {
-      for (const step of visibleSteps) {
-        lines.push(this.fit(step.title, maxWidth));
-        if (step.usageLines !== undefined && step.usageLines.length > 0) {
-          for (const line of step.usageLines) {
-            lines.push(this.fit(this.theme.fg("muted", line), maxWidth));
-          }
-        } else if (step.usageSummary !== undefined) {
-          lines.push(this.fit(this.theme.fg("muted", this.formatUsage(step.usageSummary)), maxWidth));
-        }
-      }
-    }
-
-    lines.push(border);
-    lines.push(this.fit(this.theme.fg("accent", "Now"), maxWidth));
-    lines.push(...this.renderNowLines(maxWidth, spin, spinPad));
-
-    lines.push(border);
-    lines.push(this.fit(this.theme.fg("accent", "Total"), maxWidth));
-    lines.push(this.fit(this.theme.fg("muted", this.formatUsage(this.totalUsage)), maxWidth));
-    lines.push(border);
-
-    return lines;
-  }
-
-  invalidate(): void {
-    return;
-  }
-
-  private renderNowLines(maxWidth: number, spin: string, spinPad: string): string[] {
-    const result: string[] = [];
-    if (this.currentTitle.length === 0) {
-      result.push(this.fit(this.theme.fg("dim", `${spin}${spinPad}Idle`), maxWidth));
-    } else {
-      let titleLine = this.currentTitle;
-      if (this.running && this.currentStartTime > 0) {
-        titleLine += ` (${fmtElapsed(Date.now() - this.currentStartTime)})`;
-      }
-      result.push(this.fit(`${spin}${spinPad}${titleLine}`, maxWidth));
-      if (this.currentUsage !== undefined) {
-        result.push(this.fit(this.theme.fg("muted", this.formatUsage(this.currentUsage)), maxWidth));
-      }
-    }
-    return result;
-  }
-
-  private formatUsage(usage: UsageSummary): string {
-    return `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`;
-  }
-
-  private fit(text: string, width: number): string {
-    const visible = this.#visibleLength(text);
-    if (visible <= width) return text;
-    if (width <= 3) return this.#stripAnsi(text).slice(0, width);
-    return `${this.#ansiSafeSlice(text, width - 3)}...`;
-  }
-
-  /** Strip ANSI escape sequences (SGR codes like \u001B[...m). */
-  #stripAnsi(s: string): string {
-    return s.replaceAll(/\u001B\[[\d;]*m/gu, "");
-  }
-
-  /** Visible character count, excluding ANSI escape sequences. */
-  #visibleLength(s: string): number {
-    return this.#stripAnsi(s).length;
-  }
-
-  /**
-   * Return the prefix of `s` whose visible length is at most `maxVisible`.
-   * ANSI escape sequences are kept intact and do not count toward the limit.
-   */
-  #ansiSafeSlice(s: string, maxVisible: number): string {
-    let out = "";
-    let visible = 0;
-    let i = 0;
-    while (i < s.length && visible < maxVisible) {
-      const start = i;
-      const char = s.charAt(i);
-      if (char === "\u001B" && i + 1 < s.length && s[i + 1] === "[") {
-        i += 2;
-        while (i < s.length && s[i] !== "m") i++;
-        if (i < s.length) i++; // skip "m"
-        out += s.slice(start, i);
-      } else {
-        out += char;
-        visible++;
-        i++;
-      }
-    }
-    return out;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Token ledger
-// ---------------------------------------------------------------------------
-
-function createTokenLedger() {
-  const map = new Map<string, UsageBreakdownEntry>();
-
-  function add(provider: string, model: string, usage: SubprocessUsage): void {
-    const key = `${provider}/${model}`;
-    const e = map.get(key) ?? { provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    map.set(key, {
-      provider,
-      model,
-      input: e.input + usage.input,
-      output: e.output + usage.output,
-      cacheRead: e.cacheRead + usage.cacheRead,
-      cacheWrite: e.cacheWrite + usage.cacheWrite,
-      cost: e.cost + usage.cost,
-    });
-  }
-
-  function breakdown(): UsageBreakdownEntry[] {
-    return [...map.values()].map((entry) => ({ ...entry }));
-  }
-
-  function snapshot(): UsageSummary {
-    return summarizeUsageBreakdown(breakdown());
-  }
-
-  function detailedSnapshot(): UsageSnapshot {
-    return breakdown().reduce<UsageSnapshot>((total, entry) => ({
-      input: total.input + entry.input,
-      output: total.output + entry.output,
-      cacheRead: total.cacheRead + entry.cacheRead,
-      cacheWrite: total.cacheWrite + entry.cacheWrite,
-      cost: total.cost + entry.cost,
-    }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
-  }
-
-  function diffSince(previous: UsageSummary): UsageSummary {
-    const current = snapshot();
-    return {
-      input: current.input - previous.input,
-      output: current.output - previous.output,
-      cost: current.cost - previous.cost,
-    };
-  }
-
-  function diffDetailedSince(previous: UsageSnapshot): UsageSnapshot {
-    const current = detailedSnapshot();
-    return {
-      input: current.input - previous.input,
-      output: current.output - previous.output,
-      cacheRead: current.cacheRead - previous.cacheRead,
-      cacheWrite: current.cacheWrite - previous.cacheWrite,
-      cost: current.cost - previous.cost,
-    };
-  }
-
-  return { add, breakdown, detailedSnapshot, diffDetailedSince, diffSince, snapshot };
 }
 
 function recordUsage(
@@ -339,22 +92,16 @@ function recordUsage(
   usageById.set(id, perModel);
 }
 
-function usageLinesFor(id: string, usageById: UsageById): string[] {
-  const perModel = usageById.get(id);
-  if (perModel === undefined) return [];
-  return formatUsageBreakdownLines([...perModel.values()]);
-}
-
-function usageSummaryFor(id: string, usageById: UsageById): UsageSummary | undefined {
-  const perModel = usageById.get(id);
-  if (perModel === undefined) return undefined;
-  return summarizeUsageBreakdown([...perModel.values()]);
-}
-
 function usageBreakdownFor(id: string, usageById: UsageById): UsageBreakdownEntry[] {
   const perModel = usageById.get(id);
   if (perModel === undefined) return [];
   return [...perModel.values()].map((entry) => ({ ...entry }));
+}
+
+function usageLinesFor(id: string, usageById: UsageById): string[] {
+  const perModel = usageById.get(id);
+  if (perModel === undefined) return [];
+  return formatUsageBreakdownLines([...perModel.values()]);
 }
 
 const REVIEW_STAGE_LABELS: Record<ReviewStageId, string> = {
@@ -390,189 +137,6 @@ function updateReviewStage(
         ...(detail === undefined ? {} : { detail }),
       };
     }),
-  };
-}
-
-function clearStatusWidget(ctx: { ui: WidgetUI }): void {
-  ctx.ui.setWidget("ralpix", undefined);
-  ctx.ui.setStatus("ralpix", undefined);
-}
-
-function reviewStageTitle(stage: ReviewStageId, detail?: string): string {
-  const base = REVIEW_STAGE_LABELS[stage];
-  return detail === undefined || detail.length === 0 ? base : `${base} — ${detail}`;
-}
-
-interface ProgressTuiRuntime {
-  close: () => void;
-  pushStep: (step: ProgressStepEntry) => void;
-  refresh: () => void;
-  setPhase: (phase: string) => void;
-}
-
-function createProgressTui(
-  ctx: ExtensionCommandContext,
-  planTitle: string,
-  tasks: Array<{ id: string; title: string }>,
-  ledger: ReturnType<typeof createTokenLedger>,
-  taskUsageById: UsageById,
-  reviewUsageById: UsageById,
-  getState: () => RalpixState,
-): ProgressTuiRuntime {
-  clearStatusWidget(ctx);
-  if (!ctx.hasUI) {
-    return {
-      close() {
-        return;
-      },
-      pushStep() {
-        return;
-      },
-      refresh() {
-        return;
-      },
-      setPhase() {
-        return;
-      },
-    };
-  }
-
-  const panel = new RalpixProgressComponent(planTitle, ctx.ui.theme);
-  let requestRender = noopFn;
-  let animInterval: ReturnType<typeof setInterval> | undefined;
-
-  const startAnimation = (): void => {
-    if (animInterval !== undefined) return;
-    panel.setRunning(true);
-    animInterval = setInterval(() => requestRender(), SPINNER_INTERVAL_MS);
-  };
-
-  const stopAnimation = (): void => {
-    if (animInterval !== undefined) {
-      clearInterval(animInterval);
-      animInterval = undefined;
-    }
-    panel.setRunning(false);
-  };
-
-  ctx.ui.setWidget("ralpix-progress", (ui: PiTuiRuntime) => {
-    requestRender = () => ui.requestRender();
-    return panel;
-  });
-
-  const syncCurrent = (): void => {
-    const state = getState();
-    if (state.currentTaskId !== null) {
-      const task = tasks.find((entry) => entry.id === state.currentTaskId);
-      if (task !== undefined) {
-        panel.setCurrent(task.title, usageSummaryFor(task.id, taskUsageById));
-        return;
-      }
-    }
-
-    const activeReviewStage = state.review?.stages.find((stage) => stage.status === "active");
-    if (activeReviewStage !== undefined) {
-      panel.setCurrent(
-        reviewStageTitle(activeReviewStage.id, activeReviewStage.detail),
-        usageSummaryFor(activeReviewStage.id, reviewUsageById),
-      );
-      return;
-    }
-
-    panel.clearCurrent();
-  };
-
-  return {
-    close() {
-      stopAnimation();
-      ctx.ui.setWidget("ralpix-progress", undefined);
-      requestRender = noopFn;
-    },
-    pushStep(step) {
-      panel.pushStep(step);
-    },
-    refresh() {
-      syncCurrent();
-      panel.setTotalUsage(ledger.snapshot());
-      requestRender();
-    },
-    setPhase(phase) {
-      panel.setPhase(phase);
-      if (phase === "executing" || phase === "reviewing") {
-        startAnimation();
-      } else {
-        stopAnimation();
-      }
-    },
-  };
-}
-
-function currentStepView(
-  state: RalpixState,
-  tasks: Array<{ id: string; title: string }>,
-  taskUsageById: UsageById,
-  reviewUsageById: UsageById,
-): CurrentStepView | null {
-  if (state.currentTaskId !== null) {
-    const task = tasks.find((entry) => entry.id === state.currentTaskId);
-    if (task === undefined) return null;
-    return {
-      title: task.title,
-      usageLines: usageLinesFor(task.id, taskUsageById),
-    };
-  }
-
-  const activeReviewStage = state.review?.stages.find((stage) => stage.status === "active");
-  if (activeReviewStage === undefined) return null;
-
-  return {
-    title: REVIEW_STAGE_LABELS[activeReviewStage.id],
-    usageLines: usageLinesFor(activeReviewStage.id, reviewUsageById),
-    ...(activeReviewStage.detail === undefined ? {} : { detail: activeReviewStage.detail }),
-  };
-}
-
-export function buildStatusWidgetView(
-  state: RalpixState,
-  tasks: Array<{ id: string; title: string }>,
-  total: number,
-  totalUsage?: UsageSummary,
-  taskUsageById: UsageById = new Map(),
-  reviewUsageById: UsageById = new Map(),
-): StatusWidgetView {
-  const { completedTasks, phase } = state;
-  const done = completedTasks.length;
-  const usage = totalUsage ?? { input: 0, output: 0, cost: 0 };
-  const costSuffix = usage.cost > 0 ? `  $${usage.cost.toFixed(3)}` : "";
-
-  const lines: WidgetLine[] = [];
-
-  const current = currentStepView(state, tasks, taskUsageById, reviewUsageById);
-  if (current !== null) {
-    lines.push({ color: "accent", text: "Now" });
-    lines.push({
-      color: "accent",
-      text: current.detail === undefined || current.detail.length === 0
-        ? current.title
-        : `${current.title} — ${current.detail}`,
-    });
-    for (const usageLine of current.usageLines) {
-      lines.push({ color: "muted", text: usageLine });
-    }
-  }
-
-  if (usage.input > 0 || usage.output > 0 || usage.cost > 0) {
-    if (lines.length > 0) lines.push({ color: "muted", text: "" });
-    lines.push({ color: "accent", text: "Total" });
-    lines.push({
-      color: "muted",
-      text: `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`,
-    });
-  }
-
-  return {
-    statusText: `📋 ralpix: ${phase} ${done}/${total}${costSuffix}`,
-    lines,
   };
 }
 
@@ -615,6 +179,54 @@ function diffUsageBreakdown(id: string, before: UsageById, after: UsageById): Us
     }
   }
   return entries;
+}
+
+export function buildStatusWidgetView(
+  state: RalpixState,
+  tasks: Array<{ id: string; title: string }>,
+  total: number,
+  totalUsage?: UsageSummary,
+  taskUsageById: UsageById = new Map(),
+  reviewUsageById: UsageById = new Map(),
+): StatusWidgetView {
+  const { completedTasks, currentTaskId, phase, review } = state;
+  const done = completedTasks.length;
+  const usage = totalUsage ?? { input: 0, output: 0, cost: 0 };
+  const costSuffix = usage.cost > 0 ? `  $${usage.cost.toFixed(3)}` : "";
+  const lines: WidgetLine[] = [];
+
+  const currentTask = currentTaskId == null ? undefined : tasks.find((entry) => entry.id === currentTaskId);
+  const activeReviewStage = review?.stages.find((stage) => stage.status === "active");
+  if (currentTask !== undefined) {
+    lines.push({ color: "accent", text: "Now" });
+    lines.push({ color: "accent", text: currentTask.title });
+    for (const usageLine of usageLinesFor(currentTask.id, taskUsageById)) {
+      lines.push({ color: "muted", text: usageLine });
+    }
+  } else if (activeReviewStage !== undefined) {
+    lines.push({ color: "accent", text: "Now" });
+    const detail = activeReviewStage.detail == null || activeReviewStage.detail.length === 0
+      ? REVIEW_STAGE_LABELS[activeReviewStage.id]
+      : `${REVIEW_STAGE_LABELS[activeReviewStage.id]} — ${activeReviewStage.detail}`;
+    lines.push({ color: "accent", text: detail });
+    for (const usageLine of usageLinesFor(activeReviewStage.id, reviewUsageById)) {
+      lines.push({ color: "muted", text: usageLine });
+    }
+  }
+
+  if (usage.input > 0 || usage.output > 0 || usage.cost > 0) {
+    if (lines.length > 0) lines.push({ color: "muted", text: "" });
+    lines.push({ color: "accent", text: "Total" });
+    lines.push({
+      color: "muted",
+      text: `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`,
+    });
+  }
+
+  return {
+    statusText: `📋 ralpix: ${phase} ${done}/${total}${costSuffix}`,
+    lines,
+  };
 }
 
 export function normalizePlanPathArg(rawPath: string): string {
@@ -698,12 +310,13 @@ function restoreState(entries: SessionEntry[]): RalpixState | null {
 function detectExistingPlan(description: string, cwd: string): { existingPlanPath?: string; description: string } {
   const firstToken = description.split(/\s+/)[0];
   if (firstToken?.endsWith(".md") === true) {
-    const candidate = resolve(cwd, firstToken);
+    const normalizedToken = firstToken.startsWith("@") ? firstToken.slice(1) : firstToken;
+    const candidate = resolve(cwd, normalizedToken);
     if (existsSync(candidate)) {
       const remaining = description.slice(firstToken.length).trim();
       return {
         existingPlanPath: candidate,
-        description: remaining.length > 0 ? remaining : "Update the plan based on current codebase state and requirements.",
+        description: remaining,
       };
     }
   }
@@ -734,7 +347,8 @@ async function handleBrainstormSubcommand(
 
   const planPath = await runPlanCreation(description, ctx, pi, config, undefined, result);
   if (planPath != null) {
-    await runPlan(planPath, ctx, pi);
+    const displayPath = planPath.startsWith(ctx.cwd + "/") ? planPath.slice(ctx.cwd.length + 1) : planPath;
+    ctx.ui.notify(`Plan saved to ${displayPath}. Run it later with: /ralpix ${displayPath}`, "success");
   }
 }
 
@@ -764,6 +378,13 @@ async function handlePlanSubcommand(
   }
 
   const config = loadConfig(ctx.cwd);
+  if (existingPlanPath !== undefined && description.length === 0) {
+    const selectedPlanPath = await runExistingPlanMenu(existingPlanPath, ctx, config);
+    if (selectedPlanPath != null) {
+      await runPlan(selectedPlanPath, ctx, pi);
+    }
+    return;
+  }
   const planPath = await runPlanCreation(description, ctx, pi, config, existingPlanPath);
   if (planPath != null) {
     await runPlan(planPath, ctx, pi);
@@ -949,7 +570,6 @@ export default function ralpixExtension(pi: ExtensionAPI): void {
         `ralpix: previous run of "${state.planTitle}" was interrupted (phase: ${state.phase}).\nResume with: ${resumeCmd}`,
         "warning",
       );
-      if (ctx.hasUI) clearStatusWidget(ctx);
     }
   });
 }
@@ -1033,14 +653,12 @@ async function runPlan(
 
   const config = loadConfig(ctx.cwd);
   const plan = parsePlan(planPath);
+  const session = createCliSession(ctx, plan.title, "execute");
 
   await maybeSwitchBranch(ctx, plan.title);
 
   const pendingCount = plan.tasks.filter((t) => t.status === "pending").length;
-  ctx.ui.notify(
-    `ralpix: "${plan.title}" — ${plan.tasks.length} tasks, ${pendingCount} pending`,
-    "info",
-  );
+  session.message("info", `"${plan.title}" - ${plan.tasks.length} tasks, ${pendingCount} pending`);
 
   // Setup progress logger
   const fileName = planPath.split("/").pop() ?? "plan";
@@ -1056,6 +674,7 @@ async function runPlan(
   const reviewUsageByIdStart = new Map<ReviewStageId, UsageById>();
   const onUsage = (provider: string, model: string, usage: SubprocessUsage): void => {
     ledger.add(provider, model, usage);
+    session.usage(formatTotalUsageText(ledger.snapshot()));
     if (state.currentTaskId === null) {
       const activeReviewStage = state.review?.stages.find((stage) => stage.status === "active");
       if (activeReviewStage !== undefined) {
@@ -1064,7 +683,6 @@ async function runPlan(
     } else {
       recordUsage(taskUsageById, state.currentTaskId, provider, model, usage);
     }
-    progressTui.refresh();
   };
   let taskUsageStart = ledger.detailedSnapshot();
 
@@ -1079,33 +697,21 @@ async function runPlan(
     progressFile: logger.filePath,
     review: createInitialReviewState(config.externalReviewEnabled),
   };
-  const progressTui = createProgressTui(
-    ctx,
-    plan.title,
-    plan.tasks.map((task) => ({ id: task.id, title: task.title })),
-    ledger,
-    taskUsageById,
-    reviewUsageById,
-    () => state,
-  );
-  progressTui.setPhase("executing");
   persistState(pi, state);
-  clearStatusWidget(ctx);
-  progressTui.refresh();
+  session.status("running", "Executing plan...");
 
   // ---- Execute tasks ------------------------------------------------------
   if (pendingCount > 0) {
-    ctx.ui.notify(`Executing ${pendingCount} pending tasks...`, "info");
+    session.message("info", `Executing ${pendingCount} pending tasks...`);
 
     const results = await executeAllTasks(ctx, pi, plan, config, logger, {
+      session,
       onTaskStart(task) {
         taskUsageStart = ledger.detailedSnapshot();
         const nextState = markTaskExecutionStarted(state, task.id);
         state.currentTaskId = nextState.currentTaskId;
         persistState(pi, state);
-        clearStatusWidget(ctx);
-        progressTui.setPhase("executing");
-        progressTui.refresh();
+        session.status("running", `Task ${task.number}: ${task.title}`);
       },
       onTaskFinish(task, result) {
         const stepUsage = ledger.diffDetailedSince(taskUsageStart);
@@ -1118,28 +724,21 @@ async function runPlan(
         state.completedTasks = nextState.completedTasks;
         state.failedTasks = nextState.failedTasks;
         persistState(pi, state);
-        clearStatusWidget(ctx);
-        progressTui.pushStep({
-          title: `Task ${task.number}: ${task.title}${result.success ? "" : " (failed)"}`,
-          usageSummary: stepUsage,
-          usageLines: taskUsageLines,
-        });
-        progressTui.refresh();
+        const outcome = result.success ? "success" : "warning";
+        session.message(outcome, `Task ${task.number}: ${task.title}${result.success ? "" : " (failed)"}`);
+        if (taskUsageLines.length > 0) {
+          session.message("result", taskUsageLines.join("\n"));
+        }
       },
       onUsage,
     });
 
     const allSuccess = results.every((r) => r.success);
     if (!allSuccess) {
-      ctx.ui.notify(
-        `ralpix: execution stopped — ${state.failedTasks.length} task(s) failed`,
-        "error",
-      );
+      session.message("error", `Execution stopped - ${state.failedTasks.length} task(s) failed`);
       state.phase = "idle";
       persistState(pi, state);
-      clearStatusWidget(ctx);
-      progressTui.setPhase("idle");
-      progressTui.refresh();
+      session.close();
       return;
     }
   }
@@ -1147,11 +746,10 @@ async function runPlan(
   // ---- Review pipeline ----------------------------------------------------
   state.phase = "reviewing";
   persistState(pi, state);
-  clearStatusWidget(ctx);
-  progressTui.setPhase("reviewing");
-  progressTui.refresh();
+  session.phase("review");
+  session.status("reviewing", "Starting review pipeline...");
 
-  ctx.ui.notify("All tasks complete. Starting review pipeline...", "info");
+  session.message("info", "All tasks complete. Starting review pipeline...");
   const reviewUsageStart = ledger.detailedSnapshot();
 
   try {
@@ -1167,9 +765,9 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        clearStatusWidget(ctx);
-        progressTui.setPhase("reviewing");
-        progressTui.refresh();
+        const stageText = detail == null ? REVIEW_STAGE_LABELS[stage] : `${REVIEW_STAGE_LABELS[stage]} - ${detail}`;
+        session.status("reviewing", stageText);
+        session.message("info", stageText);
       },
       onStageUpdate(stage, detail) {
         state.review = updateReviewStage(
@@ -1179,8 +777,7 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        clearStatusWidget(ctx);
-        progressTui.refresh();
+        session.status("reviewing", `${REVIEW_STAGE_LABELS[stage]} - ${detail}`);
       },
       onStageFinish(stage, status, detail) {
         const stageUsageStart = reviewUsageStartById.get(stage);
@@ -1200,20 +797,17 @@ async function runPlan(
           detail,
         );
         persistState(pi, state);
-        clearStatusWidget(ctx);
         const statusSuffix = status === "failed" ? " (failed)" : "";
-        const detailSuffix = detail === undefined ? "" : ` — ${detail}`;
-        progressTui.pushStep({
-          title: `${REVIEW_STAGE_LABELS[stage]}${statusSuffix}${detailSuffix}`,
-          usageSummary: stepUsage,
-          ...(stageUsageLines.length > 0 ? { usageLines: stageUsageLines } : {}),
-        });
-        progressTui.refresh();
+        const detailSuffix = detail === undefined ? "" : ` - ${detail}`;
+        session.message(status === "failed" ? "warning" : "result", `${REVIEW_STAGE_LABELS[stage]}${statusSuffix}${detailSuffix}`);
+        if (stageUsageLines.length > 0) {
+          session.message("result", stageUsageLines.join("\n"));
+        }
       },
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    ctx.ui.notify(`Review pipeline error: ${msg}`, "warning");
+    session.message("warning", `Review pipeline error: ${msg}`);
     logger.logReviewComplete({ status: "failed", error: msg });
   }
   logger.logReviewUsage(ledger.diffDetailedSince(reviewUsageStart), ledger.detailedSnapshot());
@@ -1221,17 +815,15 @@ async function runPlan(
   // ---- Complete -----------------------------------------------------------
   state.phase = "complete";
   persistState(pi, state);
-  clearStatusWidget(ctx);
   logger.logComplete();
-  progressTui.setPhase("complete");
-  progressTui.refresh();
+  session.status("complete", "Plan complete");
 
   const { completedTasks, failedTasks } = state;
   const done = completedTasks.length;
   const failed = failedTasks.length;
-  ctx.ui.notify(
-    `ralpix: "${plan.title}" complete — ${done} done, ${failed} failed. Progress: ${logger.filePath}`,
+  session.message(
     failed > 0 ? "warning" : "success",
+    `"${plan.title}" complete - ${done} done, ${failed} failed. Progress: ${logger.filePath}`,
   );
 
   // Move completed plan to docs/plans/completed/
@@ -1239,26 +831,16 @@ async function runPlan(
     try {
       const { dir, base } = pathParse(planPath);
       if (pathBasename(dir) === "completed") {
-        ctx.ui.notify("Plan already in completed/ directory", "info");
+        session.message("info", "Plan already in completed/ directory");
       } else {
         const completedDir = pathJoin(dir, "completed");
         mkdirSync(completedDir, { recursive: true });
         renameSync(planPath, pathJoin(completedDir, base));
-        ctx.ui.notify(`Plan moved to ${completedDir}/${base}`, "info");
+        session.message("info", `Plan moved to ${completedDir}/${base}`);
       }
     } catch {
       // Non-fatal — plan move is best-effort
     }
   }
-
-  // Keep the progress TUI visible so the full report remains on screen
-}
-
-// ---------------------------------------------------------------------------
-// UI helpers
-// ---------------------------------------------------------------------------
-
-interface WidgetUI {
-  setStatus: (k: string, v: string | undefined) => void;
-  setWidget: (k: string, v: string[] | ((ui: PiTuiRuntime, theme: PiTuiTheme) => PiTuiComponent) | undefined) => void;
+  session.close();
 }

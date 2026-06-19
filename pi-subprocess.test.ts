@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  extractPiToolText,
   summarizeAssistantProgress,
   summarizePiToolCall,
 } from "./pi-subprocess.js";
@@ -17,6 +18,17 @@ void test("summarizePiToolCall falls back to a compact key/value preview", () =>
   assert.equal(
     summarizePiToolCall("open", { ref_id: "turn0search0", lineno: 120 }),
     "open ref_id=turn0search0 lineno=120",
+  );
+});
+
+void test("extractPiToolText and summarizePiToolCall support string tool args", () => {
+  assert.equal(
+    extractPiToolText("grep -n \"playlist\" api/src/index.ts"),
+    "grep -n \"playlist\" api/src/index.ts",
+  );
+  assert.equal(
+    summarizePiToolCall("bash", "grep -n \"playlist\" api/src/index.ts"),
+    "bash grep -n \"playlist\" api/src/index.ts",
   );
 });
 

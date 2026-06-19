@@ -71,6 +71,16 @@ Create a complete implementation plan. Use the richest format that helps the imp
 - `## Testing Strategy` — unit vs integration vs e2e, coverage expectations
 - `## What Goes Where` — which files host which concepts
 
+**Implementation detail expectations:**
+Every task must be detailed enough that an implementer can execute it without guessing. For each task, include:
+- `**Files:**` block with exact paths (e.g., `src/components/AuthForm.tsx` not `auth component`)
+- Function / method signatures with parameter names and return types where the language supports it
+- Key data structures, interfaces, or types being introduced or modified
+- Algorithmic steps for non-trivial logic (database queries, state transitions, parsing, encoding)
+- Specific error cases to handle and how (which exceptions, error codes, fallback values)
+- Exact test file paths and what each test should verify (not just "write tests")
+- External dependencies or APIs being called, with method names and expected payloads
+
 **Plan writing rules:**
 - The plan title must stay tightly aligned to the user's request. Do not invent a different feature, subsystem, or theme.
 - Reuse the user's wording for the core feature when possible so the title and overview are obviously about the requested work.

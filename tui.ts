@@ -1,8 +1,9 @@
 /**
  * Shared TUI components for ralpix — used by brainstorm, plan creation,
- * and task execution.  Provides a reusable progress panel with spinner,
+ * and task execution. Provides a reusable progress panel with spinner,
  * phase labels, step log, elapsed timer, and token-usage tracking.
  */
+
 
 import {
   fmtTokens,
@@ -13,12 +14,8 @@ import {
   type UsageSummary,
 } from "./logger.js";
 
-import type { SubprocessUsage } from "./types.js";
+import type { SubprocessUsage, UiCurrentSummary } from "./types.js";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-
-// ---------------------------------------------------------------------------
-// Spinner
-// ---------------------------------------------------------------------------
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
@@ -34,10 +31,6 @@ export function fmtElapsed(ms: number): string {
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
-
-// ---------------------------------------------------------------------------
-// ANSI helpers
-// ---------------------------------------------------------------------------
 
 function stripAnsi(s: string): string {
   return s.replaceAll(/\u001B\[[\d;]*m/gu, "");
@@ -75,17 +68,49 @@ export function fit(text: string, width: number): string {
   return `${ansiSafeSlice(text, width - 3)}...`;
 }
 
-// ---------------------------------------------------------------------------
-// Usage formatting
-// ---------------------------------------------------------------------------
+export interface SummaryTuiRuntime {
+  close: () => void;
+  setSummary: (summary: UiCurrentSummary | null) => void;
+}
+
+class SummaryPanel implements PiTuiComponent {
+  private readonly theme: PiTuiTheme;
+  private summary: UiCurrentSummary | null = null;
+
+  constructor(theme: PiTuiTheme) {
+    this.theme = theme;
+  }
+
+  setSummary(summary: UiCurrentSummary | null): void {
+    this.summary = summary == null ? null : { ...summary };
+  }
+
+  render(width: number): string[] {
+    if (this.summary == null) return [];
+
+    const maxWidth = Math.max(20, width);
+    const nextText = this.summary.next == null || this.summary.next.length === 0 ? "-" : this.summary.next;
+    const totalUsageText = this.summary.totalUsageText == null || this.summary.totalUsageText.length === 0
+      ? "-"
+      : this.summary.totalUsageText;
+    const lines = [
+      this.theme.fg("accent", `ralpix: ${this.summary.phase} | ${this.summary.state}`),
+      `Now: ${this.summary.now.length > 0 ? this.summary.now : "-"}`,
+      `Next: ${nextText}`,
+      `Total: ${totalUsageText}`,
+    ];
+
+    return lines.map((line, index) => fit(index === 0 ? line : this.theme.fg("muted", line), maxWidth));
+  }
+
+  invalidate(): void {
+    return;
+  }
+}
 
 function formatUsage(usage: UsageSummary): string {
   return `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`;
 }
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface ProgressStep {
   title: string;
@@ -101,10 +126,6 @@ export interface ProgressTuiRuntime {
   setCurrent: (title: string, usage?: UsageSummary) => void;
   setTotalUsage: (usage: UsageSummary) => void;
 }
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
 
 class ProgressPanel implements PiTuiComponent {
   private readonly title: string;
@@ -294,24 +315,55 @@ export function createProgressTui(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Token ledger
-// ---------------------------------------------------------------------------
+export function createSummaryTui(
+  ctx: ExtensionCommandContext,
+  widgetKey: string,
+): SummaryTuiRuntime {
+  if (!ctx.hasUI) {
+    return {
+      close() {
+        return;
+      },
+      setSummary() {
+        return;
+      },
+    };
+  }
+
+  const panel = new SummaryPanel(ctx.ui.theme);
+  let requestRender: () => void = noopRender;
+
+  ctx.ui.setWidget(widgetKey, (ui: PiTuiRuntime) => {
+    requestRender = () => ui.requestRender();
+    return panel;
+  });
+
+  return {
+    close() {
+      ctx.ui.setWidget(widgetKey, undefined);
+      requestRender = noopRender;
+    },
+    setSummary(summary) {
+      panel.setSummary(summary);
+      requestRender();
+    },
+  };
+}
 
 export function createTokenLedger() {
   const map = new Map<string, UsageBreakdownEntry>();
 
   function add(provider: string, model: string, usage: SubprocessUsage): void {
     const key = `${provider}/${model}`;
-    const e = map.get(key) ?? { provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    const entry = map.get(key) ?? { provider, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     map.set(key, {
       provider,
       model,
-      input: e.input + usage.input,
-      output: e.output + usage.output,
-      cacheRead: e.cacheRead + usage.cacheRead,
-      cacheWrite: e.cacheWrite + usage.cacheWrite,
-      cost: e.cost + usage.cost,
+      input: entry.input + usage.input,
+      output: entry.output + usage.output,
+      cacheRead: entry.cacheRead + usage.cacheRead,
+      cacheWrite: entry.cacheWrite + usage.cacheWrite,
+      cost: entry.cost + usage.cost,
     });
   }
 
