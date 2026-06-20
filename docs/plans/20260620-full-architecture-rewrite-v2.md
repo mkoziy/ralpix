@@ -178,12 +178,12 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 ### Task 8: pi-subprocess.ts
 
-- [ ] `runPiSubprocessPrompt(ctx, pi, prompt, config, session): Promise<SubprocessResult>` — core subprocess runner
-- [ ] Streaming output handling: progress events forwarded to session as `milestone` events
-- [ ] Usage extraction from subprocess output: returns `SubprocessUsage`
-- [ ] Error propagation: subprocess crash vs clean failure distinguished
-- [ ] `createPiProgressHooks(session, ledger)` — hooks wiring for progress reporting
-- [ ] Test: mock subprocess, assert usage extracted correctly; assert progress events forwarded; assert crash vs failure distinction
+- [x] `runPiSubprocessPrompt(ctx, pi, prompt, config, session): Promise<SubprocessResult>` — core subprocess runner
+- [x] Streaming output handling: progress events forwarded to session as `milestone` events
+- [x] Usage extraction from subprocess output: returns `SubprocessUsage`
+- [x] Error propagation: subprocess crash vs clean failure distinguished
+- [x] `createPiProgressHooks(session, ledger)` — hooks wiring for progress reporting
+- [x] Test: mock subprocess, assert usage extracted correctly; assert progress events forwarded; assert crash vs failure distinction
 
 ### Task 9: brainstorm.ts
 
