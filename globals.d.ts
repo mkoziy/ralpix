@@ -81,9 +81,9 @@ declare module "@earendil-works/pi-coding-agent" {
       setWidget: (
         key: string,
         value:
-          | string[]
-          | ((ui: PiTuiRuntime, theme: PiTuiTheme) => PiTuiComponent)
-          | undefined,
+          | string[] |
+          ((ui: PiTuiRuntime, theme: PiTuiTheme) => PiTuiComponent) |
+          undefined,
       ) => void;
       theme: { fg: (color: string, text: string) => string; bold: (text: string) => string };
     };

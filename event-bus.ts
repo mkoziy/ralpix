@@ -149,7 +149,7 @@ export function createEventBus(
     },
 
     statusChanged(state, now, next) {
-      log("status_changed", { state, now, ...(next !== undefined ? { next } : {}) });
+      log("status_changed", { state, now, ...(next === undefined ? {} : { next }) });
     },
 
     usageCheckpoint(totalUsageText) {

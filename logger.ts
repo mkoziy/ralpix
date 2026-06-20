@@ -33,5 +33,9 @@ export class LogWriter {
 }
 
 export function createLogWriterEmitter(writer: LogWriter): AgentEventEmitter {
-  return { emit: (event) => { writer.write(event); } };
+  return {
+    emit(event) {
+      writer.write(event);
+    },
+  };
 }

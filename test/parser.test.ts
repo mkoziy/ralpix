@@ -37,7 +37,7 @@ const WITH_COMPLETED = `
 - [ ] only item
 `.trim();
 
-const EMPTY_PLAN = `# Plan: Empty`.trim();
+const EMPTY_PLAN = "# Plan: Empty".trim();
 
 const MALFORMED = `
 no heading at all

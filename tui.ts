@@ -1,7 +1,7 @@
 import {
   fmtTokens,
   formatUsageBreakdownLines,
-  summarizeUsageSnapshot,
+
 } from "./utils.js";
 
 import type { AgentEvent, AgentEventEmitter, UsageBreakdownEntry, UsageTotal } from "./events.js";
@@ -34,13 +34,15 @@ function ansiSafeSlice(s: string, maxVisible: number): string {
   let i = 0;
   while (i < s.length && visible < maxVisible) {
     const start = i;
-    if (s[i] === "" && i + 1 < s.length && s[i + 1] === "[") {
+    const current = s[i] ?? "";
+    const next = s[i + 1] ?? "";
+    if (current === "" && next === "[") {
       i += 2;
       while (i < s.length && s[i] !== "m") i++;
       if (i < s.length) i++;
       out += s.slice(start, i);
     } else {
-      out += s[i];
+      out += current;
       visible++;
       i++;
     }
@@ -57,6 +59,35 @@ function fit(text: string, width: number): string {
 
 function fmtTotal(total: UsageTotal): string {
   return `in ${fmtTokens(total.input)}  out ${fmtTokens(total.output)}  $${total.cost.toFixed(3)}`;
+}
+
+function detailSuffix(detail?: string): string {
+  return detail === undefined ? "" : `: ${detail}`;
+}
+
+function modelLabelSuffix(modelLabel?: string): string {
+  return modelLabel === undefined ? "" : ` (${modelLabel})`;
+}
+
+function committedSuffix(committed?: boolean): string {
+  return committed === true ? " (committed)" : "";
+}
+
+function stageDetailSuffix(detail?: string): string {
+  return detail === undefined ? "" : ` — ${detail}`;
+}
+
+function levelForStageStatus(status: "complete" | "failed" | "skipped"): "error" | "info" | "success" {
+  if (status === "complete") return "success";
+  if (status === "skipped") return "info";
+  return "error";
+}
+
+function levelForMilestone(kind: string): "error" | "info" | "success" | "warning" {
+  if (kind === "ERR") return "error";
+  if (kind === "WARN") return "warning";
+  if (kind === "OK") return "success";
+  return "info";
 }
 
 // ── SummaryPanel (TUI widget) ──────────────────────────────────────────────
@@ -117,8 +148,7 @@ class SummaryPanel implements PiTuiComponent {
       `Next: ${this.summary.next ?? "-"}`,
       `Total: ${this.summary.totalUsageText ?? "-"}`,
     ];
-    return lines.map((line, i) =>
-      fit(i === 0 ? line : this.theme.fg("muted", line), w),
+    return lines.map((line, i) => fit(i === 0 ? line : this.theme.fg("muted", line), w),
     );
   }
 
@@ -137,7 +167,10 @@ export function createSummaryTui(
   widgetKey: string,
 ): SummaryTuiRuntime {
   if (!ctx.hasUI) {
-    return { close() { return; }, setSummary() { return; } };
+    return {
+      close() { return; },
+      setSummary() { return; },
+    };
   }
 
   const panel = new SummaryPanel(ctx.ui.theme);
@@ -239,6 +272,7 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
   }
 
   return {
+    // eslint-disable-next-line sonarjs/cognitive-complexity
     emit(event: AgentEvent): void {
       const phase = event.phase;
 
@@ -254,13 +288,20 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
           break;
         }
         case "question": {
-          setStatus({ phase, state: "waiting", now: event.message, ...(event.next !== undefined ? { next: event.next } : {}) });
+          setStatus({
+            phase,
+            state: "waiting",
+            now: event.message,
+            ...(event.next === undefined ? {} : { next: event.next }),
+          });
           notify(`Q: ${event.message}`);
           break;
         }
         case "answer": {
           notify(`A: ${event.message}`);
-          if (event.usage) updateSummaryField({ totalUsageText: fmtTotal(event.usage.total) });
+          if (event.usage !== undefined) {
+            updateSummaryField({ totalUsageText: fmtTotal(event.usage.total) });
+          }
           break;
         }
         case "approach_selected": {
@@ -269,7 +310,10 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
         }
         case "section_validated": {
           const icon = event.passed ? "✓" : "✗";
-          notify(`${icon} ${event.section}${event.detail ? `: ${event.detail}` : ""}`, event.passed ? "success" : "warning");
+          notify(
+            `${icon} ${event.section}${detailSuffix(event.detail)}`,
+            event.passed ? "success" : "warning",
+          );
           break;
         }
         case "round_start": {
@@ -311,12 +355,20 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
           break;
         }
         case "task_start": {
-          setStatus({ phase, state: "running", now: `Task ${String(event.taskNumber)}: ${event.taskTitle}`, next: `${String(event.itemCount)} items` });
+          setStatus({
+            phase,
+            state: "running",
+            now: `Task ${String(event.taskNumber)}: ${event.taskTitle}`,
+            next: `${String(event.itemCount)} items`,
+          });
           notify(`Task ${String(event.taskNumber)}: ${event.taskTitle}`);
           break;
         }
         case "attempt_start": {
-          updateSummaryField({ state: "running", now: `Attempt ${String(event.attempt)}${event.modelLabel ? ` (${event.modelLabel})` : ""}` });
+          updateSummaryField({
+            state: "running",
+            now: `Attempt ${String(event.attempt)}${modelLabelSuffix(event.modelLabel)}`,
+          });
           break;
         }
         case "attempt_end": {
@@ -328,14 +380,18 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
           updateSummaryField({ totalUsageText: fmtTotal(event.usage.total) });
           const taskLabel = `Task ${String(event.taskNumber)}: ${event.taskTitle}`;
           if (event.success) {
-            notify(`✓ ${taskLabel}${event.committed ? " (committed)" : ""}`, "success");
+            notify(`✓ ${taskLabel}${committedSuffix(event.committed)}`, "success");
           } else {
-            notify(`✗ ${taskLabel}${event.detail ? `: ${event.detail}` : ""}`, "error");
+            notify(`✗ ${taskLabel}${detailSuffix(event.detail)}`, "error");
           }
           break;
         }
         case "stage_start": {
-          setStatus({ phase, state: "reviewing", now: `Stage: ${event.stage}${event.detail ? ` — ${event.detail}` : ""}` });
+          setStatus({
+            phase,
+            state: "reviewing",
+            now: `Stage: ${event.stage}${stageDetailSuffix(event.detail)}`,
+          });
           notify(`Stage ${event.stage} started`);
           break;
         }
@@ -345,7 +401,7 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
         }
         case "stage_finish": {
           updateSummaryField({ totalUsageText: fmtTotal(event.usage.total), now: `Stage ${event.stage}: ${event.status}` });
-          const level = event.status === "complete" ? "success" : event.status === "skipped" ? "info" : "error";
+          const level = levelForStageStatus(event.status);
           notify(`Stage ${event.stage}: ${event.status}`, level);
           break;
         }
@@ -366,11 +422,16 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
           break;
         }
         case "status_changed": {
-          setStatus({ phase, state: event.state, now: event.now, ...(event.next !== undefined ? { next: event.next } : {}) });
+          setStatus({
+            phase,
+            state: event.state,
+            now: event.now,
+            ...(event.next === undefined ? {} : { next: event.next }),
+          });
           break;
         }
         case "milestone": {
-          const level = event.kind === "ERR" ? "error" : event.kind === "WARN" ? "warning" : event.kind === "OK" ? "success" : "info";
+          const level = levelForMilestone(event.kind);
           notify(event.message, level);
           break;
         }
@@ -385,4 +446,6 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
 
 // ── ProgressPanel (exported for index.ts status widget) ───────────────────
 
-export { fit, fmtTotal, spinnerFrame, summarizeUsageSnapshot };
+export { fit, fmtTotal, spinnerFrame };
+
+export { summarizeUsageSnapshot } from "./utils.js";

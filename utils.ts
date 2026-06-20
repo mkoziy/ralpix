@@ -16,8 +16,7 @@ export function formatUsageSummary(step: UsageStep, total: UsageTotal): string {
 
 export function formatUsageBreakdownLines(entries: UsageBreakdownEntry[]): string[] {
   return entries.map(
-    (e) =>
-      `${e.provider}/${e.model}  in ${fmtTokens(e.input + e.cacheRead + e.cacheWrite)}  out ${fmtTokens(e.output)}  $${e.cost.toFixed(3)}`,
+    (e) => `${e.provider}/${e.model}  in ${fmtTokens(e.input + e.cacheRead + e.cacheWrite)}  out ${fmtTokens(e.output)}  $${e.cost.toFixed(3)}`,
   );
 }
 

@@ -34,8 +34,11 @@ export function expandVariables(template: string, vars: Record<string, string>):
 
 export function expandAgents(template: string): string {
   return template.replaceAll(/{{agent:(\w+)}}/g, (_, name: string) => {
-    try { return loadAgent(name); }
-    catch { return `{{agent:${name}}}`; }
+    try {
+      return loadAgent(name);
+    } catch {
+      return `{{agent:${name}}}`;
+    }
   });
 }
 

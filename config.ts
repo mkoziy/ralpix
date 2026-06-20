@@ -285,8 +285,12 @@ interface InitResult {
 
 function writeOrSkip(content: string, dest: string, overwrite: boolean, result: InitResult): void {
   if (existsSync(dest)) {
-    if (overwrite) { writeFileSync(dest, content, UTF8); result.overwritten.push(dest); }
-    else { result.skipped.push(dest); }
+    if (overwrite) {
+      writeFileSync(dest, content, UTF8);
+      result.overwritten.push(dest);
+    } else {
+      result.skipped.push(dest);
+    }
   } else {
     writeFileSync(dest, content, UTF8);
     result.created.push(dest);
@@ -295,8 +299,12 @@ function writeOrSkip(content: string, dest: string, overwrite: boolean, result: 
 
 function copyOrSkip(src: string, dest: string, overwrite: boolean, result: InitResult): void {
   if (existsSync(dest)) {
-    if (overwrite) { copyFileSync(src, dest); result.overwritten.push(dest); }
-    else { result.skipped.push(dest); }
+    if (overwrite) {
+      copyFileSync(src, dest);
+      result.overwritten.push(dest);
+    } else {
+      result.skipped.push(dest);
+    }
   } else {
     copyFileSync(src, dest);
     result.created.push(dest);

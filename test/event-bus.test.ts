@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createEventBus } from "../event-bus.js";
+
 import type { AgentEventEmitter } from "../events.js";
 
 function makeCtx() {
@@ -29,7 +30,11 @@ function makeCtx() {
 
 function makeEmitter() {
   const events: unknown[] = [];
-  const emitter: AgentEventEmitter = { emit: (e) => { events.push(e); } };
+  const emitter: AgentEventEmitter = {
+    emit(e) {
+      events.push(e);
+    },
+  };
   return { emitter, events };
 }
 
@@ -96,8 +101,16 @@ describe("createEventBus — dispatch order", () => {
   it("calls emitters in registration order", () => {
     const ctx = makeCtx();
     const order: string[] = [];
-    const e1: AgentEventEmitter = { emit: () => { order.push("first"); } };
-    const e2: AgentEventEmitter = { emit: () => { order.push("second"); } };
+    const e1: AgentEventEmitter = {
+      emit() {
+        order.push("first");
+      },
+    };
+    const e2: AgentEventEmitter = {
+      emit() {
+        order.push("second");
+      },
+    };
     const session = createEventBus(ctx, "execute", [e1, e2]);
 
     session.log("phase_start");

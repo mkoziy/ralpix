@@ -341,4 +341,23 @@ export default tseslint.config(
       "import/no-extraneous-dependencies": "off",
     },
   },
+
+  {
+    files: ["test/**/*.ts"],
+    languageOptions: {
+      parserOptions: {
+        projectService: false,
+        project: "./tsconfig.test.json",
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+      "@typescript-eslint/no-non-null-assertion": "off",
+      "sonarjs/no-duplicate-string": "off",
+      "unicorn/no-zero-fractions": "off",
+    },
+  },
 );

@@ -164,7 +164,7 @@ export function parsePlan(content: string, sourcePath = ""): Plan {
       continue;
     }
 
-    if (/^\s*$/.test(line) && state.section !== "task") continue;
+    if ((/^\s*$/).test(line) && state.section !== "task") continue;
 
     collectLine(line, state);
   }
@@ -213,9 +213,17 @@ export function updatePlanTaskStatus(
   const mark = status === "completed" ? "x" : " ";
 
   const newLines = lines.map((line) => {
-    if (taskRe.test(line)) { inTask = true; return line; }
+    if (taskRe.test(line)) {
+      inTask = true;
+      return line;
+    }
+
     if (inTask) {
-      if (RE_H3_OR_H2.test(line)) { inTask = false; return line; }
+      if (RE_H3_OR_H2.test(line)) {
+        inTask = false;
+        return line;
+      }
+
       const match = RE_CHECKBOX.exec(line);
       if (match?.[2] !== undefined) return `- [${mark}] ${match[2]}`;
     }

@@ -2,13 +2,13 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export type ModelPhase =
-  | "task"
-  | "review-first"
-  | "review-second"
-  | "external-review"
-  | "external-eval"
-  | "plan"
-  | "brainstorm";
+  | "task" |
+  "review-first" |
+  "review-second" |
+  "external-review" |
+  "external-eval" |
+  "plan" |
+  "brainstorm";
 
 export const MODEL_PHASES: ModelPhase[] = [
   "task",

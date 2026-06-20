@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPiProgressHooks, runPiSubprocessPrompt } from "../pi-subprocess.js";
+
 import { stubRunSession } from "./stubs.js";
 
 import type { SpawnedPiProcess } from "../pi-subprocess.js";
@@ -46,8 +47,11 @@ function createMockProcess(): SpawnedPiProcess & {
     stdout,
     stderr,
     on(event, listener) {
-      if (event === "close") onClose = listener;
-      if (event === "error") onError = listener;
+      if (event === "close") {
+        onClose = listener as (code: number | null, signal: NodeJS.Signals | null) => void;
+      } else {
+        onError = listener as (error: Error) => void;
+      }
       return this;
     },
     kill: vi.fn().mockReturnValue(true),

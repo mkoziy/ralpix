@@ -187,11 +187,11 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 ### Task 9: brainstorm.ts
 
-- [ ] No `LogWriter`, no `ctx.ui`, no chalk/ANSI
-- [ ] All output via `session.log()` and `session.choose()` / `session.input()` / `session.confirm()`
-- [ ] Events emitted: `phase_start`, `phase_end`, `question`, `answer` (+usage), `round_start`, `round_end` (+usage), `approach_selected`, `section_validated`
-- [ ] Checkpoint/resume: state persisted to file between rounds; on resume, loads checkpoint and emits `session_start` equivalent
-- [ ] Test: stub `RunSession` from `test/stubs.ts`, assert emitted event sequence and shapes match `behaviour-spec.md`
+- [x] No `LogWriter`, no `ctx.ui`, no chalk/ANSI
+- [x] All output via `session.log()` and `session.choose()` / `session.input()` / `session.confirm()`
+- [x] Events emitted: `phase_start`, `phase_end`, `question`, `answer` (+usage), `round_start`, `round_end` (+usage), `approach_selected`, `section_validated`
+- [x] Checkpoint/resume: state persisted to file between rounds; on resume, loads checkpoint and emits `session_start` equivalent
+- [x] Test: stub `RunSession` from `test/stubs.ts`, assert emitted event sequence and shapes match `behaviour-spec.md`
 
 **Smoke-test gate after Task 9:** wire brainstorm into a minimal `index.ts` stub and run `ralpix brainstorm` against a real pi session. Verify the CLI runs, events appear in TUI, and JSONL is written to the correct path. Do not proceed to Task 10 until this passes.
 
