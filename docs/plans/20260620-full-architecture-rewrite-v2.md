@@ -147,11 +147,11 @@ The existing codebase is the authoritative source of truth for preserved behavio
 
 ### Task 5: config.ts + prompt.ts
 
-- [ ] `config.ts`: `loadConfig(cwd)`, `initRalpixHome()`, `ralpixHomeDir()`, `resolveModel(config, phase)`, `resolvePiAgentDir()`, `buildSessionModelChange(from, to)` — all config loading and resolution logic
-- [ ] `prompt.ts`: `loadPrompt(name)`, `expandPrompt(template, vars)` — prompt file loading and variable expansion
-- [ ] `planner-prompt.ts`: planner-specific prompt construction logic (if it warrants a separate file; otherwise inline into `prompt.ts`)
-- [ ] `globals.d.ts`: ambient type declarations for the extension environment
-- [ ] No phase logic in any of these files
+- [x] `config.ts`: `loadConfig(cwd)`, `initRalpixHome()`, `ralpixHomeDir()`, `resolveModel(config, phase)`, `resolvePiAgentDir()`, `buildSessionModelChange(from, to)` — all config loading and resolution logic
+- [x] `prompt.ts`: `loadPrompt(name)`, `expandPrompt(template, vars)` — prompt file loading and variable expansion
+- [x] `planner-prompt.ts`: planner-specific prompt construction logic (if it warrants a separate file; otherwise inline into `prompt.ts`)
+- [x] `globals.d.ts`: ambient type declarations for the extension environment
+- [x] No phase logic in any of these files
 
 ### Task 6: Tests (Stage 1 gate)
 
