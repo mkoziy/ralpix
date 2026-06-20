@@ -217,13 +217,13 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 ### Task 12: reviewer.ts
 
-- [ ] `runReviewPipeline(ctx, pi, plan, config, session, ...): Promise<void>`
-- [ ] `runStandaloneReview(ctx, pi, config, session): Promise<void>`
-- [ ] Events: `stage_start`, `stage_update`, `stage_finish` (+usage), `iteration_start`, `iteration_end` (+usage), `eval_iteration_start`, `eval_iteration_end` (+usage)
-- [ ] No `ReviewPipelineHooks` — reviewer emits directly on session
-- [ ] Write `task-review-subprocess.ts` here: external review subprocess runner (same interface pattern as `pi-subprocess.ts`)
-- [ ] All config flags honoured: `externalReviewEnabled`, per-phase model/effort
-- [ ] Test: stub 2-stage pipeline, assert stage and iteration events in order; assert `stage_finish` carries correct usage; assert `externalReviewEnabled: false` skips external stages with `status: "skipped"`
+- [x] `runReviewPipeline(ctx, pi, plan, config, session, ...): Promise<void>`
+- [x] `runStandaloneReview(ctx, pi, config, session): Promise<void>`
+- [x] Events: `stage_start`, `stage_update`, `stage_finish` (+usage), `iteration_start`, `iteration_end` (+usage), `eval_iteration_start`, `eval_iteration_end` (+usage)
+- [x] No `ReviewPipelineHooks` — reviewer emits directly on session
+- [x] Write `task-review-subprocess.ts` here: external review subprocess runner (same interface pattern as `pi-subprocess.ts`)
+- [x] All config flags honoured: `externalReviewEnabled`, per-phase model/effort
+- [x] Test: stub 2-stage pipeline, assert stage and iteration events in order; assert `stage_finish` carries correct usage; assert `externalReviewEnabled: false` skips external stages with `status: "skipped"`
 
 ### Task 13: index.ts
 
