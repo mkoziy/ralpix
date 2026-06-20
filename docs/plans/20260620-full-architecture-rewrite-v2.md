@@ -206,14 +206,14 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 ### Task 11: executor.ts
 
-- [ ] `executeAllTasks(ctx, pi, plan, config, session): Promise<void>`
-- [ ] Events: `task_start`, `attempt_start`, `attempt_end` (+usage), `task_end` (+usage)
-- [ ] `committed` field in `task_end` when `commitEnabled`
-- [ ] Retry loop per `behaviour-spec.md`: max retries from config, attempt counter reset conditions
-- [ ] Material-failure detection per `behaviour-spec.md`: detection conditions, retry vs abort decision
-- [ ] allDone hallucination guard per `behaviour-spec.md`: exact detection pattern, what it prevents
-- [ ] Uses `pi-subprocess.ts` from Task 8
-- [ ] Test: stub 2-task plan, assert `task_start → attempt_start → attempt_end → task_end` sequence; retry loop emits multiple `attempt_start`; material failure aborts without further attempts; allDone guard fires on hallucinated signal
+- [x] `executeAllTasks(ctx, pi, plan, config, session): Promise<void>`
+- [x] Events: `task_start`, `attempt_start`, `attempt_end` (+usage), `task_end` (+usage)
+- [x] `committed` field in `task_end` when `commitEnabled`
+- [x] Retry loop per `behaviour-spec.md`: max retries from config, attempt counter reset conditions
+- [x] Material-failure detection per `behaviour-spec.md`: detection conditions, retry vs abort decision
+- [x] allDone hallucination guard per `behaviour-spec.md`: exact detection pattern, what it prevents
+- [x] Uses `pi-subprocess.ts` from Task 8
+- [x] Test: stub 2-task plan, assert `task_start → attempt_start → attempt_end → task_end` sequence; retry loop emits multiple `attempt_start`; material failure aborts without further attempts; allDone guard fires on hallucinated signal
 
 ### Task 12: reviewer.ts
 
