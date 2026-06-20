@@ -246,11 +246,11 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 No code — written decision only. Answers:
 
-- [ ] **Ordering:** when multiple senders call `intercom send` concurrently (e.g. first-pass × 5 agents), does the logger session receive them in a defined order? Is there a race that could interleave JSONL lines?
-- [ ] **Failure handling:** what happens when `intercom send` fails (logger not yet started, crashed, unreachable)? Retry mechanism? Fall back to direct `LogWriter.write()`?
-- [ ] **Durability:** if the logger pi session is interrupted mid-run, can it resume without losing already-written events? How does this interact with `restoreState`?
-- [ ] **TUI attachment:** TUI adapter stays attached to the Node.js process and receives events directly from the event bus — confirm this explicitly and document it.
-- [ ] **Deliverable:** written summary `docs/plans/stage3-spike.md` with answers + any design changes required for Tasks 15–18
+- [x] **Ordering:** when multiple senders call `intercom send` concurrently (e.g. first-pass × 5 agents), does the logger session receive them in a defined order? Is there a race that could interleave JSONL lines?
+- [x] **Failure handling:** what happens when `intercom send` fails (logger not yet started, crashed, unreachable)? Retry mechanism? Fall back to direct `LogWriter.write()`?
+- [x] **Durability:** if the logger pi session is interrupted mid-run, can it resume without losing already-written events? How does this interact with `restoreState`?
+- [x] **TUI attachment:** TUI adapter stays attached to the Node.js process and receives events directly from the event bus — confirm this explicitly and document it.
+- [x] **Deliverable:** written summary `docs/plans/stage3-spike.md` with answers + any design changes required for Tasks 15–18
 
 ### Task 15: agents/logger/ — TBD after Task 14
 
