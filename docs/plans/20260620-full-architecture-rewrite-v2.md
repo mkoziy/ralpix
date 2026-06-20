@@ -197,12 +197,12 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 ### Task 10: planner.ts
 
-- [ ] No `LogWriter`, no surface calls
-- [ ] Events: `phase_start`, `phase_end`, `question`, `answer` (+usage), `round_start`, `round_end` (+usage), `draft_generated`, `review_result`, `critic_start`, `critic_end` (+usage), `ai_review_start`, `ai_review_end` (+usage), `human_review`
-- [ ] Plan review cycle: draft → critic → AI reviewer → human → loop until accepted; loop exit conditions per `behaviour-spec.md`
-- [ ] reload vs revise distinction preserved per `behaviour-spec.md`
-- [ ] Clarification Q&A preserved
-- [ ] Test: assert critic/ai/human events emitted in order for one review cycle; assert loop continues on reject, exits on accept
+- [x] No `LogWriter`, no surface calls
+- [x] Events: `phase_start`, `phase_end`, `question`, `answer` (+usage), `round_start`, `round_end` (+usage), `draft_generated`, `review_result`, `critic_start`, `critic_end` (+usage), `ai_review_start`, `ai_review_end` (+usage), `human_review`
+- [x] Plan review cycle: draft → critic → AI reviewer → human → loop until accepted; loop exit conditions per `behaviour-spec.md`
+- [x] reload vs revise distinction preserved per `behaviour-spec.md`
+- [x] Clarification Q&A preserved
+- [x] Test: assert critic/ai/human events emitted in order for one review cycle; assert loop continues on reject, exits on accept
 
 ### Task 11: executor.ts
 
