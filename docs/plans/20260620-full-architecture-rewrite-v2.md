@@ -86,8 +86,8 @@ The existing codebase is the authoritative source of truth for preserved behavio
 
 ### Task 1: events.ts + types.ts
 
-- [ ] Create `types.ts` with domain types: `Phase`, `ReviewStageId`, `ReviewStageStatus`, `Plan`, `PlanTask`, `ModelConfig`, `RalpixConfig`, `SubprocessUsage`, `RalpixState`, `ReviewPipelineState`
-- [ ] Create `events.ts` with the full `AgentEvent` union:
+- [x] Create `types.ts` with domain types: `Phase`, `ReviewStageId`, `ReviewStageStatus`, `Plan`, `PlanTask`, `ModelConfig`, `RalpixConfig`, `SubprocessUsage`, `RalpixState`, `ReviewPipelineState`
+- [x] Create `events.ts` with the full `AgentEvent` union:
   ```
   phase_start / phase_end
   question / answer (+usage)
@@ -103,10 +103,10 @@ The existing codebase is the authoritative source of truth for preserved behavio
   eval_iteration_start / eval_iteration_end (+usage)  (review)
   status_changed / milestone / usage_checkpoint
   ```
-- [ ] Usage shape: `{ step: { input, output, cacheRead, cacheWrite, cost }, total: { input, output, cost }, breakdown?: [{ provider, model, ... }][] }`
-- [ ] All events carry: `phase: Phase`, `createdAt: string` (ISO), plus event-specific fields
-- [ ] Export `AgentEventEmitter` interface: `{ emit(event: AgentEvent): void }`
-- [ ] Zero imports from Node.js or any other module — pure types only
+- [x] Usage shape: `{ step: { input, output, cacheRead, cacheWrite, cost }, total: { input, output, cost }, breakdown?: [{ provider, model, ... }][] }`
+- [x] All events carry: `phase: Phase`, `createdAt: string` (ISO), plus event-specific fields
+- [x] Export `AgentEventEmitter` interface: `{ emit(event: AgentEvent): void }`
+- [x] Zero imports from Node.js or any other module — pure types only
 
 ### Task 2: utils.ts + logger.ts
 
