@@ -80,9 +80,9 @@ Existing behaviour preserved: brainstorm checkpoint/resume, clarification Q&A, c
 
 Complete and green before touching any phase file.
 
-- [ ] Add `events.test.ts`: verify `AgentEvent` shape for each event type — required fields present, usage shape correct, unknown fields rejected by zod
-- [ ] Add `event-bus.test.ts`: verify emitter dispatch order, usage inlining, that a malformed event throws at emit time not at read time
-- [ ] Update `pi-subprocess.test.ts` and `task-review-subprocess.test.ts` for new `RunSession` signatures
+- [x] Add `events.test.ts`: verify `AgentEvent` shape for each event type — required fields present, usage shape correct, unknown fields rejected by zod
+- [x] Add `event-bus.test.ts`: verify emitter dispatch order, usage inlining, that a malformed event throws at emit time not at read time
+- [x] Update `pi-subprocess.test.ts` and `task-review-subprocess.test.ts` for new `RunSession` signatures
 
 ### Task 5: Refactor brainstorm.ts
 
