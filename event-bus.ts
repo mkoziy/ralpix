@@ -1,6 +1,7 @@
-import { fmtTokens, type UsageSummary } from "./logger.js";
+import { fmtTokens, type LogWriter, type UsageSummary } from "./logger.js";
 import { createSummaryTui, type SummaryTuiRuntime } from "./tui.js";
 
+import type { AgentEvent, AgentEventEmitter } from "./events.js";
 import type { Phase } from "./types.js";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
@@ -25,13 +26,19 @@ export interface UiCurrentSummary {
 
 export type UiTranscriptMilestoneKind = Exclude<UiTranscriptKind, "Q" | "A">;
 
-export type UiEvent =
-  | { type: "question_asked"; phase: Phase; promptId: string; message: string; createdAt: string; next?: string } |
-  { type: "answer_recorded"; phase: Phase; promptId: string; message: string; createdAt: string } |
-  { type: "prompt_cancelled"; phase: Phase; promptId: string; reason: string; createdAt: string } |
-  { type: "state_changed"; phase: Phase; state: UiState; now: string; createdAt: string; next?: string } |
-  { type: "milestone"; phase: Phase; kind: UiTranscriptMilestoneKind; message: string; createdAt: string } |
-  { type: "usage_checkpoint"; phase: Phase; totalUsageText: string; createdAt: string };
+type UiEvent = {
+  type: "question_asked"; phase: Phase; promptId: string; message: string; createdAt: string; next?: string;
+} | {
+  type: "answer_recorded"; phase: Phase; promptId: string; message: string; createdAt: string;
+} | {
+  type: "prompt_cancelled"; phase: Phase; promptId: string; reason: string; createdAt: string;
+} | {
+  type: "state_changed"; phase: Phase; state: UiState; now: string; createdAt: string; next?: string;
+} | {
+  type: "milestone"; phase: Phase; kind: UiTranscriptMilestoneKind; message: string; createdAt: string;
+} | {
+  type: "usage_checkpoint"; phase: Phase; totalUsageText: string; createdAt: string;
+};
 
 export interface UiPresentationState {
   events: UiEvent[];
@@ -41,8 +48,7 @@ export interface UiPresentationState {
 
 export type SessionMessageKind = "info" | "success" | "warning" | "error" | "question" | "answer" | "result";
 
-export type SessionStatusKind =
-  "idle" | "thinking" | "drafting" | "running" | "retrying" | "waiting" | "reviewing" | "complete" | "failed";
+export type SessionStatusKind = "idle" | "thinking" | "drafting" | "running" | "retrying" | "waiting" | "reviewing" | "complete" | "failed";
 
 type NotifyLevel = "error" | "info" | "success" | "warning";
 
@@ -74,12 +80,78 @@ export interface RunSession {
   close: () => void;
   confirm: (prompt: string, config?: ConfirmPromptOptions) => Promise<boolean | null>;
   input: (prompt: string, config?: InputPromptOptions) => Promise<string | null>;
+  log: (event: string, data?: Record<string, unknown>) => void;
   message: (kind: SessionMessageKind, text: string) => void;
   phase: (phase: Phase) => void;
   snapshot: () => UiPresentationState;
   status: (kind: SessionStatusKind, text: string, next?: string) => void;
   usage: (totalUsageText: string) => void;
 }
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+const VALID_EVENT_TYPES = new Set<string>([
+  "phase_start",
+  "phase_end",
+  "question",
+  "answer",
+  "approach_selected",
+  "section_validated",
+  "round_start",
+  "round_end",
+  "draft_generated",
+  "review_result",
+  "task_start",
+  "attempt_start",
+  "attempt_end",
+  "task_end",
+  "stage_start",
+  "stage_update",
+  "stage_finish",
+  "iteration_start",
+  "iteration_end",
+  "eval_iteration_start",
+  "eval_iteration_end",
+  "status_changed",
+  "milestone",
+  "usage_checkpoint",
+]);
+
+const VALID_PHASES = new Set<string>(["brainstorm", "plan", "execute", "review"]);
+
+function validateEventType(eventType: string): void {
+  if (!VALID_EVENT_TYPES.has(eventType)) {
+    throw new Error(`[event-bus] Unknown AgentEvent type: "${eventType}"`);
+  }
+}
+
+function validatePhase(phase: unknown): void {
+  if (typeof phase !== "string" || !VALID_PHASES.has(phase)) {
+    throw new Error(`[event-bus] Invalid phase: "${String(phase)}"`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Emitter factories
+// ---------------------------------------------------------------------------
+
+export function createLogWriterEmitter(logger: LogWriter): AgentEventEmitter {
+  return {
+    emit(event: AgentEvent): void {
+      const eventData: Record<string, unknown> = { ...event };
+      delete eventData["type"];
+      delete eventData["phase"];
+      delete eventData["createdAt"];
+      logger.write(event.type, eventData);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// UI state store (internal — also exported for tests)
+// ---------------------------------------------------------------------------
 
 function messagePrefix(kind: UiTranscriptKind): string {
   return kind;
@@ -134,7 +206,7 @@ function kindForMessage(kind: SessionMessageKind): UiTranscriptKind {
   }
 }
 
-function statusToUiState(kind: SessionStatusKind): UiState | null {
+function sessionStatusToUiState(kind: SessionStatusKind): UiState | null {
   switch (kind) {
     case "idle": {
       return null;
@@ -162,6 +234,11 @@ function statusToUiState(kind: SessionStatusKind): UiState | null {
       return "failed";
     }
   }
+}
+
+function stringToUiState(state: string): UiState | null {
+  const valid = new Set<string>(["thinking", "waiting", "running", "retrying", "reviewing", "complete", "failed"]);
+  return valid.has(state) ? (state as UiState) : null;
 }
 
 function renderTranscriptEntry(entry: UiTranscriptEntry): string {
@@ -292,6 +369,54 @@ export function createUiStateStore(
   };
 }
 
+export function createMemoryUiAdapters() {
+  const transcript: UiTranscriptEntry[] = [];
+  let summary: UiCurrentSummary | null = null;
+
+  return {
+    summaryRenderer: {
+      render(nextSummary: UiCurrentSummary | null) {
+        summary = nextSummary == null ? null : { ...nextSummary };
+      },
+    } satisfies UiSummaryRenderer,
+    transcript,
+    transcriptSink: {
+      append(entry: UiTranscriptEntry) {
+        transcript.push(entry);
+      },
+    } satisfies UiTranscriptSink,
+    getSummary() {
+      return summary;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Utility exports
+// ---------------------------------------------------------------------------
+
+export function formatOptions(options: string[]): string {
+  if (options.length === 0) return "";
+  return options.map((option) => `- ${option}`).join("\n");
+}
+
+export function formatTotalUsageText(usage: UsageSummary): string {
+  return `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function promptIdFactory() {
+  let nextId = 1;
+  return () => `prompt-${String(nextId++)}`;
+}
+
 function createTranscriptSink(ctx: ExtensionCommandContext): UiTranscriptSink {
   return {
     append(entry) {
@@ -320,70 +445,57 @@ function createSummaryRenderer(
         if (ctx.hasUI) ctx.ui.setStatus("ralpix", undefined);
         return;
       }
-      const statusText = summary.now.length === 0
-        ? `ralpix: ${summary.phase} | ${summary.state}`
-        : `ralpix: ${summary.phase} | ${summary.state} | ${summary.now}`;
+      const statusText =
+        summary.now.length === 0
+          ? `ralpix: ${summary.phase} | ${summary.state}`
+          : `ralpix: ${summary.phase} | ${summary.state} | ${summary.now}`;
       ctx.ui.setStatus("ralpix", statusText);
     },
   };
 }
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
+// ---------------------------------------------------------------------------
+// createEventBus — replaces createCliSession
+// ---------------------------------------------------------------------------
 
-function promptIdFactory() {
-  let nextId = 1;
-  return () => `prompt-${String(nextId++)}`;
-}
-
-function inferPhase(title: string): Phase {
-  if (title.startsWith("brainstorm:")) return "brainstorm";
-  if (title.startsWith("plan:")) return "plan";
-  if (title.startsWith("review:")) return "review";
-  return "execute";
-}
-
-export function formatOptions(options: string[]): string {
-  if (options.length === 0) return "";
-  return options.map((option) => `- ${option}`).join("\n");
-}
-
-export function formatTotalUsageText(usage: UsageSummary): string {
-  return `in ${fmtTokens(usage.input)}  out ${fmtTokens(usage.output)}  $${usage.cost.toFixed(3)}`;
-}
-
-export function createMemoryUiAdapters() {
-  const transcript: UiTranscriptEntry[] = [];
-  let summary: UiCurrentSummary | null = null;
-
-  return {
-    summaryRenderer: {
-      render(nextSummary: UiCurrentSummary | null) {
-        summary = nextSummary == null ? null : { ...nextSummary };
-      },
-    } satisfies UiSummaryRenderer,
-    transcript,
-    transcriptSink: {
-      append(entry: UiTranscriptEntry) {
-        transcript.push(entry);
-      },
-    } satisfies UiTranscriptSink,
-    getSummary() {
-      return summary;
-    },
-  };
-}
-
-export function createCliSession(
+export function createEventBus(
   ctx: ExtensionCommandContext,
-  title: string,
-  initialPhase: Phase = inferPhase(title),
+  initialPhase: Phase,
+  emitters: AgentEventEmitter[],
 ): RunSession {
   const transcriptSink = createTranscriptSink(ctx);
   const summaryRenderer = createSummaryRenderer(ctx, initialPhase);
   const stateStore = createUiStateStore(initialPhase, transcriptSink, summaryRenderer);
   const nextPromptId = promptIdFactory();
+
+  function dispatchAgentEvent(event: AgentEvent): void {
+    const phase = event.phase;
+    const createdAt = event.createdAt;
+
+    if (event.type === "milestone") {
+      stateStore.applyEvent({ type: "milestone", phase, kind: event.kind as UiTranscriptMilestoneKind, message: event.message, createdAt });
+    } else if (event.type === "status_changed") {
+      const uiState = stringToUiState(event.state);
+      if (uiState !== null && event.now.length > 0) {
+        stateStore.applyEvent({
+          type: "state_changed",
+          phase,
+          state: uiState,
+          now: event.now,
+          ...(event.next == null ? {} : { next: event.next }),
+          createdAt,
+        });
+      } else {
+        stateStore.clearSummary();
+      }
+    } else if (event.type === "usage_checkpoint") {
+      stateStore.applyEvent({ type: "usage_checkpoint", phase, totalUsageText: event.totalUsageText, createdAt });
+    }
+
+    for (const emitter of emitters) {
+      emitter.emit(event);
+    }
+  }
 
   const session: RunSession = {
     async choose(prompt, options, config) {
@@ -495,13 +607,22 @@ export function createCliSession(
       });
       return null;
     },
-    message(kind, text) {
-      stateStore.applyEvent({
-        type: "milestone",
-        phase: stateStore.phase(),
-        kind: kindForMessage(kind) as UiTranscriptMilestoneKind,
-        message: text,
+    log(eventType: string, data: Record<string, unknown> = {}): void {
+      validateEventType(eventType);
+      const phase = stateStore.phase();
+      validatePhase(phase);
+      const event = {
+        type: eventType,
+        phase,
         createdAt: nowIso(),
+        ...data,
+      } as AgentEvent;
+      dispatchAgentEvent(event);
+    },
+    message(kind, text) {
+      session.log("milestone", {
+        kind: kindForMessage(kind),
+        message: text,
       });
     },
     phase(phase) {
@@ -511,27 +632,19 @@ export function createCliSession(
       return stateStore.snapshot();
     },
     status(kind, text, next) {
-      const state = statusToUiState(kind);
-      if (state == null || text.length === 0) {
+      const uiState = sessionStatusToUiState(kind);
+      if (uiState === null || text.length === 0) {
         session.clearStatus();
         return;
       }
-      stateStore.applyEvent({
-        type: "state_changed",
-        phase: stateStore.phase(),
-        state,
+      session.log("status_changed", {
+        state: uiState,
         now: text,
         ...(next == null ? {} : { next }),
-        createdAt: nowIso(),
       });
     },
     usage(totalUsageText) {
-      stateStore.applyEvent({
-        type: "usage_checkpoint",
-        phase: stateStore.phase(),
-        totalUsageText,
-        createdAt: nowIso(),
-      });
+      session.log("usage_checkpoint", { totalUsageText });
     },
   };
 

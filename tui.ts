@@ -14,7 +14,7 @@ import {
   type UsageSummary,
 } from "./logger.js";
 
-import type { UiCurrentSummary } from "./session.js";
+import type { UiCurrentSummary } from "./event-bus.js";
 import type { SubprocessUsage } from "./types.js";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 

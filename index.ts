@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, join as pathJoin, parse as pathParse, basename as pathBasename } from "node:path";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
+import { createEventBus, formatTotalUsageText } from "./event-bus.js";
 import { executeAllTasks } from "./executor.js";
 import {
   LogWriter,
@@ -34,7 +35,6 @@ import {
 import { parsePlan } from "./parser.js";
 import { runExistingPlanMenu, runPlanCreation } from "./planner.js";
 import { runReviewPipeline, runStandaloneReview } from "./reviewer.js";
-import { createCliSession, formatTotalUsageText } from "./session.js";
 import { createTokenLedger } from "./tui.js";
 
 import type {
@@ -659,7 +659,7 @@ async function runPlan(
 
   const config = loadConfig(ctx.cwd);
   const plan = parsePlan(planPath);
-  const session = createCliSession(ctx, plan.title, "execute");
+  const session = createEventBus(ctx, "execute", []);
 
   await maybeSwitchBranch(ctx, plan.title);
 

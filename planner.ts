@@ -11,13 +11,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { resolveModel, resolvePiAgentDir } from "./config.js";
+import { createEventBus, formatTotalUsageText, type RunSession } from "./event-bus.js";
 import { LogWriter, usageToData } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { buildTemporalContext, createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
 import { plannerLaunchConfigs } from "./planner-prompt.js";
 import { loadAgent, loadPrompt, expandPrompt } from "./prompt.js";
-import { createCliSession, formatTotalUsageText, type RunSession } from "./session.js";
 import { createTokenLedger } from "./tui.js";
 
 import type { RalpixConfig } from "./types.js";
@@ -711,7 +711,7 @@ export async function runPlanCreation(
 ): Promise<string | null> {
   const trimmed = description.trim();
   const logger = new LogWriter(ctx.cwd, "plan", `plan-${formatDateStamp(new Date())}`);
-  const session = createCliSession(ctx, `plan: ${trimmed}`, "plan");
+  const session = createEventBus(ctx, "plan", []);
   let endWritten = false;
   const writeEnd = (status: "accepted" | "rejected" | "cancelled" | "failed", planPath?: string): void => {
     if (endWritten) return;
@@ -1009,7 +1009,7 @@ export async function runExistingPlanMenu(
   ctx: ExtensionCommandContext,
   config: RalpixConfig,
 ): Promise<string | null> {
-  const session = createCliSession(ctx, `plan: ${planPath}`, "plan");
+  const session = createEventBus(ctx, "plan", []);
   const logger = new LogWriter(ctx.cwd, "plan", `plan-${formatDateStamp(new Date())}`);
   const ledger = createTokenLedger();
   const template = loadPrompt("plan-creation", ctx.cwd);

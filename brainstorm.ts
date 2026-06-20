@@ -10,11 +10,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 
 import { resolveModel, resolvePiAgentDir } from "./config.js";
+import { createEventBus, formatOptions, formatTotalUsageText, type RunSession } from "./event-bus.js";
 import { LogWriter, progressDirForCwd, usageToData } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug } from "./planner-debug.js";
 import { expandPrompt, loadPrompt } from "./prompt.js";
-import { createCliSession, formatOptions, formatTotalUsageText, type RunSession } from "./session.js";
 import { createTokenLedger } from "./tui.js";
 
 import type { ModelConfig, RalpixConfig } from "./types.js";
@@ -812,7 +812,7 @@ export async function runBrainstorm(
   const modelCfg = resolveModel(config, "brainstorm");
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   const ledger = createTokenLedger();
-  const session = createCliSession(ctx, `brainstorm: ${trimmed}`, "brainstorm");
+  const session = createEventBus(ctx, "brainstorm", []);
   const activeCheckpoints = listActiveCheckpoints(ctx.cwd);
   const selected = await chooseCheckpoint(session, trimmed, activeCheckpoints);
   if (selected == null) {

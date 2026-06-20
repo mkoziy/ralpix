@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMemoryUiAdapters, createUiStateStore } from "./session.js";
+import { createMemoryUiAdapters, createUiStateStore } from "./event-bus.js";
 
 void test("UI state store preserves transcript order across prompt lifecycle", () => {
   const adapters = createMemoryUiAdapters();

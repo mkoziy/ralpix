@@ -5,10 +5,10 @@
 import { execSync } from "node:child_process";
 
 import { buildSessionModelChange, resolveModel, resolvePiAgentDir } from "./config.js";
+import { createEventBus, formatTotalUsageText } from "./event-bus.js";
 import { formatUsageSummary, LogWriter, summarizeUsageSnapshot, usageToData } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
-import { createCliSession, formatTotalUsageText } from "./session.js";
 import { createTokenLedger } from "./tui.js";
 
 import type {
@@ -784,7 +784,7 @@ export async function runStandaloneReview(
 
   const diffCommands = buildDiffCommands(defaultBranch, reviewTarget);
 
-  const session = createCliSession(ctx, title, "review");
+  const session = createEventBus(ctx, "review", []);
   const ledger = createTokenLedger();
   session.message("info", `Starting ${title}`);
   session.status("reviewing", "Starting review...");

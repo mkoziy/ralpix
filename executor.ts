@@ -5,6 +5,7 @@
 import { execSync } from "node:child_process";
 
 import { buildModelArg, resolveModel, resolvePiAgentDir } from "./config.js";
+import { createEventBus, formatTotalUsageText, type RunSession } from "./event-bus.js";
 import { parsePlan, updatePlanTaskStatus } from "./parser.js";
 import {
   createPiProgressHooks,
@@ -13,7 +14,6 @@ import {
   summarizePiToolCall,
 } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
-import { createCliSession, formatTotalUsageText, type RunSession } from "./session.js";
 import { createTokenLedger } from "./tui.js";
 
 import type { LogWriter } from "./logger.js";
@@ -218,7 +218,7 @@ export async function executeTask(
   hooks?.onTaskStart?.(task);
   logger.write("task_start", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, itemCount: task.items.length });
 
-  const session = hooks?.session ?? createCliSession(ctx, `execute: Task ${task.number} - ${task.title}`, "execute");
+  const session = hooks?.session ?? createEventBus(ctx, "execute", []);
   const ledger = createTokenLedger();
 
   const template = loadPrompt("task-default", ctx.cwd);

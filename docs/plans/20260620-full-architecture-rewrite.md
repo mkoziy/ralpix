@@ -66,15 +66,15 @@ Existing behaviour preserved: brainstorm checkpoint/resume, clarification Q&A, c
 
 ### Task 3: Replace session.ts with event-bus.ts
 
-- [ ] Create `event-bus.ts` exporting `createEventBus(emitters: AgentEventEmitter[]): RunSession`
-- [ ] `RunSession` gains `log(event: string, data?: Record<string, unknown>): void` — emits typed `AgentEvent` to all registered emitters
-- [ ] **Runtime validation:** wrap `emit()` with a zod schema check (or equivalent) that throws at the emit site for malformed events — never at the reader. This catches missed or mis-shaped events during phase migration (Tasks 5–8) rather than silently writing bad JSONL.
-- [ ] `RunSession.message/status/usage` reimplemented as `log()` calls producing `milestone`, `status_changed`, `usage_checkpoint` events
-- [ ] `createCliSession` becomes `createEventBus` with two built-in emitters: LogWriter emitter + TUI emitter
-- [ ] LogWriter emitter: translates `AgentEvent` → `logger.write(phase, event, data)` with usage inlined
-- [ ] TUI emitter: translates `AgentEvent` → current TUI rendering (unchanged behaviour)
-- [ ] All callers of `createCliSession` updated to `createEventBus`
-- [ ] Delete `session.ts`
+- [x] Create `event-bus.ts` exporting `createEventBus(emitters: AgentEventEmitter[]): RunSession`
+- [x] `RunSession` gains `log(event: string, data?: Record<string, unknown>): void` — emits typed `AgentEvent` to all registered emitters
+- [x] **Runtime validation:** wrap `emit()` with a zod schema check (or equivalent) that throws at the emit site for malformed events — never at the reader. This catches missed or mis-shaped events during phase migration (Tasks 5–8) rather than silently writing bad JSONL.
+- [x] `RunSession.message/status/usage` reimplemented as `log()` calls producing `milestone`, `status_changed`, `usage_checkpoint` events
+- [x] `createCliSession` becomes `createEventBus` with two built-in emitters: LogWriter emitter + TUI emitter
+- [x] LogWriter emitter: translates `AgentEvent` → `logger.write(phase, event, data)` with usage inlined
+- [x] TUI emitter: translates `AgentEvent` → current TUI rendering (unchanged behaviour)
+- [x] All callers of `createCliSession` updated to `createEventBus`
+- [x] Delete `session.ts`
 
 ### Task 4: Tests for Tasks 1–3 (gate)
 
