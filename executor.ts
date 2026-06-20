@@ -216,7 +216,7 @@ export async function executeTask(
   hooks?: TaskExecutionHooks,
 ): Promise<TaskResult> {
   hooks?.onTaskStart?.(task);
-  logger.logTaskStart(task);
+  logger.write("task_start", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, itemCount: task.items.length });
 
   const session = hooks?.session ?? createCliSession(ctx, `execute: Task ${task.number} - ${task.title}`, "execute");
   const ledger = createTokenLedger();
@@ -258,7 +258,7 @@ export async function executeTask(
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
     try {
       const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
-      logger.logTaskInfo(task, `attempt ${attempt} launched (${modelLabel})`);
+      logger.write("task_info", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, detail: `attempt ${attempt} launched (${modelLabel})` });
       session.message("info", `${task.title} - attempt ${attempt} started`);
 
       session.status("running", `Attempt ${attempt}: running...`);
@@ -274,7 +274,7 @@ export async function executeTask(
           hooks?.onUsage?.(provider, model, usage);
         },
         (detail) => {
-          logger.logTaskInfo(task, `attempt ${attempt}: ${detail}`);
+          logger.write("task_info", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, detail: `attempt ${attempt}: ${detail}` });
         },
       );
       const wrappedHooks: PiSubprocessHooks = {
@@ -321,7 +321,7 @@ export async function executeTask(
           .replaceAll("{{taskNumber}}", String(task.number));
         const hash = tryCommit(ctx.cwd, commitMsg, config.commitEnabled);
 
-        logger.logTaskEnd(task, true, hash === null ? "no commit" : `commit ${hash}`);
+        logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: true, detail: hash === null ? "no commit" : `commit ${hash}` });
         updatePlanTaskStatus(plan.path, task.id, task.title, "completed");
 
         const taskResult = {
@@ -337,7 +337,7 @@ export async function executeTask(
       lastError = result.summary;
       lastErrorFull = result.fullSummary ?? result.summary;
       if (attempt <= config.maxRetries) {
-        logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying (${lastErrorFull})`);
+        logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: false, detail: `attempt ${attempt} failed, retrying (${lastErrorFull})` });
         session.message("warning", `Attempt ${attempt}: ${lastError.slice(0, 100)}`);
         session.status("retrying", `Retrying after attempt ${attempt}`);
       }
@@ -345,7 +345,7 @@ export async function executeTask(
       lastError = error instanceof Error ? error.message : String(error);
       lastErrorFull = lastError;
       if (attempt <= config.maxRetries) {
-        logger.logTaskEnd(task, false, `attempt ${attempt} failed, retrying`);
+        logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: false, detail: `attempt ${attempt} failed, retrying` });
       }
     }
   }
@@ -358,7 +358,7 @@ export async function executeTask(
     session.close();
   }
 
-  logger.logTaskEnd(task, false, finalErrorFull);
+  logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: false, detail: finalErrorFull });
   updatePlanTaskStatus(plan.path, task.id, task.title, "failed");
   const taskResult = { success: false, error: finalError };
   hooks?.onTaskFinish?.(task, taskResult);

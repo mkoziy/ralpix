@@ -57,12 +57,12 @@ Existing behaviour preserved: brainstorm checkpoint/resume, clarification Q&A, c
 
 ### Task 2: Upgrade LogWriter — subdirectories per phase + migrate existing files
 
-- [ ] Add `phase: Phase` to `LogWriter` constructor; write to `.ralpix/progress/{phase}/{sessionName}.jsonl`
-- [ ] Replace `progressDirForCwd(cwd)` with `progressDirForPhase(cwd, phase)`
-- [ ] Remove all phase-specific helper methods (`logTaskStart`, `logTaskEnd`, `logTaskInfo`, `logTaskUsage`, `logReviewStageStart`, `logReviewStageUpdate`, `logReviewStageFinish`, `logReviewStepUsage`, `logReviewStart`, `logReviewComplete`, `logReviewUsage`, `logStart`, `logComplete`) — callers will use `session.log()` instead
-- [ ] Keep only `write(event: string, data?: Record<string, unknown>): void` as the base method
-- [ ] Update `PROGRESS_FILE` env var passed to subprocesses to reflect new path
-- [ ] **Migration:** on startup, if `.ralpix/progress/*.jsonl` files exist at the old flat path, move them into `.ralpix/progress/{inferred-phase}/` based on event types present, or into `.ralpix/progress/unknown/` if ambiguous. Log a one-time warning to stderr. Session resume (`restoreState`) must try both old and new path conventions until migration is complete.
+- [x] Add `phase: Phase` to `LogWriter` constructor; write to `.ralpix/progress/{phase}/{sessionName}.jsonl`
+- [x] Replace `progressDirForCwd(cwd)` with `progressDirForPhase(cwd, phase)`
+- [x] Remove all phase-specific helper methods (`logTaskStart`, `logTaskEnd`, `logTaskInfo`, `logTaskUsage`, `logReviewStageStart`, `logReviewStageUpdate`, `logReviewStageFinish`, `logReviewStepUsage`, `logReviewStart`, `logReviewComplete`, `logReviewUsage`, `logStart`, `logComplete`) — callers will use `session.log()` instead
+- [x] Keep only `write(event: string, data?: Record<string, unknown>): void` as the base method
+- [x] Update `PROGRESS_FILE` env var passed to subprocesses to reflect new path
+- [x] **Migration:** on startup, if `.ralpix/progress/*.jsonl` files exist at the old flat path, move them into `.ralpix/progress/{inferred-phase}/` based on event types present, or into `.ralpix/progress/unknown/` if ambiguous. Log a one-time warning to stderr. Session resume (`restoreState`) must try both old and new path conventions until migration is complete.
 
 ### Task 3: Replace session.ts with event-bus.ts
 

@@ -23,6 +23,10 @@ import {
   LogWriter,
   fmtTokens,
   formatUsageBreakdownLines,
+  formatUsageSummary,
+  migrateProgressFiles,
+  summarizeUsageSnapshot,
+  usageToData,
   type UsageBreakdownEntry,
   type UsageSnapshot,
   type UsageSummary,
@@ -646,6 +650,8 @@ async function runPlan(
     return;
   }
 
+  migrateProgressFiles(ctx.cwd);
+
   if (!existsSync(ralpixHomeDir())) {
     ctx.ui.notify("First run — initialising ~/.ralpix/...", "info");
     initRalpixHome();
@@ -660,11 +666,12 @@ async function runPlan(
   const pendingCount = plan.tasks.filter((t) => t.status === "pending").length;
   session.message("info", `"${plan.title}" - ${plan.tasks.length} tasks, ${pendingCount} pending`);
 
-  // Setup progress logger
+  // Setup progress loggers — one per phase, each writes to .ralpix/progress/{phase}/
   const fileName = planPath.split("/").pop() ?? "plan";
   const planStem = fileName.replace(/\.md$/, "");
-  const logger = new LogWriter(ctx.cwd, planStem);
-  logger.logStart(plan);
+  const executeLogger = new LogWriter(ctx.cwd, "execute", planStem);
+  const reviewLogger = new LogWriter(ctx.cwd, "review", planStem);
+  executeLogger.write("start", { planTitle: plan.title, planPath: plan.path, taskCount: plan.tasks.length });
 
   // Token ledger — accumulates usage across all subprocess calls
   const ledger = createTokenLedger();
@@ -694,7 +701,7 @@ async function runPlan(
     phase: "executing",
     completedTasks: plan.tasks.filter((t) => t.status === "completed").map((t) => t.id),
     failedTasks: plan.tasks.filter((t) => t.status === "failed").map((t) => t.id),
-    progressFile: logger.filePath,
+    progressFile: executeLogger.filePath,
     review: createInitialReviewState(config.externalReviewEnabled),
   };
   persistState(pi, state);
@@ -704,7 +711,7 @@ async function runPlan(
   if (pendingCount > 0) {
     session.message("info", `Executing ${pendingCount} pending tasks...`);
 
-    const results = await executeAllTasks(ctx, pi, plan, config, logger, {
+    const results = await executeAllTasks(ctx, pi, plan, config, executeLogger, {
       session,
       onTaskStart(task) {
         taskUsageStart = ledger.detailedSnapshot();
@@ -718,7 +725,7 @@ async function runPlan(
         const totalUsage = ledger.detailedSnapshot();
         const taskUsageBreakdown = usageBreakdownFor(task.id, taskUsageById);
         const taskUsageLines = formatUsageBreakdownLines(taskUsageBreakdown);
-        logger.logTaskUsage(task, stepUsage, totalUsage, taskUsageBreakdown);
+        executeLogger.write("task_usage", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, usage: usageToData(stepUsage, totalUsage, taskUsageBreakdown), summary: formatUsageSummary(summarizeUsageSnapshot(stepUsage), summarizeUsageSnapshot(totalUsage)) });
         const nextState = markTaskExecutionFinished(state, task.id, result.success);
         state.currentTaskId = nextState.currentTaskId;
         state.completedTasks = nextState.completedTasks;
@@ -753,7 +760,7 @@ async function runPlan(
   const reviewUsageStart = ledger.detailedSnapshot();
 
   try {
-    await runReviewPipeline(ctx, pi, plan, config, logger, {
+    await runReviewPipeline(ctx, pi, plan, config, reviewLogger, {
       onUsage,
       onStageStart(stage, detail) {
         reviewUsageStartById.set(stage, ledger.detailedSnapshot());
@@ -788,7 +795,7 @@ async function runPlan(
         const stageUsageBreakdown = diffUsageBreakdown(stage, stageUsageStartById, reviewUsageById);
         const stageUsageLines = formatUsageBreakdownLines(stageUsageBreakdown);
         if (stepUsage !== undefined) {
-          logger.logReviewStepUsage(stage, stepUsage, totalUsage, stageUsageBreakdown);
+          reviewLogger.write("stage_usage", { stage, stageLabel: REVIEW_STAGE_LABELS[stage], usage: usageToData(stepUsage, totalUsage, stageUsageBreakdown), summary: formatUsageSummary(summarizeUsageSnapshot(stepUsage), summarizeUsageSnapshot(totalUsage)) });
         }
         state.review = updateReviewStage(
           state.review ?? createInitialReviewState(config.externalReviewEnabled),
@@ -808,14 +815,16 @@ async function runPlan(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     session.message("warning", `Review pipeline error: ${msg}`);
-    logger.logReviewComplete({ status: "failed", error: msg });
+    reviewLogger.write("complete", { status: "failed", error: msg });
   }
-  logger.logReviewUsage(ledger.diffDetailedSince(reviewUsageStart), ledger.detailedSnapshot());
+  const reviewStepUsage = ledger.diffDetailedSince(reviewUsageStart);
+  const reviewTotalUsage = ledger.detailedSnapshot();
+  reviewLogger.write("usage", { usage: usageToData(reviewStepUsage, reviewTotalUsage), summary: formatUsageSummary(summarizeUsageSnapshot(reviewStepUsage), summarizeUsageSnapshot(reviewTotalUsage)) });
 
   // ---- Complete -----------------------------------------------------------
   state.phase = "complete";
   persistState(pi, state);
-  logger.logComplete();
+  executeLogger.write("complete", {});
   session.status("complete", "Plan complete");
 
   const { completedTasks, failedTasks } = state;
@@ -823,7 +832,7 @@ async function runPlan(
   const failed = failedTasks.length;
   session.message(
     failed > 0 ? "warning" : "success",
-    `"${plan.title}" complete - ${done} done, ${failed} failed. Progress: ${logger.filePath}`,
+    `"${plan.title}" complete - ${done} done, ${failed} failed. Progress: ${executeLogger.filePath}`,
   );
 
   // Move completed plan to docs/plans/completed/

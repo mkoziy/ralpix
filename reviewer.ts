@@ -5,7 +5,7 @@
 import { execSync } from "node:child_process";
 
 import { buildSessionModelChange, resolveModel, resolvePiAgentDir } from "./config.js";
-import { LogWriter } from "./logger.js";
+import { formatUsageSummary, LogWriter, summarizeUsageSnapshot, usageToData } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { loadPrompt, expandPrompt } from "./prompt.js";
 import { createCliSession, formatTotalUsageText } from "./session.js";
@@ -391,7 +391,7 @@ async function runReviewProcess(
     onUsage,
     timeoutMs,
     (detail) => {
-      logger.logReviewStageUpdate(stage, detail, { phase });
+      logger.write("stage_update", { stage, detail, phase });
     },
   );
 }
@@ -409,12 +409,8 @@ async function runFirstReview(
   const modelCfg = resolveModel(config, "review-first");
   const effortSuffix = modelCfg.effort === null ? "" : ` — effort: ${modelCfg.effort}`;
   hooks?.onStageStart?.(REVIEW_STAGES.firstPass, "checking all completed tasks");
-  logger.logReviewStageStart(REVIEW_STAGES.firstPass, "checking all completed tasks", {
-    agents: 5,
-    mode: reviewOnly ? "review-only" : "review-and-fix",
-    ...(modelCfg.effort === null ? {} : { effort: modelCfg.effort }),
-  });
-  logger.logReviewStageUpdate(REVIEW_STAGES.firstPass, `started (5 agents, comprehensive)${effortSuffix}`);
+  logger.write("stage_start", { stage: REVIEW_STAGES.firstPass, detail: "checking all completed tasks", agents: 5, mode: reviewOnly ? "review-only" : "review-and-fix", ...(modelCfg.effort === null ? {} : { effort: modelCfg.effort }) });
+  logger.write("stage_update", { stage: REVIEW_STAGES.firstPass, detail: `started (5 agents, comprehensive)${effortSuffix}` });
 
   const timeoutMs = config.reviewTimeoutMs ?? 30 * 60 * 1000;
   const result = await runReviewProcess(
@@ -430,16 +426,14 @@ async function runFirstReview(
   if (result.success) {
     const detail = result.summary.slice(0, 120);
     const msg = "COMPLETE";
-    logger.logReviewStageFinish(REVIEW_STAGES.firstPass, "complete", result.fullSummary ?? result.summary, { result: msg });
+    logger.write("stage_finish", { stage: REVIEW_STAGES.firstPass, status: "complete", detail: result.fullSummary ?? result.summary, result: msg });
     hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "complete", detail);
     hooks?.onStageReport?.(REVIEW_STAGES.firstPass, result.summary);
     return msg;
   }
 
   const msg = `ERROR: ${result.summary.slice(0, 200)}`;
-  logger.logReviewStageFinish(REVIEW_STAGES.firstPass, "failed", result.fullSummary ?? result.summary, {
-    result: `ERROR: ${result.fullSummary ?? result.summary}`,
-  });
+  logger.write("stage_finish", { stage: REVIEW_STAGES.firstPass, status: "failed", detail: result.fullSummary ?? result.summary, result: `ERROR: ${result.fullSummary ?? result.summary}` });
   hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "failed", result.summary.slice(0, 120));
   return msg;
 }
@@ -458,25 +452,22 @@ async function runReviewLoop(
 
   hooks?.onStageStart?.(REVIEW_STAGES.secondPass, `quality review — iteration 1/${maxIterations}`);
   const timeoutMs = config.reviewTimeoutMs ?? 30 * 60 * 1000;
-  logger.logReviewStageStart(REVIEW_STAGES.secondPass, `quality review — iteration 1/${maxIterations}`, {
-    maxIterations,
-    mode: reviewOnly ? "review-only" : "review-and-fix",
-  });
-  logger.logReviewStageUpdate(REVIEW_STAGES.secondPass, `started (max ${maxIterations} iterations, 2 agents: quality + implementation)`);
+  logger.write("stage_start", { stage: REVIEW_STAGES.secondPass, detail: `quality review — iteration 1/${maxIterations}`, maxIterations, mode: reviewOnly ? "review-only" : "review-and-fix" });
+  logger.write("stage_update", { stage: REVIEW_STAGES.secondPass, detail: `started (max ${maxIterations} iterations, 2 agents: quality + implementation)` });
 
   for (let i = 0; i < maxIterations; i++) {
     hooks?.onStageUpdate?.(REVIEW_STAGES.secondPass, `quality review — iteration ${i + 1}/${maxIterations}`);
     const headBefore = getHeadHash(ctx.cwd);
     if (headBefore.length === 0) {
       const msg = "ERROR: cannot determine HEAD hash (not a git repo?)";
-      logger.logReviewStageFinish(REVIEW_STAGES.secondPass, "failed", "cannot determine git HEAD", { result: msg });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.secondPass, status: "failed", detail: "cannot determine git HEAD", result: msg });
       hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "failed", "cannot determine git HEAD");
       return msg;
     }
 
     const modelCfg = resolveModel(config, "review-second");
     const effortInfo = modelCfg.effort === null ? "" : ` (effort: ${modelCfg.effort})`;
-    logger.logReviewStageUpdate(REVIEW_STAGES.secondPass, `iteration ${i + 1}/${maxIterations} — running review...${effortInfo}`);
+    logger.write("stage_update", { stage: REVIEW_STAGES.secondPass, detail: `iteration ${i + 1}/${maxIterations} — running review...${effortInfo}` });
 
     const result = await runReviewProcess(
       ctx, "review-second", config, plan, logger, defaultBranch, "second", true, undefined, hooks?.onUsage,
@@ -490,16 +481,14 @@ async function runReviewLoop(
 
     if (!result.success) {
       const msg = `ERROR: ${result.summary.slice(0, 200)}`;
-      logger.logReviewStageFinish(REVIEW_STAGES.secondPass, "failed", result.fullSummary ?? result.summary, {
-        result: `ERROR: ${result.fullSummary ?? result.summary}`,
-      });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.secondPass, status: "failed", detail: result.fullSummary ?? result.summary, result: `ERROR: ${result.fullSummary ?? result.summary}` });
       hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "failed", result.summary.slice(0, 120));
       return msg;
     }
 
     if (reviewOnly) {
       const msg = "COMPLETE (review-only) — findings reported";
-      logger.logReviewStageFinish(REVIEW_STAGES.secondPass, "complete", "review-only pass complete", { result: msg });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.secondPass, status: "complete", detail: "review-only pass complete", result: msg });
       hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "complete", "review-only pass complete");
       hooks?.onStageReport?.(REVIEW_STAGES.secondPass, result.summary);
       return msg;
@@ -508,23 +497,18 @@ async function runReviewLoop(
     const headAfter = getHeadHash(ctx.cwd);
     if (headAfter === headBefore) {
       const msg = `COMPLETE (iteration ${i + 1}) — no changes, review clean`;
-      logger.logReviewStageFinish(REVIEW_STAGES.secondPass, "complete", `review clean at iteration ${i + 1}`, { result: msg });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.secondPass, status: "complete", detail: `review clean at iteration ${i + 1}`, result: msg });
       hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "complete", `review clean at iteration ${i + 1}`);
       hooks?.onStageReport?.(REVIEW_STAGES.secondPass, result.summary);
       return msg;
     }
 
     hooks?.onStageUpdate?.(REVIEW_STAGES.secondPass, `fixes applied in iteration ${i + 1}`);
-    logger.logReviewStageUpdate(
-      REVIEW_STAGES.secondPass,
-      `iteration ${i + 1}: fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}), continuing...`,
-    );
+    logger.write("stage_update", { stage: REVIEW_STAGES.secondPass, detail: `iteration ${i + 1}: fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)}), continuing...` });
   }
 
   const msg = `MAX_ITERATIONS (${maxIterations}) — review loop exhausted`;
-  logger.logReviewStageFinish(REVIEW_STAGES.secondPass, "complete", `max iterations reached (${maxIterations})`, {
-    result: msg,
-  });
+  logger.write("stage_finish", { stage: REVIEW_STAGES.secondPass, status: "complete", detail: `max iterations reached (${maxIterations})`, result: msg });
   hooks?.onStageFinish?.(REVIEW_STAGES.secondPass, "complete", `max iterations reached (${maxIterations})`);
   return msg;
 }
@@ -551,8 +535,8 @@ async function runExternalReviewLoop(
 
   if ((reviewerLabel ?? "").length === 0) {
     const msg = "SKIPPED — no model configured (externalReviewModel/defaultModel)";
-    logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "skipped", "no external model configured", { result: msg });
-    logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "skipped", "no findings to evaluate");
+    logger.write("stage_finish", { stage: REVIEW_STAGES.externalReview, status: "skipped", detail: "no external model configured", result: msg });
+    logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "skipped", detail: "no findings to evaluate" });
     hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "skipped", "no external model configured");
     hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "no findings to evaluate");
     return msg;
@@ -561,16 +545,8 @@ async function runExternalReviewLoop(
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   const timeoutMs = config.reviewTimeoutMs ?? 30 * 60 * 1000;
 
-  logger.logReviewStageStart(REVIEW_STAGES.externalReview, `auditing changes — iteration 1/${maxIterations}`, {
-    reviewer: reviewerName,
-    maxIterations,
-    patience,
-    mode: reviewOnly ? "review-only" : "review-and-fix",
-  });
-  logger.logReviewStageUpdate(
-    REVIEW_STAGES.externalReview,
-    `started (reviewer: ${reviewerName}, max ${maxIterations} iterations, patience: ${patience})`,
-  );
+  logger.write("stage_start", { stage: REVIEW_STAGES.externalReview, detail: `auditing changes — iteration 1/${maxIterations}`, reviewer: reviewerName, maxIterations, patience, mode: reviewOnly ? "review-only" : "review-and-fix" });
+  logger.write("stage_update", { stage: REVIEW_STAGES.externalReview, detail: `started (reviewer: ${reviewerName}, max ${maxIterations} iterations, patience: ${patience})` });
 
   let unchangedRounds = 0;
   let previousFindings = "";
@@ -608,7 +584,7 @@ git diff ${lastReviewHead}..HEAD
       ].join("\n");
     }
 
-    logger.logReviewStageUpdate(REVIEW_STAGES.externalReview, `iteration ${i + 1}/${maxIterations} — running external reviewer...`);
+    logger.write("stage_update", { stage: REVIEW_STAGES.externalReview, detail: `iteration ${i + 1}/${maxIterations} — running external reviewer...` });
 
     const reviewResult = await runReviewSession(
       ctx,
@@ -622,15 +598,13 @@ git diff ${lastReviewHead}..HEAD
       hooks?.onUsage,
       timeoutMs,
       (detail) => {
-        logger.logReviewStageUpdate(REVIEW_STAGES.externalReview, detail);
+        logger.write("stage_update", { stage: REVIEW_STAGES.externalReview, detail });
       },
     );
     if (!reviewResult.success) {
       const msg = `ERROR: ${reviewResult.summary.slice(0, 200)}`;
-      logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "failed", reviewResult.fullSummary ?? reviewResult.summary, {
-        result: `ERROR: ${reviewResult.fullSummary ?? reviewResult.summary}`,
-      });
-      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "failed", "external reviewer failed");
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalReview, status: "failed", detail: reviewResult.fullSummary ?? reviewResult.summary, result: `ERROR: ${reviewResult.fullSummary ?? reviewResult.summary}` });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "failed", detail: "external reviewer failed" });
       hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "failed", reviewResult.summary.slice(0, 120));
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "failed", "external reviewer failed");
       return msg;
@@ -639,15 +613,15 @@ git diff ${lastReviewHead}..HEAD
     const findings = reviewResult.summary.trim();
     if (findings.length === 0 || (/^no issues found$/i).test(findings) || findings.length < 10) {
       const msg = `COMPLETE (iteration ${i + 1}) — no issues found`;
-      logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "complete", "no issues found", { result: msg });
-      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "skipped", "no findings to evaluate");
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalReview, status: "complete", detail: "no issues found", result: msg });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "skipped", detail: "no findings to evaluate" });
       hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", "no issues found");
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "no findings to evaluate");
       hooks?.onStageReport?.(REVIEW_STAGES.externalReview, findings);
       return msg;
     }
 
-    logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "complete", `findings reported in iteration ${i + 1}`);
+    logger.write("stage_finish", { stage: REVIEW_STAGES.externalReview, status: "complete", detail: `findings reported in iteration ${i + 1}` });
     hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", `findings reported in iteration ${i + 1}`);
     hooks?.onStageReport?.(REVIEW_STAGES.externalReview, findings);
     previousFindings = findings;
@@ -655,15 +629,15 @@ git diff ${lastReviewHead}..HEAD
 
     if (reviewOnly) {
       const msg = "COMPLETE (review-only) — findings reported, no fixes applied";
-      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "skipped", "review-only mode", { result: msg });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "skipped", detail: "review-only mode", result: msg });
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "review-only mode");
       return msg;
     }
 
     const headBefore = getHeadHash(ctx.cwd);
     hooks?.onStageStart?.(REVIEW_STAGES.externalEval, `fixing findings — iteration ${i + 1}/${maxIterations}`);
-    logger.logReviewStageStart(REVIEW_STAGES.externalEval, `fixing findings — iteration ${i + 1}/${maxIterations}`);
-    logger.logReviewStageUpdate(REVIEW_STAGES.externalEval, `iteration ${i + 1} — evaluating findings...`);
+    logger.write("stage_start", { stage: REVIEW_STAGES.externalEval, detail: `fixing findings — iteration ${i + 1}/${maxIterations}` });
+    logger.write("stage_update", { stage: REVIEW_STAGES.externalEval, detail: `iteration ${i + 1} — evaluating findings...` });
 
     const evalResult = await runReviewProcess(
       ctx,
@@ -686,16 +660,14 @@ git diff ${lastReviewHead}..HEAD
 
     if (!evalResult.success) {
       const msg = `ERROR: ${evalResult.summary.slice(0, 200)}`;
-      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "failed", evalResult.fullSummary ?? evalResult.summary, {
-        result: `ERROR: ${evalResult.fullSummary ?? evalResult.summary}`,
-      });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "failed", detail: evalResult.fullSummary ?? evalResult.summary, result: `ERROR: ${evalResult.fullSummary ?? evalResult.summary}` });
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "failed", evalResult.summary.slice(0, 120));
       return msg;
     }
 
     if (evalResult.summary.includes("EXTERNAL_REVIEW_DONE")) {
       const msg = `COMPLETE (iteration ${i + 1}) — all findings resolved`;
-      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "complete", "all findings resolved", { result: msg });
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "complete", detail: "all findings resolved", result: msg });
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", "all findings resolved");
       return msg;
     }
@@ -703,28 +675,26 @@ git diff ${lastReviewHead}..HEAD
     const headAfter = getHeadHash(ctx.cwd);
     if (headAfter === headBefore) {
       unchangedRounds++;
-      logger.logReviewStageUpdate(REVIEW_STAGES.externalEval, `no changes (${unchangedRounds}/${patience} stalemate rounds)`);
+      logger.write("stage_update", { stage: REVIEW_STAGES.externalEval, detail: `no changes (${unchangedRounds}/${patience} stalemate rounds)` });
       hooks?.onStageUpdate?.(REVIEW_STAGES.externalEval, `stalemate ${unchangedRounds}/${patience}`);
 
       if (unchangedRounds >= patience) {
         const msg = `STALEMATE — ${patience} rounds without changes`;
-        logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "complete", `stalemate after ${patience} rounds`, { result: msg });
+        logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "complete", detail: `stalemate after ${patience} rounds`, result: msg });
         hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", `stalemate after ${patience} rounds`);
         return msg;
       }
     } else {
       unchangedRounds = 0;
-      logger.logReviewStageUpdate(REVIEW_STAGES.externalEval, `fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)})`);
+      logger.write("stage_update", { stage: REVIEW_STAGES.externalEval, detail: `fixes applied (${headBefore.slice(0, 7)} → ${headAfter.slice(0, 7)})` });
       hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", `fixes applied in iteration ${i + 1}`);
-      logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "complete", `fixes applied in iteration ${i + 1}`);
+      logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "complete", detail: `fixes applied in iteration ${i + 1}` });
     }
   }
 
   const msg = `MAX_ITERATIONS (${maxIterations})`;
-  logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "complete", `max iterations reached (${maxIterations})`, {
-    result: msg,
-  });
-  logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "complete", `max iterations reached (${maxIterations})`);
+  logger.write("stage_finish", { stage: REVIEW_STAGES.externalReview, status: "complete", detail: `max iterations reached (${maxIterations})`, result: msg });
+  logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "complete", detail: `max iterations reached (${maxIterations})` });
   hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "complete", `max iterations reached (${maxIterations})`);
   hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "complete", `max iterations reached (${maxIterations})`);
   return msg;
@@ -740,15 +710,11 @@ export async function runReviewPipeline(
   reviewOnly = false,
   diffCommands?: string,
 ): Promise<{ firstResult: string; externalResult: string; loopResult: string }> {
-  logger.logReviewStart({
-    goal: plan.title,
-    planPath: plan.path,
-    mode: reviewOnly ? "review-only" : "review-and-fix",
-  });
+  logger.write("start", { goal: plan.title, planPath: plan.path, mode: reviewOnly ? "review-only" : "review-and-fix" });
 
   if (!config.reviewEnabled) {
     const msg = "SKIPPED (review disabled)";
-    logger.logReviewComplete({ status: "skipped", reason: REVIEW_DISABLED_REASON });
+    logger.write("complete", { status: "skipped", reason: REVIEW_DISABLED_REASON });
     hooks?.onStageFinish?.(REVIEW_STAGES.firstPass, "skipped", REVIEW_DISABLED_REASON);
     hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "skipped", REVIEW_DISABLED_REASON);
     hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", REVIEW_DISABLED_REASON);
@@ -768,14 +734,14 @@ export async function runReviewPipeline(
       ctx, config, plan, logger, defaultBranch, hooks, reviewOnly, diffCommands,
     );
   } else {
-    logger.logReviewStageFinish(REVIEW_STAGES.externalReview, "skipped", "external review disabled");
-    logger.logReviewStageFinish(REVIEW_STAGES.externalEval, "skipped", "external review disabled");
+    logger.write("stage_finish", { stage: REVIEW_STAGES.externalReview, status: "skipped", detail: "external review disabled" });
+    logger.write("stage_finish", { stage: REVIEW_STAGES.externalEval, status: "skipped", detail: "external review disabled" });
     hooks?.onStageFinish?.(REVIEW_STAGES.externalReview, "skipped", "external review disabled");
     hooks?.onStageFinish?.(REVIEW_STAGES.externalEval, "skipped", "external review disabled");
   }
 
   const loopResult = await runReviewLoop(ctx, config, plan, logger, defaultBranch, hooks, reviewOnly, diffCommands);
-  logger.logReviewComplete({ status: "complete", firstResult, externalResult, loopResult });
+  logger.write("complete", { status: "complete", firstResult, externalResult, loopResult });
 
   return { firstResult, externalResult, loopResult };
 }
@@ -804,7 +770,7 @@ export async function runStandaloneReview(
 
   const timestamp = new Date().toISOString().slice(0, 10).replaceAll("-", "");
   const stem = `review-${timestamp}-${currentBranch.replaceAll("/", "-")}`;
-  const logger = new LogWriter(ctx.cwd, stem);
+  const logger = new LogWriter(ctx.cwd, "review", stem);
 
   const plan: Plan = {
     path: "",
@@ -874,7 +840,7 @@ export async function runStandaloneReview(
       const statusSuffix = status === "failed" ? " (failed)" : "";
       const detailSuffix = detail != null && detail.length > 0 ? ` — ${detail}` : "";
       if (detailedStepUsage !== undefined) {
-        logger.logReviewStepUsage(stage, detailedStepUsage, ledger.detailedSnapshot(), stageLedger?.breakdown() ?? []);
+        logger.write("stage_usage", { stage, stageLabel: REVIEW_STAGE_LABELS[stage], usage: usageToData(detailedStepUsage, ledger.detailedSnapshot(), stageLedger?.breakdown() ?? []), summary: formatUsageSummary(summarizeUsageSnapshot(detailedStepUsage), summarizeUsageSnapshot(ledger.detailedSnapshot())) });
       }
       const usageSummary = stepUsage == null
         ? ""

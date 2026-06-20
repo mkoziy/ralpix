@@ -506,7 +506,7 @@ async function handleUnderstandPhase(
   const question = extractQuestion(output);
   if (question == null) return "continue";
 
-  logger.write("brainstorm", "question", {
+  logger.write("question", {
     round,
     question: question.question,
     options: question.options,
@@ -524,7 +524,7 @@ async function handleUnderstandPhase(
     options: question.options,
     answer,
   });
-  logger.write("brainstorm", "answer", {
+  logger.write("answer", {
     round,
     question: question.question,
     answer,
@@ -553,7 +553,7 @@ async function handleApproachesPhase(
   const selected = await selectApproach(session, approachesRaw);
   if (selected == null) return "cancel";
   state.selectedApproach = selected;
-  logger.write("brainstorm", "approach_selected", {
+  logger.write("approach_selected", {
     round,
     approach: selected,
     approaches: approachesRaw,
@@ -595,7 +595,7 @@ async function handleDesignPhase(
     });
     state.pendingSection = null;
     state.pendingFeedback = null;
-    logger.write("brainstorm", "section_validated", {
+    logger.write("section_validated", {
       round,
       sectionTitle: section.title,
       outcome: "accepted",
@@ -608,7 +608,7 @@ async function handleDesignPhase(
   if (validation === "skip") {
     state.pendingSection = null;
     state.pendingFeedback = "The user is satisfied with the design coverage so far. Please move to the summary phase.";
-    logger.write("brainstorm", "section_validated", {
+    logger.write("section_validated", {
       round,
       sectionTitle: section.title,
       outcome: "skipped_to_summary",
@@ -619,7 +619,7 @@ async function handleDesignPhase(
   }
 
   state.pendingFeedback = validation;
-  logger.write("brainstorm", "section_validated", {
+  logger.write("section_validated", {
     round,
     sectionTitle: section.title,
     outcome: "feedback_requested",
@@ -706,7 +706,7 @@ async function runBrainstormSubprocess(
   const totalUsage = ledger.detailedSnapshot();
   const breakdown = roundLedger.breakdown();
 
-  logger.write("brainstorm", "usage", {
+  logger.write("usage", {
     round,
     usage: usageToData(detailedStepUsage, totalUsage, breakdown),
   });
@@ -748,7 +748,7 @@ async function runBrainstormRound(
   logger: LogWriter,
   checkpoint: BrainstormCheckpoint,
 ): Promise<{ action: "continue" } | { action: "return"; value: string | null }> {
-  logger.write("brainstorm", "round_start", {
+  logger.write("round_start", {
     round,
     qaCount: state.qaHistory.length,
     designSectionCount: state.designSections.length,
@@ -824,17 +824,17 @@ export async function runBrainstorm(
   const checkpoint = selected === "new" ? createCheckpoint(trimmed) : selected;
   const state = cloneBrainstormState(checkpoint.state);
   const startRound = Math.max(1, checkpoint.round + (selected === "new" ? 1 : 0));
-  const logger = new LogWriter(ctx.cwd, checkpoint.logSessionName);
+  const logger = new LogWriter(ctx.cwd, "brainstorm", checkpoint.logSessionName);
 
   if (selected === "new") {
     session.message("info", `Brainstorming: "${trimmed}"...`);
     appendPlanCreationDebug(ctx.cwd, `runBrainstorm: start description=${JSON.stringify(trimmed)}`);
     persistCheckpoint(ctx.cwd, checkpoint, state, 0);
-    logger.write("brainstorm", "start", { description: trimmed, sessionId: checkpoint.sessionId });
+    logger.write("start", { description: trimmed, sessionId: checkpoint.sessionId });
   } else {
     session.message("info", `Resuming brainstorm: "${state.description}"`);
     appendPlanCreationDebug(ctx.cwd, `runBrainstorm: resume session=${checkpoint.sessionId}`);
-    logger.write("brainstorm", "resume", {
+    logger.write("resume", {
       description: state.description,
       sessionId: checkpoint.sessionId,
       round: checkpoint.round,
@@ -862,7 +862,7 @@ export async function runBrainstorm(
     if (outcome.action === "return") {
       if (outcome.value == null) {
         persistCheckpoint(ctx.cwd, checkpoint, state, checkpoint.round, checkpoint.lastError);
-        logger.write("brainstorm", "end", {
+        logger.write("end", {
           status: "cancelled",
           rounds: round,
           sessionId: checkpoint.sessionId,
@@ -874,7 +874,7 @@ export async function runBrainstorm(
         persistCheckpoint(ctx.cwd, checkpoint, state, round, null);
         session.status("complete", "Brainstorm complete!");
         session.message("success", "Brainstorm complete!");
-        logger.write("brainstorm", "end", {
+        logger.write("end", {
           status: "complete",
           rounds: round,
           sessionId: checkpoint.sessionId,
@@ -890,7 +890,7 @@ export async function runBrainstorm(
   session.close();
   session.message("warning", "Brainstorm exhausted available rounds");
   persistCheckpoint(ctx.cwd, checkpoint, state, checkpoint.round, "max rounds exhausted");
-  logger.write("brainstorm", "end", {
+  logger.write("end", {
     status: "cancelled",
     reason: "max_rounds_exhausted",
     rounds: MAX_ROUNDS,

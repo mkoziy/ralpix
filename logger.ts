@@ -1,7 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-import type { JsonlEntry, JsonlUsageData, Phase, Plan, PlanTask, ReviewStageId, ReviewStageStatus } from "./types.js";
+import type { JsonlEntry, JsonlUsageData, Phase } from "./types.js";
 
 export interface UsageSummary {
   input: number;
@@ -23,12 +23,10 @@ export function progressDirForCwd(cwd: string): string {
   return resolve(cwd, ".ralpix", "progress");
 }
 
-/** Format a token count for human display.
- *
- * - 0 → "0"
- * - 1–9,999 → one decimal + "k" (e.g. "1.0k", "9.9k")
- * - 10,000+ → rounded whole "k"   (e.g. "10k", "150k")
- */
+export function progressDirForPhase(cwd: string, phase: Phase): string {
+  return resolve(cwd, ".ralpix", "progress", phase);
+}
+
 export function fmtTokens(n: number): string {
   if (n === 0) return "0";
   if (n < 1000) return String(n);
@@ -42,13 +40,6 @@ export function formatUsageSummary(step: UsageSummary, total: UsageSummary): str
     `total in ${fmtTokens(total.input)} out ${fmtTokens(total.output)} cost $${total.cost.toFixed(3)}`,
   ].join("  ");
 }
-
-const REVIEW_STAGE_LOG_LABELS: Record<ReviewStageId, string> = {
-  "first-pass": "first pass",
-  "external-review": "external review",
-  "external-eval": "external eval",
-  "second-pass": "second pass",
-};
 
 function writeLogError(filePath: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
@@ -116,11 +107,81 @@ export function usageToData(
   return data;
 }
 
+const VALID_PHASES: ReadonlySet<string> = new Set(["brainstorm", "plan", "execute", "review"]);
+
+function inferPhaseFromJsonl(filePath: string): Phase | "unknown" {
+  try {
+    const content = readFileSync(filePath, "utf-8");
+    const counts = new Map<string, number>();
+    for (const line of content.split("\n").slice(0, 50)) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      try {
+        const entry = JSON.parse(trimmed) as Record<string, unknown>;
+        const phase = typeof entry["phase"] === "string" ? entry["phase"] : null;
+        if (phase !== null && VALID_PHASES.has(phase)) {
+          counts.set(phase, (counts.get(phase) ?? 0) + 1);
+        }
+      } catch {
+        // skip unparseable lines
+      }
+    }
+    if (counts.size === 0) return "unknown";
+    const dominant = [...counts.entries()].reduce((a, b) => (b[1] > a[1] ? b : a));
+    return dominant[0] as Phase;
+  } catch {
+    return "unknown";
+  }
+}
+
+export function migrateProgressFiles(cwd: string): void {
+  const flatDir = progressDirForCwd(cwd);
+  if (!existsSync(flatDir)) return;
+
+  let files: string[];
+  try {
+    files = readdirSync(flatDir).filter((f) => f.endsWith(".jsonl"));
+  } catch {
+    return;
+  }
+  if (files.length === 0) return;
+
+  const migrated: string[] = [];
+  const failed: string[] = [];
+
+  for (const file of files) {
+    const src = join(flatDir, file);
+    const phase = inferPhaseFromJsonl(src);
+    const destDir = join(flatDir, phase);
+    const dest = join(destDir, file);
+    try {
+      if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true });
+      renameSync(src, dest);
+      migrated.push(file);
+    } catch {
+      failed.push(file);
+    }
+  }
+
+  if (migrated.length > 0) {
+    process.stderr.write(
+      `[ralpix] migrated ${migrated.length} progress file(s) from flat path to per-phase subdirectories\n`,
+    );
+  }
+  if (failed.length > 0) {
+    process.stderr.write(
+      `[ralpix] failed to migrate ${failed.length} progress file(s): ${failed.join(", ")}\n`,
+    );
+  }
+}
+
 export class LogWriter {
   readonly filePath: string;
+  readonly phase: Phase;
 
-  constructor(cwd: string, sessionName: string) {
-    const dir = progressDirForCwd(cwd);
+  constructor(cwd: string, phase: Phase, sessionName: string) {
+    this.phase = phase;
+    const dir = progressDirForPhase(cwd, phase);
     this.filePath = join(dir, `${sessionName}.jsonl`);
   }
 
@@ -131,10 +192,10 @@ export class LogWriter {
     }
   }
 
-  write(phase: Phase, event: string, data: Record<string, unknown> = {}): void {
+  write(event: string, data: Record<string, unknown> = {}): void {
     const entry: JsonlEntry = {
       ts: new Date().toISOString(),
-      phase,
+      phase: this.phase,
       event,
       data,
     };
@@ -145,114 +206,5 @@ export class LogWriter {
     } catch (error) {
       writeLogError(this.filePath, error);
     }
-  }
-
-  logStart(plan: Plan): void {
-    this.write("execute", "start", {
-      planTitle: plan.title,
-      planPath: plan.path,
-      taskCount: plan.tasks.length,
-    });
-  }
-
-  logTaskStart(task: PlanTask): void {
-    this.write("execute", "task_start", {
-      taskId: task.id,
-      taskNumber: task.number,
-      taskTitle: task.title,
-      itemCount: task.items.length,
-    });
-  }
-
-  logTaskEnd(task: PlanTask, success: boolean, detail?: string): void {
-    this.write("execute", "task_end", {
-      taskId: task.id,
-      taskNumber: task.number,
-      taskTitle: task.title,
-      success,
-      detail,
-    });
-  }
-
-  logTaskInfo(task: PlanTask, detail: string): void {
-    this.write("execute", "task_info", {
-      taskId: task.id,
-      taskNumber: task.number,
-      taskTitle: task.title,
-      detail,
-    });
-  }
-
-  logTaskUsage(task: PlanTask, step: UsageSnapshot, total: UsageSnapshot, breakdown?: UsageBreakdownEntry[]): void {
-    this.write("execute", "task_usage", {
-      taskId: task.id,
-      taskNumber: task.number,
-      taskTitle: task.title,
-      usage: usageToData(step, total, breakdown),
-      summary: formatUsageSummary(summarizeUsageSnapshot(step), summarizeUsageSnapshot(total)),
-    });
-  }
-
-  logExternalReview(phase: string, result: string): void {
-    this.write("review", "external_update", { phase, result });
-  }
-
-  logReview(phase: "first" | "second" | "loop", result: string): void {
-    this.write("review", "stage_update", { phase, result });
-  }
-
-  logReviewStart(data: Record<string, unknown>): void {
-    this.write("review", "start", data);
-  }
-
-  logReviewComplete(data: Record<string, unknown>): void {
-    this.write("review", "complete", data);
-  }
-
-  logReviewStageStart(stage: ReviewStageId, detail?: string, data: Record<string, unknown> = {}): void {
-    this.write("review", "stage_start", { stage, ...(detail === undefined ? {} : { detail }), ...data });
-  }
-
-  logReviewStageUpdate(stage: ReviewStageId, detail: string, data: Record<string, unknown> = {}): void {
-    this.write("review", "stage_update", { stage, detail, ...data });
-  }
-
-  logReviewStageFinish(
-    stage: ReviewStageId,
-    status: Exclude<ReviewStageStatus, "pending" | "active">,
-    detail?: string,
-    data: Record<string, unknown> = {},
-  ): void {
-    this.write("review", "stage_finish", {
-      stage,
-      status,
-      ...(detail === undefined ? {} : { detail }),
-      ...data,
-    });
-  }
-
-  logReviewUsage(step: UsageSnapshot, total: UsageSnapshot): void {
-    this.write("review", "usage", {
-      usage: usageToData(step, total),
-      summary: formatUsageSummary(summarizeUsageSnapshot(step), summarizeUsageSnapshot(total)),
-    });
-  }
-
-  logReviewStepUsage(
-    stage: ReviewStageId,
-    step: UsageSnapshot,
-    total: UsageSnapshot,
-    breakdown?: UsageBreakdownEntry[],
-  ): void {
-    this.write("review", "stage_usage", {
-      stage,
-      stageLabel: REVIEW_STAGE_LOG_LABELS[stage],
-      usage: usageToData(step, total, breakdown),
-      summary: formatUsageSummary(summarizeUsageSnapshot(step), summarizeUsageSnapshot(total)),
-    });
-  }
-
-  logComplete(): void {
-    this.write("execute", "complete", {});
   }
 }
