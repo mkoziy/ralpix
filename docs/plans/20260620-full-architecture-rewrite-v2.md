@@ -157,12 +157,12 @@ The existing codebase is the authoritative source of truth for preserved behavio
 
 Green before any phase file is written. Includes test infrastructure setup.
 
-- [ ] Configure vitest, add `tsconfig.test.json` if needed, set up test runner
-- [ ] Create `test/stubs.ts`: `stubRunSession()` factory returning a `RunSession` with all methods as spies — shared across all phase tests
-- [ ] `events.test.ts`: zod schema validates each event type; required fields enforced; unknown fields rejected; `createdAt` and `phase` always present
-- [ ] `event-bus.test.ts`: emitter dispatch order preserved; malformed event throws at `log()`, not later; usage inlined correctly in terminal events; `milestone()` / `statusChanged()` / `usageCheckpoint()` produce correctly shaped events
-- [ ] `logger.test.ts`: JSONL written to correct subdirectory; `write()` appends, does not overwrite; `filePath` points to correct path
-- [ ] `utils.test.ts`: `fmtTokens` and `formatUsageSummary` produce expected output for known inputs
+- [x] Configure vitest, add `tsconfig.test.json` if needed, set up test runner
+- [x] Create `test/stubs.ts`: `stubRunSession()` factory returning a `RunSession` with all methods as spies — shared across all phase tests
+- [x] `events.test.ts`: zod schema validates each event type; required fields enforced; unknown fields rejected; `createdAt` and `phase` always present
+- [x] `event-bus.test.ts`: emitter dispatch order preserved; malformed event throws at `log()`, not later; usage inlined correctly in terminal events; `milestone()` / `statusChanged()` / `usageCheckpoint()` produce correctly shaped events
+- [x] `logger.test.ts`: JSONL written to correct subdirectory; `write()` appends, does not overwrite; `filePath` points to correct path
+- [x] `utils.test.ts`: `fmtTokens` and `formatUsageSummary` produce expected output for known inputs
 
 ---
 
