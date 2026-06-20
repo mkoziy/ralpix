@@ -227,14 +227,14 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 ### Task 13: index.ts
 
-- [ ] CLI commands: `brainstorm`, `plan`, `execute`, `review`, `init`
-- [ ] For each phase: `createEventBus(ctx, phase, [createLogWriterEmitter(writer), createTuiEmitter(ctx)])`
-- [ ] `persistState` / `restoreState` for session resume
-- [ ] `session_start` interrupt detection and resume notification
-- [ ] Branch guardrail: offer to create branch when on main/master
-- [ ] Plan moved to `docs/plans/completed/` on full success
-- [ ] **Migration:** on startup, if `.ralpix/progress/*.jsonl` files exist at the old flat path, move them to `.ralpix/progress/{inferred-phase}/` based on event types present, or `.ralpix/progress/unknown/` if ambiguous. Log one-time warning to stderr. `restoreState` tries both old and new path conventions.
-- [ ] `buildStatusWidgetView` helper for TUI widget — lives here permanently (moves to `adapters/tui.ts` only if Stage 3 ships)
+- [x] CLI commands: `brainstorm`, `plan`, `execute`, `review`, `init`
+- [x] For each phase: `createEventBus(ctx, phase, [createLogWriterEmitter(writer), createTuiEmitter(ctx)])`
+- [x] `persistState` / `restoreState` for session resume
+- [x] `session_start` interrupt detection and resume notification
+- [x] Branch guardrail: offer to create branch when on main/master
+- [x] Plan moved to `docs/plans/completed/` on full success
+- [x] **Migration:** on startup, if `.ralpix/progress/*.jsonl` files exist at the old flat path, move them to `.ralpix/progress/{inferred-phase}/` based on event types present, or `.ralpix/progress/unknown/` if ambiguous. Log one-time warning to stderr. `restoreState` tries both old and new path conventions.
+- [x] `buildStatusWidgetView` helper for TUI widget — lives here permanently (moves to `adapters/tui.ts` only if Stage 3 ships)
 
 ---
 
