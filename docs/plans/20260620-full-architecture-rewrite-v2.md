@@ -110,14 +110,14 @@ The existing codebase is the authoritative source of truth for preserved behavio
 
 ### Task 2: utils.ts + logger.ts
 
-- [ ] Create `utils.ts` with formatting helpers: `fmtTokens`, `formatUsageSummary`, `formatUsageBreakdownLines`, `summarizeUsageSnapshot`, `usageToData` — consumed by `tui.ts` and `index.ts`. Lives here so `tui.ts` does not import from the JSONL writer.
-- [ ] Create `logger.ts` with `LogWriter(cwd: string, phase: Phase, sessionName: string)` constructor
-- [ ] Writes to `.ralpix/progress/{phase}/{sessionName}.jsonl`
-- [ ] Single public method: `write(event: AgentEvent): void` — serialises to JSONL line, appends
-- [ ] `filePath` property exposed for passing to subprocess env (`PROGRESS_FILE`)
-- [ ] `progressDirForPhase(cwd, phase)` helper
-- [ ] `createLogWriterEmitter(writer: LogWriter): AgentEventEmitter` — wraps LogWriter as emitter
-- [ ] No imports from `utils.ts` — logger is a pure writer
+- [x] Create `utils.ts` with formatting helpers: `fmtTokens`, `formatUsageSummary`, `formatUsageBreakdownLines`, `summarizeUsageSnapshot`, `usageToData` — consumed by `tui.ts` and `index.ts`. Lives here so `tui.ts` does not import from the JSONL writer.
+- [x] Create `logger.ts` with `LogWriter(cwd: string, phase: Phase, sessionName: string)` constructor
+- [x] Writes to `.ralpix/progress/{phase}/{sessionName}.jsonl`
+- [x] Single public method: `write(event: AgentEvent): void` — serialises to JSONL line, appends
+- [x] `filePath` property exposed for passing to subprocess env (`PROGRESS_FILE`)
+- [x] `progressDirForPhase(cwd, phase)` helper
+- [x] `createLogWriterEmitter(writer: LogWriter): AgentEventEmitter` — wraps LogWriter as emitter
+- [x] No imports from `utils.ts` — logger is a pure writer
 
 ### Task 3: event-bus.ts
 
