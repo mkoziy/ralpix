@@ -139,11 +139,11 @@ The existing codebase is the authoritative source of truth for preserved behavio
 
 ### Task 4: tui.ts
 
-- [ ] `createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitter`
-- [ ] Translates every `AgentEvent` into TUI rendering (transcript entries, status widget, notifications)
-- [ ] `createTokenLedger()` token accumulation helper lives here
-- [ ] `createSummaryTui` / `ProgressPanel` — TUI primitives consumed only by this file
-- [ ] Imports from `utils.ts` for formatting; zero imports from phase files or `logger.ts`
+- [x] `createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitter`
+- [x] Translates every `AgentEvent` into TUI rendering (transcript entries, status widget, notifications)
+- [x] `createTokenLedger()` token accumulation helper lives here
+- [x] `createSummaryTui` / `ProgressPanel` — TUI primitives consumed only by this file
+- [x] Imports from `utils.ts` for formatting; zero imports from phase files or `logger.ts`
 
 ### Task 5: config.ts + prompt.ts
 
