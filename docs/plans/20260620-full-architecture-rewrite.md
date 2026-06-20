@@ -105,15 +105,15 @@ Complete and green before touching any phase file.
 
 ### Task 7: Refactor executor.ts
 
-- [ ] Drop `logger: LogWriter` parameter from `executeTask` and `executeAllTasks`
-- [ ] Use `session.log()` for all events
-- [ ] Add `execute/attempt_start` event (attempt number, model label)
-- [ ] `execute/attempt_end` with inline usage (step since attempt start, total)
-- [ ] `execute/task_end` with inline usage (step since task start, total, breakdown)
-- [ ] Material tool failure detection remains unchanged
-- [ ] allDoneSignal hallucination guard remains unchanged
-- [ ] `tryCommit` result included in `task_end` event data
-- [ ] Add test: mock a 2-task plan, assert `task_start`/`attempt_start`/`attempt_end`/`task_end` sequence; verify retry loop emits multiple `attempt_start` events
+- [x] Drop `logger: LogWriter` parameter from `executeTask` and `executeAllTasks`
+- [x] Use `session.log()` for all events
+- [x] Add `execute/attempt_start` event (attempt number, model label)
+- [x] `execute/attempt_end` with inline usage (step since attempt start, total)
+- [x] `execute/task_end` with inline usage (step since task start, total, breakdown)
+- [x] Material tool failure detection remains unchanged
+- [x] allDoneSignal hallucination guard remains unchanged
+- [x] `tryCommit` result included in `task_end` event data
+- [x] Add test: mock a 2-task plan, assert `task_start`/`attempt_start`/`attempt_end`/`task_end` sequence; verify retry loop emits multiple `attempt_start` events
 
 ### Task 8: Refactor reviewer.ts
 

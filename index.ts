@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, join as pathJoin, parse as pathParse, basename as pathBasename } from "node:path";
 
 import { initRalpixHome, loadConfig, ralpixHomeDir } from "./config.js";
-import { createEventBus, formatTotalUsageText } from "./event-bus.js";
+import { createEventBus, createLogWriterEmitter, formatTotalUsageText } from "./event-bus.js";
 import { executeAllTasks } from "./executor.js";
 import {
   LogWriter,
@@ -659,7 +659,8 @@ async function runPlan(
 
   const config = loadConfig(ctx.cwd);
   const plan = parsePlan(planPath);
-  const session = createEventBus(ctx, "execute", []);
+  const executeEmitters: import("./events.js").AgentEventEmitter[] = [];
+  const session = createEventBus(ctx, "execute", executeEmitters);
 
   await maybeSwitchBranch(ctx, plan.title);
 
@@ -671,6 +672,7 @@ async function runPlan(
   const planStem = fileName.replace(/\.md$/, "");
   const executeLogger = new LogWriter(ctx.cwd, "execute", planStem);
   const reviewLogger = new LogWriter(ctx.cwd, "review", planStem);
+  executeEmitters.push(createLogWriterEmitter(executeLogger));
   executeLogger.write("start", { planTitle: plan.title, planPath: plan.path, taskCount: plan.tasks.length });
 
   // Token ledger — accumulates usage across all subprocess calls
@@ -711,7 +713,7 @@ async function runPlan(
   if (pendingCount > 0) {
     session.message("info", `Executing ${pendingCount} pending tasks...`);
 
-    const results = await executeAllTasks(ctx, pi, plan, config, executeLogger, {
+    const results = await executeAllTasks(ctx, pi, plan, config, {
       session,
       onTaskStart(task) {
         taskUsageStart = ledger.detailedSnapshot();

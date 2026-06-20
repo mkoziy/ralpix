@@ -16,10 +16,24 @@ import {
 import { loadPrompt, expandPrompt } from "./prompt.js";
 import { createTokenLedger } from "./tui.js";
 
-import type { LogWriter } from "./logger.js";
+import type { EventUsage } from "./events.js";
 import type { PiSubprocessHooks, PiSubprocessResult } from "./pi-subprocess.js";
 import type { ModelConfig, Plan, PlanTask, RalpixConfig, SubprocessUsage, TaskResult } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+
+function buildUsage(
+  stepLedger: ReturnType<typeof createTokenLedger>,
+  totalLedger: ReturnType<typeof createTokenLedger>,
+): EventUsage {
+  const stepSnap = stepLedger.detailedSnapshot();
+  const totalSnap = totalLedger.detailedSnapshot();
+  const bd = stepLedger.breakdown();
+  return {
+    step: { input: stepSnap.input, output: stepSnap.output, cacheRead: stepSnap.cacheRead, cacheWrite: stepSnap.cacheWrite, cost: stepSnap.cost },
+    total: { input: totalSnap.input, output: totalSnap.output, cost: totalSnap.cost },
+    ...(bd.length > 0 ? { breakdown: bd } : {}),
+  };
+}
 
 interface TaskSessionReport {
   success: boolean;
@@ -100,6 +114,15 @@ export interface TaskExecutionHooks {
   onTaskStart?: (task: PlanTask) => void;
   onTaskFinish?: (task: PlanTask, result: TaskResult) => void;
   onUsage?: (provider: string, model: string, usage: SubprocessUsage) => void;
+  _runSession?: (
+    ctx: ExtensionCommandContext,
+    planPath: string,
+    promptContent: string,
+    modelCfg: ModelConfig,
+    piAgentDir: string | null,
+    config: RalpixConfig,
+    hooks?: PiSubprocessHooks,
+  ) => Promise<TaskSessionReport>;
 }
 
 export function buildTaskPrompt(promptContent: string): string {
@@ -212,13 +235,13 @@ export async function executeTask(
   task: PlanTask,
   config: RalpixConfig,
   plan: Plan,
-  logger: LogWriter,
   hooks?: TaskExecutionHooks,
 ): Promise<TaskResult> {
   hooks?.onTaskStart?.(task);
-  logger.write("task_start", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, itemCount: task.items.length });
 
   const session = hooks?.session ?? createEventBus(ctx, "execute", []);
+  session.log("task_start", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, itemCount: task.items.length });
+
   const ledger = createTokenLedger();
 
   const template = loadPrompt("task-default", ctx.cwd);
@@ -254,13 +277,14 @@ export async function executeTask(
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   let lastError: string | undefined;
   let lastErrorFull: string | undefined;
+  const runSession = hooks?._runSession ?? runTaskSession;
 
   for (let attempt = 1; attempt <= config.maxRetries + 1; attempt++) {
+    const attemptLedger = createTokenLedger();
     try {
       const modelLabel = buildModelArg(modelCfg) ?? modelCfg.provider ?? "session default";
-      logger.write("task_info", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, detail: `attempt ${attempt} launched (${modelLabel})` });
+      session.log("attempt_start", { taskId: task.id, attempt, modelLabel });
       session.message("info", `${task.title} - attempt ${attempt} started`);
-
       session.status("running", `Attempt ${attempt}: running...`);
 
       let toolFailureLabel: string | undefined;
@@ -270,11 +294,9 @@ export async function executeTask(
         },
         (provider, model, usage) => {
           ledger.add(provider, model, usage);
+          attemptLedger.add(provider, model, usage);
           session.usage(formatTotalUsageText(ledger.snapshot()));
           hooks?.onUsage?.(provider, model, usage);
-        },
-        (detail) => {
-          logger.write("task_info", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, detail: `attempt ${attempt}: ${detail}` });
         },
       );
       const wrappedHooks: PiSubprocessHooks = {
@@ -291,7 +313,7 @@ export async function executeTask(
         },
       };
 
-      const rawResult = await runTaskSession(
+      const rawResult = await runSession(
         ctx,
         plan.path,
         prompt,
@@ -312,16 +334,24 @@ export async function executeTask(
         session.message("success", `Attempt ${attempt}: ${result.summary}`);
         session.message("result", ledger.usageLines().join("\n"));
         session.status("complete", "Task complete!");
-        if (hooks?.session == null) {
-          session.close();
-        }
 
         const commitMsg = config.commitMessageTemplate
           .replaceAll("{{taskTitle}}", task.title)
           .replaceAll("{{taskNumber}}", String(task.number));
         const hash = tryCommit(ctx.cwd, commitMsg, config.commitEnabled);
 
-        logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: true, detail: hash === null ? "no commit" : `commit ${hash}` });
+        session.log("attempt_end", { taskId: task.id, attempt, success: true, usage: buildUsage(attemptLedger, ledger) });
+        session.log("task_end", {
+          taskId: task.id,
+          taskNumber: task.number,
+          taskTitle: task.title,
+          success: true,
+          ...(hash !== null ? { committed: true } : {}),
+          usage: buildUsage(ledger, ledger),
+        });
+        if (hooks?.session == null) {
+          session.close();
+        }
         updatePlanTaskStatus(plan.path, task.id, task.title, "completed");
 
         const taskResult = {
@@ -336,17 +366,15 @@ export async function executeTask(
 
       lastError = result.summary;
       lastErrorFull = result.fullSummary ?? result.summary;
+      session.log("attempt_end", { taskId: task.id, attempt, success: false, usage: buildUsage(attemptLedger, ledger) });
       if (attempt <= config.maxRetries) {
-        logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: false, detail: `attempt ${attempt} failed, retrying (${lastErrorFull})` });
         session.message("warning", `Attempt ${attempt}: ${lastError.slice(0, 100)}`);
         session.status("retrying", `Retrying after attempt ${attempt}`);
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
       lastErrorFull = lastError;
-      if (attempt <= config.maxRetries) {
-        logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: false, detail: `attempt ${attempt} failed, retrying` });
-      }
+      session.log("attempt_end", { taskId: task.id, attempt, success: false, usage: buildUsage(attemptLedger, ledger) });
     }
   }
 
@@ -354,11 +382,17 @@ export async function executeTask(
   const finalErrorFull = lastErrorFull ?? finalError;
   session.message("error", `Failed after ${config.maxRetries + 1} attempts`);
   session.status("failed", "Task failed");
+  session.log("task_end", {
+    taskId: task.id,
+    taskNumber: task.number,
+    taskTitle: task.title,
+    success: false,
+    detail: finalErrorFull,
+    usage: buildUsage(ledger, ledger),
+  });
   if (hooks?.session == null) {
     session.close();
   }
-
-  logger.write("task_end", { taskId: task.id, taskNumber: task.number, taskTitle: task.title, success: false, detail: finalErrorFull });
   updatePlanTaskStatus(plan.path, task.id, task.title, "failed");
   const taskResult = { success: false, error: finalError };
   hooks?.onTaskFinish?.(task, taskResult);
@@ -370,7 +404,6 @@ export async function executeAllTasks(
   pi: ExtensionAPI,
   plan: Plan,
   config: RalpixConfig,
-  logger: LogWriter,
   hooks?: TaskExecutionHooks,
 ): Promise<TaskResult[]> {
   const results: TaskResult[] = [];
@@ -385,7 +418,7 @@ export async function executeAllTasks(
       continue;
     }
 
-    const result = await executeTask(ctx, pi, task, config, plan, logger, hooks);
+    const result = await executeTask(ctx, pi, task, config, plan, hooks);
     results.push(result);
 
     if (!result.success) break;
