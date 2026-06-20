@@ -14,7 +14,7 @@ import { ralpixHomeDir, ralpixProjectDir } from "./config.js";
 // Prompt resolution
 // ---------------------------------------------------------------------------
 
-const BUNDLED_DIR = join(__dirname, "bundled");
+const BUNDLED_DIR = join(import.meta.dirname, "bundled");
 
 /**
  * Load a prompt file. Searches:

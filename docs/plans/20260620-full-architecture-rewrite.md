@@ -86,12 +86,12 @@ Complete and green before touching any phase file.
 
 ### Task 5: Refactor brainstorm.ts
 
-- [ ] Remove `const logger = new LogWriter(...)` — session owns the logger now
-- [ ] All inner functions drop `logger: LogWriter` parameter; use `session.log()` instead
-- [ ] Split `brainstorm/question` (log when question extracted) + `brainstorm/answer` (log after answer received) — already correct, verify timing
-- [ ] Add `brainstorm/round_end` with inline usage after each subprocess call (replaces `brainstorm/usage`)
-- [ ] `approach_selected` and `section_validated` remain, routed through `session.log()`
-- [ ] Add test: run brainstorm against a stub session, assert emitted events match `AgentEvent` shapes defined in Task 1
+- [x] Remove `const logger = new LogWriter(...)` — session owns the logger now
+- [x] All inner functions drop `logger: LogWriter` parameter; use `session.log()` instead
+- [x] Split `brainstorm/question` (log when question extracted) + `brainstorm/answer` (log after answer received) — already correct, verify timing
+- [x] Add `brainstorm/round_end` with inline usage after each subprocess call (replaces `brainstorm/usage`)
+- [x] `approach_selected` and `section_validated` remain, routed through `session.log()`
+- [x] Add test: run brainstorm against a stub session, assert emitted events match `AgentEvent` shapes defined in Task 1
 
 ### Task 6: Refactor planner.ts
 

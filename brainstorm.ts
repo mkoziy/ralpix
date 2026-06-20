@@ -10,13 +10,14 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 
 import { resolveModel, resolvePiAgentDir } from "./config.js";
-import { createEventBus, formatOptions, formatTotalUsageText, type RunSession } from "./event-bus.js";
-import { LogWriter, progressDirForCwd, usageToData } from "./logger.js";
+import { createEventBus, createLogWriterEmitter, formatOptions, formatTotalUsageText, type RunSession } from "./event-bus.js";
+import { LogWriter, progressDirForCwd } from "./logger.js";
 import { createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug } from "./planner-debug.js";
 import { expandPrompt, loadPrompt } from "./prompt.js";
 import { createTokenLedger } from "./tui.js";
 
+import type { AgentEventEmitter } from "./events.js";
 import type { ModelConfig, RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
@@ -494,22 +495,21 @@ async function validateDesignSection(
 // Phase handlers
 // ---------------------------------------------------------------------------
 
-async function handleUnderstandPhase(
+export async function handleUnderstandPhase(
   output: string,
   state: BrainstormState,
   cwd: string,
   session: RunSession,
-  logger: LogWriter,
   round: number,
   checkpoint: BrainstormCheckpoint,
 ): Promise<"continue" | "cancel"> {
   const question = extractQuestion(output);
   if (question == null) return "continue";
 
-  logger.write("question", {
-    round,
-    question: question.question,
-    options: question.options,
+  session.log("question", {
+    promptId: `r${round}`,
+    message: question.question,
+    ...(question.options.length > 0 ? { next: formatOptions(question.options) } : {}),
   });
 
   session.clearStatus();
@@ -524,22 +524,20 @@ async function handleUnderstandPhase(
     options: question.options,
     answer,
   });
-  logger.write("answer", {
-    round,
-    question: question.question,
-    answer,
+  session.log("answer", {
+    promptId: `r${round}`,
+    message: answer,
   });
   persistCheckpoint(cwd, checkpoint, state, round);
   session.message("result", `Recorded answer for: ${question.question}`);
   return "continue";
 }
 
-async function handleApproachesPhase(
+export async function handleApproachesPhase(
   output: string,
   state: BrainstormState,
   cwd: string,
   session: RunSession,
-  logger: LogWriter,
   round: number,
   checkpoint: BrainstormCheckpoint,
 ): Promise<"continue" | "cancel"> {
@@ -553,22 +551,17 @@ async function handleApproachesPhase(
   const selected = await selectApproach(session, approachesRaw);
   if (selected == null) return "cancel";
   state.selectedApproach = selected;
-  logger.write("approach_selected", {
-    round,
-    approach: selected,
-    approaches: approachesRaw,
-  });
+  session.log("approach_selected", { approach: selected });
   persistCheckpoint(cwd, checkpoint, state, round);
   session.message("result", `Approach selected: ${selected}`);
   return "continue";
 }
 
-async function handleDesignPhase(
+export async function handleDesignPhase(
   output: string,
   state: BrainstormState,
   cwd: string,
   session: RunSession,
-  logger: LogWriter,
   round: number,
   checkpoint: BrainstormCheckpoint,
 ): Promise<"continue" | "cancel" | "done"> {
@@ -595,11 +588,7 @@ async function handleDesignPhase(
     });
     state.pendingSection = null;
     state.pendingFeedback = null;
-    logger.write("section_validated", {
-      round,
-      sectionTitle: section.title,
-      outcome: "accepted",
-    });
+    session.log("section_validated", { section: section.title, passed: true });
     persistCheckpoint(cwd, checkpoint, state, round);
     session.message("success", `Design section accepted: ${section.title}`);
     return "continue";
@@ -608,23 +597,14 @@ async function handleDesignPhase(
   if (validation === "skip") {
     state.pendingSection = null;
     state.pendingFeedback = "The user is satisfied with the design coverage so far. Please move to the summary phase.";
-    logger.write("section_validated", {
-      round,
-      sectionTitle: section.title,
-      outcome: "skipped_to_summary",
-    });
+    session.log("section_validated", { section: section.title, passed: true, detail: "skipped_to_summary" });
     persistCheckpoint(cwd, checkpoint, state, round);
     session.message("info", "Skipped remaining design sections");
     return "continue";
   }
 
   state.pendingFeedback = validation;
-  logger.write("section_validated", {
-    round,
-    sectionTitle: section.title,
-    outcome: "feedback_requested",
-    feedback: validation,
-  });
+  session.log("section_validated", { section: section.title, passed: false, detail: validation });
   persistCheckpoint(cwd, checkpoint, state, round);
   session.message("warning", `Revision requested for section: ${section.title}`);
   return "continue";
@@ -670,7 +650,6 @@ async function runBrainstormSubprocess(
   ctx: ExtensionCommandContext,
   session: RunSession,
   ledger: ReturnType<typeof createTokenLedger>,
-  logger: LogWriter,
   checkpoint: BrainstormCheckpoint,
 ): Promise<{ output: string } | null> {
   const prompt = buildBrainstormPrompt(template, state);
@@ -702,13 +681,17 @@ async function runBrainstormSubprocess(
     config,
   );
 
-  const detailedStepUsage = roundLedger.detailedSnapshot();
-  const totalUsage = ledger.detailedSnapshot();
-  const breakdown = roundLedger.breakdown();
+  const stepSnap = roundLedger.detailedSnapshot();
+  const totalSnap = ledger.detailedSnapshot();
+  const bd = roundLedger.breakdown();
 
-  logger.write("usage", {
+  session.log("round_end", {
     round,
-    usage: usageToData(detailedStepUsage, totalUsage, breakdown),
+    usage: {
+      step: { input: stepSnap.input, output: stepSnap.output, cacheRead: stepSnap.cacheRead, cacheWrite: stepSnap.cacheWrite, cost: stepSnap.cost },
+      total: { input: totalSnap.input, output: totalSnap.output, cost: totalSnap.cost },
+      ...(bd.length > 0 ? { breakdown: bd } : {}),
+    },
   });
 
   if (result.exitCode !== 0) {
@@ -745,18 +728,12 @@ async function runBrainstormRound(
   ctx: ExtensionCommandContext,
   session: RunSession,
   ledger: ReturnType<typeof createTokenLedger>,
-  logger: LogWriter,
   checkpoint: BrainstormCheckpoint,
 ): Promise<{ action: "continue" } | { action: "return"; value: string | null }> {
-  logger.write("round_start", {
-    round,
-    qaCount: state.qaHistory.length,
-    designSectionCount: state.designSections.length,
-    selectedApproach: state.selectedApproach,
-  });
+  session.log("round_start", { round });
 
   const subprocessResult = await runBrainstormSubprocess(
-    round, state, template, modelCfg, piAgentDir, config, ctx, session, ledger, logger, checkpoint,
+    round, state, template, modelCfg, piAgentDir, config, ctx, session, ledger, checkpoint,
   );
   if (subprocessResult == null) {
     return { action: "return", value: null };
@@ -766,17 +743,17 @@ async function runBrainstormRound(
   const phase = extractPhase(output);
 
   if (phase === "understand" || phase === null) {
-    const status = await handleUnderstandPhase(output, state, ctx.cwd, session, logger, round, checkpoint);
+    const status = await handleUnderstandPhase(output, state, ctx.cwd, session, round, checkpoint);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
   if (phase === "approaches") {
-    const status = await handleApproachesPhase(output, state, ctx.cwd, session, logger, round, checkpoint);
+    const status = await handleApproachesPhase(output, state, ctx.cwd, session, round, checkpoint);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
   if (phase === "design") {
-    const status = await handleDesignPhase(output, state, ctx.cwd, session, logger, round, checkpoint);
+    const status = await handleDesignPhase(output, state, ctx.cwd, session, round, checkpoint);
     return status === "cancel" ? { action: "return", value: null } : { action: "continue" };
   }
 
@@ -812,7 +789,8 @@ export async function runBrainstorm(
   const modelCfg = resolveModel(config, "brainstorm");
   const piAgentDir = resolvePiAgentDir(ctx.cwd, config);
   const ledger = createTokenLedger();
-  const session = createEventBus(ctx, "brainstorm", []);
+  const emitters: AgentEventEmitter[] = [];
+  const session = createEventBus(ctx, "brainstorm", emitters);
   const activeCheckpoints = listActiveCheckpoints(ctx.cwd);
   const selected = await chooseCheckpoint(session, trimmed, activeCheckpoints);
   if (selected == null) {
@@ -824,21 +802,17 @@ export async function runBrainstorm(
   const checkpoint = selected === "new" ? createCheckpoint(trimmed) : selected;
   const state = cloneBrainstormState(checkpoint.state);
   const startRound = Math.max(1, checkpoint.round + (selected === "new" ? 1 : 0));
-  const logger = new LogWriter(ctx.cwd, "brainstorm", checkpoint.logSessionName);
+  emitters.push(createLogWriterEmitter(new LogWriter(ctx.cwd, "brainstorm", checkpoint.logSessionName)));
 
   if (selected === "new") {
     session.message("info", `Brainstorming: "${trimmed}"...`);
     appendPlanCreationDebug(ctx.cwd, `runBrainstorm: start description=${JSON.stringify(trimmed)}`);
     persistCheckpoint(ctx.cwd, checkpoint, state, 0);
-    logger.write("start", { description: trimmed, sessionId: checkpoint.sessionId });
+    session.log("phase_start", { label: "new" });
   } else {
     session.message("info", `Resuming brainstorm: "${state.description}"`);
     appendPlanCreationDebug(ctx.cwd, `runBrainstorm: resume session=${checkpoint.sessionId}`);
-    logger.write("resume", {
-      description: state.description,
-      sessionId: checkpoint.sessionId,
-      round: checkpoint.round,
-    });
+    session.log("phase_start", { label: "resume" });
     hydrateSessionFromState(session, checkpoint);
   }
 
@@ -855,32 +829,19 @@ export async function runBrainstorm(
       ctx,
       session,
       ledger,
-      logger,
       checkpoint,
     );
 
     if (outcome.action === "return") {
       if (outcome.value == null) {
         persistCheckpoint(ctx.cwd, checkpoint, state, checkpoint.round, checkpoint.lastError);
-        logger.write("end", {
-          status: "cancelled",
-          rounds: round,
-          sessionId: checkpoint.sessionId,
-          selectedApproach: state.selectedApproach,
-          designSectionCount: state.designSections.length,
-        });
+        session.log("phase_end", { label: "cancelled" });
       } else {
         checkpoint.status = "complete";
         persistCheckpoint(ctx.cwd, checkpoint, state, round, null);
         session.status("complete", "Brainstorm complete!");
         session.message("success", "Brainstorm complete!");
-        logger.write("end", {
-          status: "complete",
-          rounds: round,
-          sessionId: checkpoint.sessionId,
-          selectedApproach: state.selectedApproach,
-          designSectionCount: state.designSections.length,
-        });
+        session.log("phase_end", { label: "complete" });
       }
       session.close();
       return outcome.value;
@@ -890,13 +851,6 @@ export async function runBrainstorm(
   session.close();
   session.message("warning", "Brainstorm exhausted available rounds");
   persistCheckpoint(ctx.cwd, checkpoint, state, checkpoint.round, "max rounds exhausted");
-  logger.write("end", {
-    status: "cancelled",
-    reason: "max_rounds_exhausted",
-    rounds: MAX_ROUNDS,
-    sessionId: checkpoint.sessionId,
-    selectedApproach: state.selectedApproach,
-    designSectionCount: state.designSections.length,
-  });
+  session.log("phase_end", { label: "cancelled" });
   return null;
 }
