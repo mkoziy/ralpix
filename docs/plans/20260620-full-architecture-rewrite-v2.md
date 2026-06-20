@@ -172,9 +172,9 @@ Green before any phase file is written. Includes test infrastructure setup.
 
 ### Task 7: parser.ts
 
-- [ ] `parsePlan(content: string): Plan` — markdown → structured task list
-- [ ] Handles checkboxes, task IDs, item counts
-- [ ] Test fixture set: empty plan, tasks with checkboxes, malformed input, plan with completed tasks
+- [x] `parsePlan(content: string): Plan` — markdown → structured task list
+- [x] Handles checkboxes, task IDs, item counts
+- [x] Test fixture set: empty plan, tasks with checkboxes, malformed input, plan with completed tasks
 
 ### Task 8: pi-subprocess.ts
 
