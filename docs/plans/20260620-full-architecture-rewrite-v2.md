@@ -121,7 +121,7 @@ The existing codebase is the authoritative source of truth for preserved behavio
 
 ### Task 3: event-bus.ts
 
-- [ ] `RunSession` interface (all methods on the interface, not just on the implementation):
+- [x] `RunSession` interface (all methods on the interface, not just on the implementation):
   ```ts
   log(type: string, data?: Record<string, unknown>): void
   choose(prompt: string, options: string[], config?): Promise<string | null>
@@ -132,10 +132,10 @@ The existing codebase is the authoritative source of truth for preserved behavio
   usageCheckpoint(totalUsageText: string): void
   close(): void
   ```
-- [ ] `createEventBus(ctx: ExtensionCommandContext, phase: Phase, emitters: AgentEventEmitter[]): RunSession`
-- [ ] Each `log()` call: build `AgentEvent` with `phase` + `createdAt` → zod validate → `emit()` on all emitters in registration order
-- [ ] Malformed event throws at `log()` call site, not at any reader
-- [ ] `milestone()`, `statusChanged()`, `usageCheckpoint()` are shorthands that call `log()` internally — they are on `RunSession` so phases can call them without knowing event types directly
+- [x] `createEventBus(ctx: ExtensionCommandContext, phase: Phase, emitters: AgentEventEmitter[]): RunSession`
+- [x] Each `log()` call: build `AgentEvent` with `phase` + `createdAt` → zod validate → `emit()` on all emitters in registration order
+- [x] Malformed event throws at `log()` call site, not at any reader
+- [x] `milestone()`, `statusChanged()`, `usageCheckpoint()` are shorthands that call `log()` internally — they are on `RunSession` so phases can call them without knowing event types directly
 
 ### Task 4: tui.ts
 
