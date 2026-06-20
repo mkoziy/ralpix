@@ -155,40 +155,6 @@ export interface SubprocessUsage {
 
 export type Phase = "brainstorm" | "plan" | "execute" | "review";
 
-export type UiTranscriptKind = "INFO" | "Q" | "A" | "STEP" | "TASK" | "STAGE" | "RESULT" | "OK" | "WARN" | "ERR";
-
-export type UiState = "thinking" | "waiting" | "running" | "retrying" | "reviewing" | "complete" | "failed";
-
-export interface UiTranscriptEntry {
-  phase: Phase;
-  kind: UiTranscriptKind;
-  message: string;
-  createdAt: string;
-}
-
-export interface UiCurrentSummary {
-  phase: Phase;
-  state: UiState;
-  now: string;
-  next?: string;
-  totalUsageText?: string;
-}
-
-export type UiTranscriptMilestoneKind = Exclude<UiTranscriptKind, "Q" | "A">;
-
-export type UiEvent =
-  { type: "question_asked"; phase: Phase; promptId: string; message: string; createdAt: string; next?: string } |
-  { type: "answer_recorded"; phase: Phase; promptId: string; message: string; createdAt: string } |
-  { type: "prompt_cancelled"; phase: Phase; promptId: string; reason: string; createdAt: string } |
-  { type: "state_changed"; phase: Phase; state: UiState; now: string; createdAt: string; next?: string } |
-  { type: "milestone"; phase: Phase; kind: UiTranscriptMilestoneKind; message: string; createdAt: string } |
-  { type: "usage_checkpoint"; phase: Phase; totalUsageText: string; createdAt: string };
-
-export interface UiPresentationState {
-  events: UiEvent[];
-  summary: UiCurrentSummary | null;
-  transcript: UiTranscriptEntry[];
-}
 
 export interface JsonlEntry {
   ts: string;

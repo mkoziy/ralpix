@@ -38,7 +38,7 @@ Existing behaviour preserved: brainstorm checkpoint/resume, clarification Q&A, c
 
 ### Task 1: Define AgentEvent type contract
 
-- [ ] Create `events.ts` with the full `AgentEvent` union:
+- [x] Create `events.ts` with the full `AgentEvent` union:
   ```
   phase_start / phase_end
   question / answer
@@ -50,10 +50,10 @@ Existing behaviour preserved: brainstorm checkpoint/resume, clarification Q&A, c
   iteration_start / iteration_end (+usage)     (review)
   status_changed / milestone / usage_checkpoint
   ```
-- [ ] All events carry: `phase`, `createdAt` (ISO string), event-specific fields
-- [ ] Usage shape: `{ step: { input, output, cacheRead, cacheWrite, cost }, total: { input, output, cost }, breakdown: [{ provider, model, ... }][] }`
-- [ ] Export `AgentEventEmitter` interface: `emit(event: AgentEvent): void`
-- [ ] Delete old `UiEvent`, `UiTranscriptEntry`, `UiPresentationState`, `UiCurrentSummary` from `types.ts` — replaced by `AgentEvent`
+- [x] All events carry: `phase`, `createdAt` (ISO string), event-specific fields
+- [x] Usage shape: `{ step: { input, output, cacheRead, cacheWrite, cost }, total: { input, output, cost }, breakdown: [{ provider, model, ... }][] }`
+- [x] Export `AgentEventEmitter` interface: `emit(event: AgentEvent): void`
+- [x] Delete old `UiEvent`, `UiTranscriptEntry`, `UiPresentationState`, `UiCurrentSummary` from `types.ts` — replaced by `AgentEvent`
 
 ### Task 2: Upgrade LogWriter — subdirectories per phase + migrate existing files
 
