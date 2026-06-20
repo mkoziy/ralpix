@@ -54,6 +54,11 @@ export type AgentEvent =
   (Base & { type: "iteration_end"; stage: ReviewStageId; iteration: number; usage: EventUsage }) |
   (Base & { type: "eval_iteration_start"; iteration: number }) |
   (Base & { type: "eval_iteration_end"; iteration: number; usage: EventUsage }) |
+  (Base & { type: "critic_start" }) |
+  (Base & { type: "critic_end"; digest: string; usage: EventUsage }) |
+  (Base & { type: "ai_review_start" }) |
+  (Base & { type: "ai_review_end"; digest: string; usage: EventUsage }) |
+  (Base & { type: "human_review"; action: string }) |
   (Base & { type: "status_changed"; state: string; now: string; next?: string }) |
   (Base & { type: "milestone"; kind: string; message: string }) |
   (Base & { type: "usage_checkpoint"; totalUsageText: string });

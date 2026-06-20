@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { resolveModel, resolvePiAgentDir } from "./config.js";
-import { createEventBus, formatTotalUsageText, type RunSession } from "./event-bus.js";
-import { LogWriter, usageToData } from "./logger.js";
+import { createEventBus, createLogWriterEmitter, formatTotalUsageText, type RunSession } from "./event-bus.js";
+import { LogWriter } from "./logger.js";
 import { parsePlan } from "./parser.js";
 import { buildTemporalContext, createPiProgressHooks, runPiSubprocessPrompt } from "./pi-subprocess.js";
 import { appendPlanCreationDebug, planCreationDebugFilePath } from "./planner-debug.js";
@@ -20,8 +20,23 @@ import { plannerLaunchConfigs } from "./planner-prompt.js";
 import { loadAgent, loadPrompt, expandPrompt } from "./prompt.js";
 import { createTokenLedger } from "./tui.js";
 
+import type { AgentEventEmitter, EventUsage } from "./events.js";
 import type { RalpixConfig } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+
+function buildUsage(
+  stepLedger: ReturnType<typeof createTokenLedger>,
+  totalLedger: ReturnType<typeof createTokenLedger>,
+): EventUsage {
+  const stepSnap = stepLedger.detailedSnapshot();
+  const totalSnap = totalLedger.detailedSnapshot();
+  const bd = stepLedger.breakdown();
+  return {
+    step: { input: stepSnap.input, output: stepSnap.output, cacheRead: stepSnap.cacheRead, cacheWrite: stepSnap.cacheWrite, cost: stepSnap.cost },
+    total: { input: totalSnap.input, output: totalSnap.output, cost: totalSnap.cost },
+    ...(bd.length > 0 ? { breakdown: bd } : {}),
+  };
+}
 
 function slugify(text: string): string {
   const slug = text
@@ -156,7 +171,6 @@ interface AcceptedPlanFlowOptions {
   initialPlanPath: string;
   isUpdate: boolean;
   ledger: ReturnType<typeof createTokenLedger>;
-  logger: LogWriter;
   plansDir: string;
   session: RunSession;
   basePrompt: string;
@@ -355,9 +369,8 @@ async function runPlanAgentSubprocess(
   cwd: string,
   config: RalpixConfig,
   ledger: ReturnType<typeof createTokenLedger>,
-  logger: LogWriter,
-  source: "review" | "critic",
-): Promise<string | null> {
+): Promise<{ output: string | null; stepLedger: ReturnType<typeof createTokenLedger> }> {
+  const stepLedger = createTokenLedger();
   try {
     const planContent = readFileSync(draftPath, "utf-8");
     const agentPrompt = loadAgent(agentName);
@@ -367,7 +380,6 @@ async function runPlanAgentSubprocess(
     const piAgentDir = resolvePiAgentDir(cwd, config);
     const temporal = buildTemporalContext(config);
     const promptWithTemporal = temporal.length > 0 ? `${temporal}\n${fullPrompt}` : fullPrompt;
-    const reviewLedger = createTokenLedger();
 
     const result = await runPiSubprocessPrompt(
       cwd,
@@ -377,21 +389,16 @@ async function runPlanAgentSubprocess(
       120000,
       createPiProgressHooks(undefined, (provider, model, usage) => {
         ledger.add(provider, model, usage);
-        reviewLedger.add(provider, model, usage);
+        stepLedger.add(provider, model, usage);
       }),
       piAgentDir,
       config,
     );
 
-    logger.write("usage", {
-      source,
-      usage: usageToData(reviewLedger.detailedSnapshot(), ledger.detailedSnapshot(), reviewLedger.breakdown()),
-    });
-
-    if (result.exitCode !== 0) return null;
-    return result.output;
+    if (result.exitCode !== 0) return { output: null, stepLedger };
+    return { output: result.output, stepLedger };
   } catch {
-    return null;
+    return { output: null, stepLedger };
   }
 }
 
@@ -400,9 +407,13 @@ async function runPlanReviewSubprocess(
   cwd: string,
   config: RalpixConfig,
   ledger: ReturnType<typeof createTokenLedger>,
-  logger: LogWriter,
+  session: RunSession,
 ): Promise<string | null> {
-  return runPlanAgentSubprocess("plan-review", draftPath, cwd, config, ledger, logger, "review");
+  session.log("ai_review_start");
+  const { output, stepLedger } = await runPlanAgentSubprocess("plan-review", draftPath, cwd, config, ledger);
+  const digest = output != null ? digestPlanReview(output).headline : "";
+  session.log("ai_review_end", { digest, usage: buildUsage(stepLedger, ledger) });
+  return output;
 }
 
 async function runCriticSubprocess(
@@ -410,9 +421,13 @@ async function runCriticSubprocess(
   cwd: string,
   config: RalpixConfig,
   ledger: ReturnType<typeof createTokenLedger>,
-  logger: LogWriter,
+  session: RunSession,
 ): Promise<string | null> {
-  return runPlanAgentSubprocess("critic", draftPath, cwd, config, ledger, logger, "critic");
+  session.log("critic_start");
+  const { output, stepLedger } = await runPlanAgentSubprocess("critic", draftPath, cwd, config, ledger);
+  const digest = output != null ? digestCriticReview(output).headline : "";
+  session.log("critic_end", { digest, usage: buildUsage(stepLedger, ledger) });
+  return output;
 }
 
 async function runPlanRevisionSubprocess(
@@ -425,7 +440,6 @@ async function runPlanRevisionSubprocess(
   config: RalpixConfig,
   session: RunSession,
   ledger: ReturnType<typeof createTokenLedger>,
-  logger: LogWriter,
 ): Promise<string | null> {
   const prompt = buildPlanGenerationPrompt(basePrompt, round, clarifications, previousDraft, feedback);
   const launchConfigs = plannerLaunchConfigs();
@@ -461,12 +475,7 @@ async function runPlanRevisionSubprocess(
       config,
     );
 
-    logger.write("usage", {
-      round,
-      source: "auto-revision",
-      launchIndex: launchIndex + 1,
-      usage: usageToData(roundLedger.detailedSnapshot(), ledger.detailedSnapshot(), roundLedger.breakdown()),
-    });
+    session.log("round_end", { round, usage: buildUsage(roundLedger, ledger) });
 
     if (result.exitCode !== 0) {
       appendPlanCreationDebug(
@@ -500,7 +509,6 @@ async function runAcceptedPlanNextActionFlow(
     initialPlanPath,
     isUpdate,
     ledger,
-    logger,
     plansDir,
     session,
   } = options;
@@ -523,7 +531,6 @@ async function runAcceptedPlanNextActionFlow(
       config,
       session,
       ledger,
-      logger,
     );
     revisionRound++;
     if (revisedDraft == null || revisedDraft.trim().length === 0) {
@@ -583,46 +590,26 @@ async function runAcceptedPlanNextActionFlow(
     if (typeof next === "string" && next.includes("Review")) {
       session.message("info", "Running AI plan review...");
       session.status("reviewing", "AI reviewing plan...");
-      const reviewResult = await runPlanReviewSubprocess(draftPath, ctx.cwd, config, ledger, logger);
+      const reviewResult = await runPlanReviewSubprocess(draftPath, ctx.cwd, config, ledger, session);
       if (reviewResult == null || reviewResult.trim().length === 0) {
         session.message("warning", "Plan review did not return output. You can still execute or revise manually.");
-        logger.write("review_result", { source: "ai", action: "failed", draftPath });
         continue;
       }
       const digest = digestPlanReview(reviewResult);
-      logger.write("review_result", {
-        source: "ai",
-        action: "completed",
-        draftPath,
-        verdict: digest.verdict,
-        critical: digest.critical,
-        important: digest.important,
-        minor: digest.minor,
-        overEngineering: digest.overEngineering,
-        testing: digest.testing,
-      });
       session.message(digest.verdict === "APPROVE" ? "success" : "warning", digest.headline);
       session.message("result", `AI review: ${digest.headline}`);
 
       session.message("info", "Running critic review...");
       session.status("reviewing", "Critic reviewing plan...");
-      const criticResult = await runCriticSubprocess(draftPath, ctx.cwd, config, ledger, logger);
+      const criticResult = await runCriticSubprocess(draftPath, ctx.cwd, config, ledger, session);
       if (criticResult == null || criticResult.trim().length === 0) {
         session.message("warning", "Critic did not return output. You can still execute or revise manually.");
-        logger.write("review_result", { source: "critic", action: "failed", draftPath });
         reviewDigest = digest;
         postReview = reviewResult;
         continue;
       }
 
       const critic = digestCriticReview(criticResult);
-      logger.write("review_result", {
-        source: "critic",
-        action: "completed",
-        draftPath,
-        critical: critic.criticalIssues,
-        prioritizedActions: critic.prioritizedActions,
-      });
       session.message(critic.criticalIssues === 0 ? "success" : "warning", critic.headline);
       session.message("result", `Critic: ${critic.headline}`);
 
@@ -632,11 +619,6 @@ async function runAcceptedPlanNextActionFlow(
       if (digest.verdict !== "APPROVE" || critic.criticalIssues > 0) {
         postReview = `${reviewResult.trim()}\n\n---\n\n${criticResult.trim()}`;
         appendPlanCreationDebug(ctx.cwd, "runAcceptedPlanNextActionFlow: auto-revision from plan review + critic");
-        logger.write("review_result", {
-          source: "system",
-          action: "auto_revise_after_review",
-          draftPath,
-        });
         session.message("warning", "Auto-revising plan from review and critic feedback...");
         await autoRevise([
           "Apply the following review feedback and return a fully revised ralpix plan.",
@@ -710,16 +692,14 @@ export async function runPlanCreation(
   brainstormContext?: string,
 ): Promise<string | null> {
   const trimmed = description.trim();
-  const logger = new LogWriter(ctx.cwd, "plan", `plan-${formatDateStamp(new Date())}`);
-  const session = createEventBus(ctx, "plan", []);
+  const emitters: AgentEventEmitter[] = [];
+  const session = createEventBus(ctx, "plan", emitters);
+  emitters.push(createLogWriterEmitter(new LogWriter(ctx.cwd, "plan", `plan-${formatDateStamp(new Date())}`)));
   let endWritten = false;
   const writeEnd = (status: "accepted" | "rejected" | "cancelled" | "failed", planPath?: string): void => {
     if (endWritten) return;
     endWritten = true;
-    logger.write("end", {
-      status,
-      ...(planPath === undefined ? {} : { planPath }),
-    });
+    session.log("phase_end", { label: status, ...(planPath === undefined ? {} : { planPath }) });
   };
 
   const canExecute = brainstormContext == null || brainstormContext.length === 0;
@@ -737,9 +717,9 @@ export async function runPlanCreation(
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: start description=${JSON.stringify(description)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: debug file ${planCreationDebugFilePath(ctx.cwd)}`);
   appendPlanCreationDebug(ctx.cwd, `runPlanCreation: plansDir=${config.plansDir}`);
-  logger.write("start", {
+  session.log("phase_start", {
+    label: isUpdate ? "update" : "create",
     description: trimmed,
-    mode: isUpdate ? "update" : "create",
     ...(existingPlanPath === undefined ? {} : { existingPlanPath }),
     brainstormContextProvided: brainstormContext !== undefined && brainstormContext.length > 0,
   });
@@ -789,12 +769,7 @@ export async function runPlanCreation(
 
   try {
     for (let round = isUpdate ? 2 : 1; round <= 5; round++) {
-      logger.write("round_start", {
-        round,
-        mode: isUpdate ? "update" : "create",
-        clarificationCount: clarifications.length,
-        hasPreviousDraft: previousDraft !== undefined,
-      });
+      session.log("round_start", { round, label: isUpdate ? "update" : "create" });
       const prompt = buildPlanGenerationPrompt(basePrompt, round, clarifications, previousDraft, feedback);
       let result: { exitCode: number; output: string; error: string } | null = null;
 
@@ -830,12 +805,7 @@ export async function runPlanCreation(
           config,
         );
 
-        logger.write("usage", {
-          round,
-          source: "draft",
-          launchIndex: launchIndex + 1,
-          usage: usageToData(roundLedger.detailedSnapshot(), ledger.detailedSnapshot(), roundLedger.breakdown()),
-        });
+        session.log("round_end", { round, usage: buildUsage(roundLedger, ledger) });
 
         if (result.exitCode === 0) {
           session.message("result", `Round ${round}: draft generated\n${roundLedger.usageLines().join("\n")}`);
@@ -871,6 +841,8 @@ export async function runPlanCreation(
         appendPlanCreationDebug(ctx.cwd, `round ${round}: model asked clarification ${JSON.stringify(clarification.question)}`);
         session.status("waiting", "Waiting for clarification...");
         session.message("info", `Need clarification: ${clarification.question}`);
+        const clarPromptId = `r${round}`;
+        session.log("question", { promptId: clarPromptId, message: clarification.question });
         const answer = await askClarification(session, clarification);
         if (answer == null || answer.length === 0) {
           session.message("warning", "Plan creation cancelled (clarification unanswered)");
@@ -879,12 +851,7 @@ export async function runPlanCreation(
         }
         clarifications.push({ question: clarification.question, answer });
         appendPlanCreationDebug(ctx.cwd, `round ${round}: clarification answered ${JSON.stringify(answer)}`);
-        logger.write("clarification", {
-          round,
-          question: clarification.question,
-          options: clarification.options,
-          answer,
-        });
+        session.log("answer", { promptId: clarPromptId, message: answer });
         session.message("result", `Clarified: ${clarification.question} -> ${answer}`);
         continue;
       }
@@ -914,13 +881,10 @@ export async function runPlanCreation(
       draftPath = persistDraftFile(isUpdate, existingPlanPath, plansDir, description, draft, createdAt, draftPath);
       const summary = summarizeDraft(draft);
       appendPlanCreationDebug(ctx.cwd, `round ${round}: saved draft ${draftPath}`);
-      logger.write("draft_generated", {
+      session.log("draft_generated", {
+        digest: `"${summary.title}" - ${String(summary.tasks)} tasks, ${String(summary.items)} items`,
         round,
         draftPath,
-        title: summary.title,
-        tasks: summary.tasks,
-        items: summary.items,
-        mode: isUpdate ? "update" : "create",
       });
       session.message(
         "success",
@@ -934,7 +898,7 @@ export async function runPlanCreation(
         if (review.action === "reject") {
           session.message("warning", "Plan rejected by user");
           session.message("warning", "Plan creation cancelled (user rejected)");
-          logger.write("review_result", { source: "user", action: "reject", draftPath });
+          session.log("human_review", { action: "reject" });
           writeEnd("rejected", draftPath);
           return null;
         }
@@ -946,7 +910,7 @@ export async function runPlanCreation(
             continue;
           }
           session.message("success", `Reloaded edited draft from ${draftPath}`);
-          logger.write("review_result", { source: "user", action: "reload", draftPath });
+          session.log("human_review", { action: "reload" });
           session.message("result", "Reloaded edited draft");
           continue;
         }
@@ -959,7 +923,7 @@ export async function runPlanCreation(
           }
           session.status("complete", "Plan accepted");
           session.message("success", "Plan accepted");
-          logger.write("review_result", { source: "user", action: "accept", draftPath });
+          session.log("human_review", { action: "accept" });
           appendPlanCreationDebug(ctx.cwd, `runPlanCreation: accepted ${draftPath}`);
           session.message("success", isUpdate ? `Plan updated at ${draftPath}` : `Plan saved to ${draftPath}`);
           const acceptedFlow = await runAcceptedPlanNextActionFlow({
@@ -974,7 +938,6 @@ export async function runPlanCreation(
             initialPlanPath: draftPath,
             isUpdate,
             ledger,
-            logger,
             plansDir,
             session,
           });
@@ -984,12 +947,7 @@ export async function runPlanCreation(
 
         previousDraft = readFileSync(draftPath, "utf-8");
         feedback = review.feedback;
-        logger.write("review_result", {
-          source: "user",
-          action: "revise",
-          draftPath,
-          feedback: review.feedback ?? "",
-        });
+        session.log("human_review", { action: "revise" });
         session.message("result", "User requested revision");
         appendPlanCreationDebug(ctx.cwd, `round ${round}: revision requested`);
         break;
@@ -1009,8 +967,9 @@ export async function runExistingPlanMenu(
   ctx: ExtensionCommandContext,
   config: RalpixConfig,
 ): Promise<string | null> {
-  const session = createEventBus(ctx, "plan", []);
-  const logger = new LogWriter(ctx.cwd, "plan", `plan-${formatDateStamp(new Date())}`);
+  const emitters: AgentEventEmitter[] = [];
+  const session = createEventBus(ctx, "plan", emitters);
+  emitters.push(createLogWriterEmitter(new LogWriter(ctx.cwd, "plan", `plan-${formatDateStamp(new Date())}`)));
   const ledger = createTokenLedger();
   const template = loadPrompt("plan-creation", ctx.cwd);
   const basePrompt = expandPrompt(template, {
@@ -1031,7 +990,6 @@ export async function runExistingPlanMenu(
       initialPlanPath: planPath,
       isUpdate: true,
       ledger,
-      logger,
       plansDir: resolve(ctx.cwd, config.plansDir.length > 0 ? config.plansDir : "docs/plans"),
       session,
     });

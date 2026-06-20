@@ -95,13 +95,13 @@ Complete and green before touching any phase file.
 
 ### Task 6: Refactor planner.ts
 
-- [ ] Remove `const logger = new LogWriter(...)` — session owns it
-- [ ] All inner functions (`runPlanAgentSubprocess`, `runPlanReviewSubprocess`, `runCriticSubprocess`, `runAcceptedPlanFlow`) drop `logger: LogWriter`; use `session.log()`
-- [ ] Split `plan/clarification` into `plan/question` (logged immediately when model asks) + `plan/answer` (logged after user responds, includes usage snapshot)
-- [ ] Add `plan/round_end` with inline usage after each subprocess round
-- [ ] `plan/draft_generated`, `plan/review_result` (with `source: "ai" | "critic" | "user"`, `action`, digest fields) remain
-- [ ] Plan review cycle events: `plan/critic_start`, `plan/critic_end` (with digest + usage), `plan/ai_review_start`, `plan/ai_review_end` (with digest + usage), `plan/human_review` (accept/reject/reload/revise + usage total)
-- [ ] Add test: assert emitted plan events match expected shapes; verify review cycle emits critic/ai/human events in order
+- [x] Remove `const logger = new LogWriter(...)` — session owns it
+- [x] All inner functions (`runPlanAgentSubprocess`, `runPlanReviewSubprocess`, `runCriticSubprocess`, `runAcceptedPlanFlow`) drop `logger: LogWriter`; use `session.log()`
+- [x] Split `plan/clarification` into `plan/question` (logged immediately when model asks) + `plan/answer` (logged after user responds, includes usage snapshot)
+- [x] Add `plan/round_end` with inline usage after each subprocess round
+- [x] `plan/draft_generated`, `plan/review_result` (with `source: "ai" | "critic" | "user"`, `action`, digest fields) remain
+- [x] Plan review cycle events: `plan/critic_start`, `plan/critic_end` (with digest + usage), `plan/ai_review_start`, `plan/ai_review_end` (with digest + usage), `plan/human_review` (accept/reject/reload/revise + usage total)
+- [x] Add test: assert emitted plan events match expected shapes; verify review cycle emits critic/ai/human events in order
 
 ### Task 7: Refactor executor.ts
 
