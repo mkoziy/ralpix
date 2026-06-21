@@ -76,7 +76,7 @@ The existing codebase is the authoritative source of truth for preserved behavio
 - [x] Document `restoreState` / `persistState`: state shape, when each is called, what happens on corrupt state
 - [x] Document retry loop invariants: max retries config, backoff, what resets the attempt counter
 - [x] Document plan review cycle: exact sequence (draft → critic → AI → human), loop exit conditions, reload vs revise distinction
-- [ ] Save as `docs/plans/behaviour-spec.md` — this becomes the acceptance test reference for Stage 2
+- [x] Save as `docs/plans/behaviour-spec.md` — this becomes the acceptance test reference for Stage 2
 
 ---
 
