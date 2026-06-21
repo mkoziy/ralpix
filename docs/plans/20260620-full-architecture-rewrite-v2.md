@@ -274,9 +274,9 @@ Design determined by Task 14 spike. Sketch only:
 
 ### Task 18: e2e tests — TBD after Task 14
 
-- [ ] `e2e/resume.test.ts`: interrupt after `task_end`, resume — JSONL appended, `session_start` emitted
-- [ ] `e2e/review-pipeline.test.ts`: stub subprocess, assert all stage/iteration events in order
-- [ ] `e2e/retry-loop.test.ts`: inject failing task, verify multiple `attempt_start`, no duplicate JSONL lines
+- [x] `e2e/resume.test.ts`: interrupt after `task_end`, resume — JSONL appended, `session_start` emitted
+- [x] `e2e/review-pipeline.test.ts`: stub subprocess, assert all stage/iteration events in order
+- [x] `e2e/retry-loop.test.ts`: inject failing task, verify multiple `attempt_start`, no duplicate JSONL lines
 
 ---
 
