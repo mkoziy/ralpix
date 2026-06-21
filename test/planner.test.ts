@@ -239,11 +239,11 @@ describe("runPlanCreation", () => {
         writeFileSync(savedPath, `${DRAFT_TWO}\n`, "utf8");
         return result("No critical issues", 0.002);
       })
-      .mockResolvedValueOnce(result("Needs another task", 0.003))
+      .mockResolvedValueOnce(result("No critical issues", 0.003))
       .mockResolvedValueOnce(result("No critical issues", 0.005));
     const runAiReview = vi.fn()
       .mockResolvedValueOnce(result("APPROVE", 0.002))
-      .mockResolvedValueOnce(result("REVISE", 0.003))
+      .mockResolvedValueOnce(result("APPROVE", 0.003))
       .mockResolvedValueOnce(result("APPROVE", 0.005));
 
     const response = await runPlanCreation(
@@ -270,5 +270,42 @@ describe("runPlanCreation", () => {
       .filter(([type, data]) => type === "review_result" && data?.source === "user")
       .map(([, data]) => data?.action);
     expect(userResults).toEqual(["reload", "revise", "accept"]);
+  });
+
+  it("auto-revises from critic or ai findings before asking for final acceptance", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ralpix-planner-auto-revise-"));
+    const session = stubRunSession();
+    session.choose.mockResolvedValueOnce("Accept and finish");
+
+    const runPrompt = vi.fn()
+      .mockResolvedValueOnce(result(DRAFT_ONE, 0.001))
+      .mockResolvedValueOnce(result(DRAFT_TWO, 0.004));
+    const runCritic = vi.fn()
+      .mockResolvedValueOnce(result("Missing an explicit testing task", 0.002))
+      .mockResolvedValueOnce(result("No critical issues", 0.005));
+    const runAiReview = vi.fn()
+      .mockResolvedValueOnce(result("APPROVE", 0.003))
+      .mockResolvedValueOnce(result("APPROVE", 0.006));
+
+    const response = await runPlanCreation(
+      makeCtx(cwd),
+      {},
+      "Rewrite planner",
+      CONFIG,
+      session,
+      {
+        now: () => new Date("2026-06-20T10:00:00.000Z"),
+        loadPrompt: () => "{{DESCRIPTION}}",
+        loadAgent: (name) => `reviewer:${name}`,
+        runPrompt,
+        runCritic,
+        runAiReview,
+      },
+    );
+
+    expect(response.plan.title).toBe("Planner Rewrite Updated");
+    expect(runPrompt).toHaveBeenCalledTimes(2);
+    expect(session.choose).toHaveBeenCalledTimes(1);
+    expect(readFileSync(response.planPath, "utf8")).toContain("### Task 2: Wire review flow");
   });
 });

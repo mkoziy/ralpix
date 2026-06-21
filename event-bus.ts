@@ -7,7 +7,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 // ── Zod schemas ────────────────────────────────────────────────────────────
 
 const phaseSchema = z.enum(["brainstorm", "plan", "execute", "review"]);
-const baseSchema = z.object({ phase: phaseSchema, createdAt: z.string() });
+const baseSchema = z.object({ phase: phaseSchema, createdAt: z.string() }).strict();
 
 const usageStepSchema = z.object({
   input: z.number(),
@@ -15,13 +15,13 @@ const usageStepSchema = z.object({
   cacheRead: z.number(),
   cacheWrite: z.number(),
   cost: z.number(),
-});
+}).strict();
 
 const usageTotalSchema = z.object({
   input: z.number(),
   output: z.number(),
   cost: z.number(),
-});
+}).strict();
 
 const usageBreakdownEntrySchema = z.object({
   provider: z.string(),
@@ -31,13 +31,13 @@ const usageBreakdownEntrySchema = z.object({
   cacheRead: z.number(),
   cacheWrite: z.number(),
   cost: z.number(),
-});
+}).strict();
 
 const eventUsageSchema = z.object({
   step: usageStepSchema,
   total: usageTotalSchema,
   breakdown: z.array(usageBreakdownEntrySchema).optional(),
-});
+}).strict();
 
 const reviewStageIdSchema = z.enum(["first-pass", "external-review", "external-eval", "second-pass"]);
 const reviewStageStatusFinalSchema = z.enum(["complete", "failed", "skipped"]);

@@ -37,6 +37,9 @@ interface PlanAcceptanceContext {
 
 export interface PlannerDependencies {
   now?: () => Date;
+  brainstormContext?: string;
+  existingDraft?: string;
+  existingPlanPath?: string;
   loadPrompt?: (name: string, cwd: string) => string;
   loadAgent?: (name: string) => string;
   runPrompt?: (
@@ -133,15 +136,20 @@ export async function runPlanCreation(
   mkdirSync(plansDir, { recursive: true });
 
   const template = runtime.promptLoader("plan-creation", ctx.cwd);
+  const brainstormContext = dependencies.brainstormContext?.trim() ?? "";
   const basePrompt = expandPrompt(template, {
     DESCRIPTION: trimmed,
-    BRAINSTORM_CONTEXT: "",
+    BRAINSTORM_CONTEXT: brainstormContext.length > 0
+      ? `\n\n## Brainstorm Context\n${brainstormContext}`
+      : "",
   });
 
   const clarifications: Array<{ question: string; answer: string }> = [];
-  let currentDraft = "";
-  let draftPath = "";
-  let pendingFeedback: string | null = null;
+  let currentDraft = dependencies.existingDraft?.trim() ?? "";
+  let draftPath = dependencies.existingPlanPath ?? "";
+  let pendingFeedback: string | null = currentDraft.length > 0
+    ? `Revise the existing plan using these instructions:\n${trimmed}`
+    : null;
   let round = 0;
 
   session.log("phase_start", { label: "create" });
@@ -449,6 +457,9 @@ async function runReviewPhase(
     piAgentDir: config.piAgentDir,
     timeoutMs: config.reviewTimeoutMs,
   }, session);
+  if (result.status !== "success") {
+    throw new Error(result.message ?? `${kind} review subprocess ${result.status}`);
+  }
 
   const output = normalizeDraftOutput(result);
   const digest = firstMeaningfulLine(output);
@@ -537,6 +548,15 @@ async function runReviewLoop(
       digest: aiReviewResult.digest,
     });
 
+    const automaticFeedback = collectReviewerFeedback(criticResult, aiReviewResult);
+    if (automaticFeedback !== null) {
+      return {
+        action: "revise",
+        draft: currentDraft,
+        feedback: automaticFeedback,
+      };
+    }
+
     const humanDecision = await reviewDraft(session, draftPath);
     session.log("human_review", { action: humanDecision.action });
     session.log("review_result", {
@@ -559,6 +579,26 @@ async function runReviewLoop(
       ...(humanDecision.feedback === undefined ? {} : { feedback: humanDecision.feedback }),
     };
   }
+}
+
+function collectReviewerFeedback(
+  criticResult: ReviewPhaseResult,
+  aiReviewResult: ReviewPhaseResult,
+): string | null {
+  const findings: string[] = [];
+  if (criticResult.action === "revise" && criticResult.digest.length > 0) {
+    findings.push(`Critic: ${criticResult.digest}`);
+  }
+  if (aiReviewResult.action === "revise" && aiReviewResult.digest.length > 0) {
+    findings.push(`AI reviewer: ${aiReviewResult.digest}`);
+  }
+  if (findings.length === 0) {
+    return null;
+  }
+  return [
+    "Revise the draft to address these review findings.",
+    ...findings,
+  ].join("\n");
 }
 
 async function reviewDraft(session: RunSession, draftPath: string): Promise<HumanReviewDecision> {

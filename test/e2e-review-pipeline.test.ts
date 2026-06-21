@@ -127,9 +127,13 @@ describe("review pipeline e2e", () => {
     );
 
     try {
-      const runSubprocess = vi.fn()
-        .mockResolvedValueOnce(reviewResult("first pass clean", 0.001))
-        .mockResolvedValueOnce(reviewResult("second pass clean", 0.002));
+      const runSubprocess = vi.fn();
+      for (let index = 0; index < 5; index += 1) {
+        runSubprocess.mockResolvedValueOnce(reviewResult(`first pass clean ${String(index + 1)}`, 0.001));
+      }
+      for (let index = 0; index < 2; index += 1) {
+        runSubprocess.mockResolvedValueOnce(reviewResult(`second pass clean ${String(index + 1)}`, 0.002));
+      }
 
       await runReviewPipeline(
         makeCtx(cwd),
@@ -142,6 +146,7 @@ describe("review pipeline e2e", () => {
           loadPrompt: () => "{{GOAL}}",
           detectDefaultBranch: () => "main",
           getHeadHash: () => "head-1",
+          progressFile: phaseRun.progressFilePath,
         },
       );
     } finally {

@@ -8,7 +8,6 @@ import {
   buildStatusWidgetView,
   createPhaseRun,
   createRalpixCommandHandler,
-  defaultLoggerSessionName,
   inferProgressLogPhase,
   migrateLegacyProgressLogs,
   persistState,
@@ -106,7 +105,10 @@ describe("createRalpixCommandHandler", () => {
     const { cwd, planPath } = makePlanFixture();
     const ctx = makeCtx(cwd);
     const pi = makePi();
-    const runBrainstorm = vi.fn().mockResolvedValue({ sessionName: "brainstorm-1" });
+    ctx.ui.confirm
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false);
+    const runBrainstorm = vi.fn().mockResolvedValue({ sessionName: "brainstorm-1", context: "brainstorm context" });
     const runPlanCreation = vi.fn().mockResolvedValue({ planPath, plan: { title: "Index Integration" } });
     const runStandaloneReview = vi.fn().mockImplementation(async () => {
       await Promise.resolve();
@@ -161,6 +163,70 @@ describe("createRalpixCommandHandler", () => {
     expect(runStandaloneReview).toHaveBeenCalledOnce();
     expect(executeAllTasks).toHaveBeenCalledOnce();
     expect(runReviewPipeline).toHaveBeenCalledOnce();
+  });
+
+  it("offers brainstorm-first plan creation and forwards brainstorm context to the planner", async () => {
+    const { cwd, planPath } = makePlanFixture();
+    const ctx = makeCtx(cwd);
+    const pi = makePi();
+    ctx.ui.confirm.mockResolvedValueOnce(true);
+
+    const runBrainstorm = vi.fn().mockResolvedValue({
+      sessionName: "brainstorm-1",
+      context: "Validated architecture and testing notes",
+    });
+    const runPlanCreation = vi.fn().mockResolvedValue({ planPath, plan: { title: "Index Integration" } });
+
+    const handler = createRalpixCommandHandler(pi, {
+      now: () => new Date("2026-06-20T12:00:00.000Z"),
+      loadConfig: () => CONFIG,
+      resolvePiAgentDir: () => null,
+      runBrainstorm,
+      runPlanCreation,
+    });
+
+    await handler("plan create command router", ctx);
+
+    expect(runBrainstorm).toHaveBeenCalledOnce();
+    expect(runPlanCreation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "create command router",
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        brainstormContext: "Validated architecture and testing notes",
+      }),
+    );
+  });
+
+  it("treats an existing plan path as a revision target instead of a new description", async () => {
+    const { cwd, planPath } = makePlanFixture();
+    const ctx = makeCtx(cwd);
+    const pi = makePi();
+    ctx.ui.confirm.mockResolvedValueOnce(false);
+    const runPlanCreation = vi.fn().mockResolvedValue({ planPath, plan: { title: "Index Integration" } });
+
+    const handler = createRalpixCommandHandler(pi, {
+      now: () => new Date("2026-06-20T12:00:00.000Z"),
+      loadConfig: () => CONFIG,
+      resolvePiAgentDir: () => null,
+      runPlanCreation,
+    });
+
+    await handler(`plan ${planPath} add retry handling`, ctx);
+
+    expect(runPlanCreation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "add retry handling",
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        existingPlanPath: planPath,
+        existingDraft: expect.stringContaining("# Plan: Index Integration"),
+      }),
+    );
   });
 
   it("migrates legacy progress logs, restores state, offers a branch switch, and moves the plan on success", async () => {
@@ -312,44 +378,20 @@ describe("buildStatusWidgetView", () => {
   });
 });
 
-describe("logger bootstrap", () => {
+describe("phase logging", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("uses the ralpix logger session naming convention", () => {
-    expect(defaultLoggerSessionName(new Date("2026-06-21T10:11:12.000Z"))).toBe("ralpix-logger-20260621-101112");
-  });
-
-  it("waits for logger readiness, writes through the intercom emitter, and shuts the logger down", async () => {
+  it("writes phase events directly through LogWriter", async () => {
     const { cwd } = makePlanFixture();
     const ctx = makeCtx(cwd, false);
-    const waitUntilReady = vi.fn().mockResolvedValue();
-    const shutdown = vi.fn();
-    const send = vi.fn((payload: string) => {
-      const envelope = JSON.parse(payload) as { seq: number; target: { phase: string; sessionName: string } };
-      return JSON.stringify({
-        type: "ack",
-        runId: "ralpix-logger-20260621-101112",
-        seq: envelope.seq,
-        phase: envelope.target.phase,
-        sessionName: envelope.target.sessionName,
-      });
-    });
 
     const run = await createPhaseRun(
       ctx,
       "execute",
       "index-plan",
       new Date("2026-06-21T10:11:12.000Z"),
-      {
-        startLoggerSession: vi.fn().mockResolvedValue({
-          name: "ralpix-logger-20260621-101112",
-          transport: { send },
-          waitUntilReady,
-          shutdown,
-        }),
-      },
     );
 
     run.session.log("task_start", {
@@ -361,9 +403,7 @@ describe("logger bootstrap", () => {
     run.session.close();
     run.close();
 
-    expect(waitUntilReady).toHaveBeenCalledOnce();
-    expect(send).toHaveBeenCalledOnce();
-    expect(shutdown).toHaveBeenCalledWith("phase execute complete");
+    expect(existsSync(run.progressFilePath)).toBe(true);
     expect(run.progressFilePath).toBe(join(cwd, ".ralpix", "progress", "execute", "index-plan.jsonl"));
   });
 });

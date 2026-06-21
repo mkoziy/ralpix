@@ -70,12 +70,12 @@ Brainstorm checkpoint/resume, clarification Q&A, critic + AI review + human revi
 
 The existing codebase is the authoritative source of truth for preserved behaviour. Once it is deleted, that reference is gone. Extract the invariants first.
 
-- [ ] Document `allDoneSignal` detection logic: exact string pattern, where it fires, what it prevents
-- [ ] Document material-failure detection: what constitutes a material failure, detection conditions, retry vs abort decision
-- [ ] Document brainstorm checkpoint/resume: what state is persisted, file location, restore conditions
-- [ ] Document `restoreState` / `persistState`: state shape, when each is called, what happens on corrupt state
-- [ ] Document retry loop invariants: max retries config, backoff, what resets the attempt counter
-- [ ] Document plan review cycle: exact sequence (draft → critic → AI → human), loop exit conditions, reload vs revise distinction
+- [x] Document `allDoneSignal` detection logic: exact string pattern, where it fires, what it prevents
+- [x] Document material-failure detection: what constitutes a material failure, detection conditions, retry vs abort decision
+- [x] Document brainstorm checkpoint/resume: what state is persisted, file location, restore conditions
+- [x] Document `restoreState` / `persistState`: state shape, when each is called, what happens on corrupt state
+- [x] Document retry loop invariants: max retries config, backoff, what resets the attempt counter
+- [x] Document plan review cycle: exact sequence (draft → critic → AI → human), loop exit conditions, reload vs revise distinction
 - [ ] Save as `docs/plans/behaviour-spec.md` — this becomes the acceptance test reference for Stage 2
 
 ---

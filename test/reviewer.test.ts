@@ -104,9 +104,13 @@ function reviewResult(summary: string, cost: number) {
 describe("runReviewPipeline", () => {
   it("emits stage and iteration events in order for the two-stage pipeline", async () => {
     const session = stubRunSession();
-    const runSubprocess = vi.fn()
-      .mockResolvedValueOnce(reviewResult("first pass clean", 0.001))
-      .mockResolvedValueOnce(reviewResult("second pass clean", 0.002));
+    const runSubprocess = vi.fn();
+    for (let index = 0; index < 5; index += 1) {
+      runSubprocess.mockResolvedValueOnce(reviewResult(`first pass clean ${String(index + 1)}`, 0.001));
+    }
+    for (let index = 0; index < 2; index += 1) {
+      runSubprocess.mockResolvedValueOnce(reviewResult(`second pass clean ${String(index + 1)}`, 0.002));
+    }
     const headHashes = ["head-1", "head-1"];
 
     await runReviewPipeline(
@@ -120,6 +124,7 @@ describe("runReviewPipeline", () => {
         loadPrompt: () => "{{GOAL}}",
         detectDefaultBranch: () => "main",
         getHeadHash: () => headHashes.shift() ?? "head-1",
+        progressFile: "/tmp/review.jsonl",
       },
     );
 
@@ -141,6 +146,7 @@ describe("runReviewPipeline", () => {
       stage: "second-pass",
       detail: "quality review — iteration 1/2",
     });
+    expect(runSubprocess).toHaveBeenCalledTimes(7);
 
     for (const [type, data] of session.log.mock.calls) {
       const parsed = agentEventSchema.safeParse({
@@ -155,9 +161,13 @@ describe("runReviewPipeline", () => {
 
   it("includes usage on stage_finish and skips external stages when disabled", async () => {
     const session = stubRunSession();
-    const runSubprocess = vi.fn()
-      .mockResolvedValueOnce(reviewResult("first pass clean", 0.001))
-      .mockResolvedValueOnce(reviewResult("second pass clean", 0.002));
+    const runSubprocess = vi.fn();
+    for (let index = 0; index < 5; index += 1) {
+      runSubprocess.mockResolvedValueOnce(reviewResult(`first pass clean ${String(index + 1)}`, 0.001));
+    }
+    for (let index = 0; index < 2; index += 1) {
+      runSubprocess.mockResolvedValueOnce(reviewResult(`second pass clean ${String(index + 1)}`, 0.002));
+    }
 
     await runReviewPipeline(
       makeCtx(),
@@ -170,6 +180,7 @@ describe("runReviewPipeline", () => {
         loadPrompt: () => "{{GOAL}}",
         detectDefaultBranch: () => "main",
         getHeadHash: () => "head-1",
+        progressFile: "/tmp/review.jsonl",
       },
     );
 
@@ -182,8 +193,8 @@ describe("runReviewPipeline", () => {
         stage: "first-pass",
         status: "complete",
         usage: {
-          step: usage(0.001),
-          total: { input: 13, output: 4, cost: 0.001 },
+          step: { input: 50, output: 20, cacheRead: 10, cacheWrite: 5, cost: 0.005 },
+          total: { input: 65, output: 20, cost: 0.005 },
         },
       }),
       expect.objectContaining({
@@ -198,8 +209,8 @@ describe("runReviewPipeline", () => {
         stage: "second-pass",
         status: "complete",
         usage: {
-          step: usage(0.002),
-          total: { input: 26, output: 8, cost: 0.003 },
+          step: { input: 20, output: 8, cacheRead: 4, cacheWrite: 2, cost: 0.004 },
+          total: { input: 91, output: 28, cost: 0.009000000000000001 },
         },
       }),
     ]);

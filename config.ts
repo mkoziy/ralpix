@@ -165,6 +165,7 @@ export function loadConfig(cwd: string): RalpixConfig {
   config.reviewSecondEffort = validateEffort(config.reviewSecondEffort, "reviewSecondEffort");
   config.externalReviewEffort = validateEffort(config.externalReviewEffort, "externalReviewEffort");
   config.planEffort = validateEffort(config.planEffort, "planEffort");
+  config.brainstormEffort = validateEffort(config.brainstormEffort, "brainstormEffort");
 
   if (typeof config.reviewTimeoutMs !== "number" || config.reviewTimeoutMs <= 0) {
     config.reviewTimeoutMs = 30 * 60 * 1000;

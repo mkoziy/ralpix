@@ -24,6 +24,15 @@ describe("agentEventSchema — required base fields", () => {
     const result = agentEventSchema.safeParse({ ...BASE, type: "totally_unknown_event" });
     expect(result.success).toBe(false);
   });
+
+  it("rejects unknown fields instead of stripping them", () => {
+    const result = agentEventSchema.safeParse({
+      ...BASE,
+      type: "phase_start",
+      extra: "unexpected",
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("agentEventSchema — all 28 event types", () => {

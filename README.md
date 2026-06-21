@@ -82,7 +82,7 @@ What happens when you execute a plan:
 3. Each task runs in an isolated `pi` session seeded from the merged ralpix config
 4. A task counts as successful only if the agent reports `Success: true` and the host did not observe any tool failures or a non-zero child exit
 5. Auto-commit after each successful task
-6. Progress is logged to `./.ralpix/progress/<plan-name>.jsonl`
+6. Progress is logged to per-phase JSONL files under `./.ralpix/progress/{execute,review}/`
 7. After all tasks: review pipeline runs (first pass → optional external review → second pass)
 8. Plan checkboxes are updated automatically
 
@@ -233,7 +233,7 @@ The review uses the same multi-model pipeline as plan execution:
 - **External review** (if enabled) — independent model finds issues
 - **Second pass** — focused re-review for remaining critical/major issues
 
-Progress is logged to `.ralpix/progress/review-<date>-<branch>.jsonl`.
+Progress is logged to `.ralpix/progress/review/<session>.jsonl`.
 
 Use this when you want a fresh set of eyes on a PR, a quick sanity check before committing, or an independent audit of uncommitted work.
 
@@ -253,7 +253,7 @@ You can also update an existing plan by pointing to its file:
 
 ralpix loads the existing plan, treats your description as revision instructions, and generates an updated draft. The original file is overwritten once you accept.
 
-If you pass only an existing plan path with no extra instructions, ralpix opens the same post-save menu you get after creating a plan: review it, execute it now, or exit and run it later. Paths prefixed with `@` such as `@docs/plans/20260523-jwt-auth.md` are treated the same way.
+If you pass only an existing plan path with no extra instructions, ralpix treats it as a reopen flow instead of creating a new draft. Paths prefixed with `@` such as `@docs/plans/20260523-jwt-auth.md` are treated the same way.
 
 The model will:
 
@@ -452,19 +452,19 @@ Example config:
 
 All progress is logged as append-only JSONL under `./.ralpix/progress/`:
 
-- Brainstorm: `brainstorm-YYYYMMDD.jsonl`
-- Plan creation: `plan-YYYYMMDD.jsonl`
-- Plan execution + review: `<plan-name>.jsonl`
-- Standalone review: `review-YYYYMMDD-<branch>.jsonl`
+- Brainstorm: `.ralpix/progress/brainstorm/<session>.jsonl`
+- Plan creation: `.ralpix/progress/plan/<session>.jsonl`
+- Plan execution: `.ralpix/progress/execute/<session>.jsonl`
+- Review: `.ralpix/progress/review/<session>.jsonl`
 
-Each line is one complete JSON object:
+Each line is one complete `AgentEvent` object:
 
 ```typescript
-interface JsonlEntry {
-  ts: string;
+interface AgentEvent {
+  type: string;
   phase: "brainstorm" | "plan" | "execute" | "review";
-  event: string;
-  data: Record<string, unknown>;
+  createdAt: string;
+  // event-specific fields
 }
 ```
 
@@ -499,12 +499,10 @@ interface JsonlUsageData {
 Example lines:
 
 ```json
-{"ts":"2026-05-12T14:30:00.001Z","phase":"execute","event":"start","data":{"planTitle":"My Feature","planPath":"/home/user/project/docs/plans/my-feature.md","taskCount":3}}
-{"ts":"2026-05-12T14:30:05.123Z","phase":"execute","event":"task_start","data":{"taskId":"task-1","taskNumber":1,"taskTitle":"Set up the foundation","itemCount":3}}
-{"ts":"2026-05-12T14:30:05.124Z","phase":"execute","event":"task_info","data":{"taskId":"task-1","taskNumber":1,"taskTitle":"Set up the foundation","detail":"attempt 1 launched (openai-codex/gpt-5.5)"}}
-{"ts":"2026-05-12T14:32:10.457Z","phase":"execute","event":"task_usage","data":{"taskId":"task-1","taskNumber":1,"taskTitle":"Set up the foundation","usage":{"step":{"input":8200,"output":1100,"cacheRead":4100,"cacheWrite":0,"cost":0.084},"total":{"input":16500,"output":2000,"cost":0.167},"breakdown":[{"provider":"openai-codex","model":"gpt-5.5","input":8200,"output":1100,"cacheRead":4100,"cacheWrite":0,"cost":0.084}]}}}
-{"ts":"2026-05-12T14:45:00.000Z","phase":"review","event":"stage_start","data":{"stage":"first-pass","detail":"checking all completed tasks","agents":5,"mode":"review-and-fix"}}
-{"ts":"2026-05-12T14:48:00.001Z","phase":"review","event":"stage_usage","data":{"stage":"second-pass","stageLabel":"second pass","usage":{"step":{"input":6100,"output":900,"cacheRead":2100,"cacheWrite":0,"cost":0.052},"total":{"input":22600,"output":2900,"cost":0.219},"breakdown":[{"provider":"anthropic","model":"claude-sonnet-4-5","input":6100,"output":900,"cacheRead":2100,"cacheWrite":0,"cost":0.052}]}}}
+{"type":"task_start","phase":"execute","createdAt":"2026-05-12T14:30:05.123Z","taskId":"task-1","taskNumber":1,"taskTitle":"Set up the foundation","itemCount":3}
+{"type":"attempt_end","phase":"execute","createdAt":"2026-05-12T14:32:10.457Z","taskId":"task-1","attempt":1,"success":true,"usage":{"step":{"input":8200,"output":1100,"cacheRead":4100,"cacheWrite":0,"cost":0.084},"total":{"input":12300,"output":1100,"cost":0.084}}}
+{"type":"stage_start","phase":"review","createdAt":"2026-05-12T14:45:00.000Z","stage":"first-pass","detail":"checking all completed tasks"}
+{"type":"stage_finish","phase":"review","createdAt":"2026-05-12T14:48:00.001Z","stage":"second-pass","status":"complete","usage":{"step":{"input":6100,"output":900,"cacheRead":2100,"cacheWrite":0,"cost":0.052},"total":{"input":8200,"output":900,"cost":0.052}}}
 ```
 
 These logs are intended to be machine-readable first: they are append-only, preserve raw token and pricing data, and are suitable for future HTML/report generation.

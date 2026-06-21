@@ -17,18 +17,9 @@ export class LogWriter {
   }
 
   write(event: AgentEvent): void {
-    try {
-      const dir = dirname(this.filePath);
-      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-      appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, "utf-8");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      try {
-        process.stderr.write(`[ralpix] failed to write progress log ${this.filePath}: ${message}\n`);
-      } catch {
-        // Logging failures must never throw.
-      }
-    }
+    const dir = dirname(this.filePath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, "utf-8");
   }
 }
 

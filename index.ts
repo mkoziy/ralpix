@@ -11,19 +11,16 @@ import {
 } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
-import { createLoggerIntercomEmitter } from "./adapters/logger-intercom.js";
 import { createTuiEmitter } from "./adapters/tui.js";
 import { runBrainstorm } from "./brainstorm.js";
 import { initRalpixHome, loadConfig, resolvePiAgentDir } from "./config.js";
 import { createEventBus } from "./event-bus.js";
 import { executeAllTasks } from "./executor.js";
-import { handleLoggerEnvelope, parseLoggerEnvelope } from "./logger-protocol.js";
-import { LogWriter, progressDirForPhase } from "./logger.js";
+import { createLogWriterEmitter, LogWriter, progressDirForPhase } from "./logger.js";
 import { loadPlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline, runStandaloneReview } from "./reviewer.js";
 
-import type { LoggerIntercomTransport } from "./adapters/logger-intercom.js";
 import type { RunSession } from "./event-bus.js";
 import type { Phase, Plan, RalpixConfig, RalpixState } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -39,13 +36,6 @@ export interface PhaseRun {
   sessionName: string;
 }
 
-export interface LoggerSessionController {
-  name: string;
-  shutdown: (reason?: string) => void;
-  transport: LoggerIntercomTransport;
-  waitUntilReady: () => Promise<void>;
-}
-
 export interface IndexDependencies {
   now?: () => Date;
   loadConfig?: typeof loadConfig;
@@ -59,11 +49,6 @@ export interface IndexDependencies {
   loadPlan?: typeof loadPlan;
   getCurrentBranch?: (cwd: string) => string | null;
   createBranch?: (cwd: string, branchName: string) => void;
-  startLoggerSession?: (
-    ctx: ExtensionCommandContext,
-    phase: Phase,
-    loggerSessionName: string,
-  ) => Promise<LoggerSessionController>;
 }
 
 function notify(
@@ -326,93 +311,23 @@ function defaultSessionName(phase: Phase, now: Date, detail?: string): string {
   return `${phase}-${timestamp(now)}-${base}`;
 }
 
-export function defaultLoggerSessionName(now: Date): string {
-  return `ralpix-logger-${timestamp(now)}`;
-}
-
 function progressFilePathFor(cwd: string, phase: Phase, sessionName: string): string {
   return join(progressDirForPhase(cwd, phase), `${sessionName}.jsonl`);
-}
-
-export async function startLoggerSession(
-  ctx: ExtensionCommandContext,
-  phase: Phase,
-  loggerSessionName: string,
-): Promise<LoggerSessionController> {
-  let ready = false;
-  let closed = false;
-  const writers = new Map<string, LogWriter>();
-
-  function writerFor(targetPhase: Phase, sessionName: string): LogWriter {
-    const key = `${targetPhase}:${sessionName}`;
-    const existing = writers.get(key);
-    if (existing !== undefined) return existing;
-    const writer = new LogWriter(ctx.cwd, targetPhase, sessionName);
-    writers.set(key, writer);
-    return writer;
-  }
-
-  await Promise.resolve();
-
-  return {
-    name: loggerSessionName,
-    waitUntilReady: async () => {
-      ready = true;
-      await Promise.resolve();
-    },
-    shutdown: () => {
-      closed = true;
-    },
-    transport: {
-      send(payload: string): string {
-        if (!ready) {
-          throw new Error(`logger session ${loggerSessionName} is not ready`);
-        }
-        if (closed) {
-          throw new Error(`logger session ${loggerSessionName} is already shut down`);
-        }
-
-        const envelope = parseLoggerEnvelope(payload);
-        if (envelope.type === "shutdown") {
-          closed = true;
-          return "";
-        }
-
-        const result = handleLoggerEnvelope(writerFor(phase, envelope.target.sessionName), envelope);
-        if (result.exit) {
-          closed = true;
-        }
-        return JSON.stringify(result.ack);
-      },
-    },
-  };
 }
 
 export async function createPhaseRun(
   ctx: ExtensionCommandContext,
   phase: Phase,
   sessionName: string,
-  now: Date,
-  dependencies: IndexDependencies = {},
+  _now: Date,
 ): Promise<PhaseRun> {
-  const loggerSession = await (dependencies.startLoggerSession ?? startLoggerSession)(
-    ctx,
-    phase,
-    defaultLoggerSessionName(now),
-  );
-  await loggerSession.waitUntilReady();
-
-  const emitter = createLoggerIntercomEmitter({
-    cwd: ctx.cwd,
-    runId: loggerSession.name,
-    target: { phase, sessionName },
-    transport: loggerSession.transport,
-  });
+  void _now;
+  await Promise.resolve();
+  const logWriter = new LogWriter(ctx.cwd, phase, sessionName);
+  const emitter = createLogWriterEmitter(logWriter);
 
   return {
-    close: () => {
-      loggerSession.shutdown(`phase ${phase} complete`);
-    },
+    close: () => { return; },
     progressFilePath: progressFilePathFor(ctx.cwd, phase, sessionName),
     sessionName,
     session: createEventBus(ctx, phase, [emitter, createTuiEmitter(ctx)]),
@@ -479,6 +394,87 @@ function handleInit(
   notify(ctx, `ralpix initialized${suffix}`, "success");
 }
 
+interface PlanCommandInput {
+  description: string;
+  existingPlanPath?: string;
+}
+
+interface HandlePlanOptions {
+  brainstormContext?: string;
+  skipBrainstormPrompt?: boolean;
+}
+
+async function maybeCollectBrainstormContext(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  description: string,
+  config: RalpixConfig,
+  dependencies: IndexDependencies,
+): Promise<string | undefined> {
+  if (!ctx.hasUI || !config.brainstormEnabled) {
+    return undefined;
+  }
+
+  const brainstormFirst = await ctx.ui.confirm(
+    "Brainstorm before creating the plan?",
+    description,
+  );
+  if (brainstormFirst !== true) {
+    return undefined;
+  }
+
+  const brainstormRun = await createPhaseRun(
+    ctx,
+    "brainstorm",
+    defaultSessionName("brainstorm", (dependencies.now ?? (() => new Date()))(), description),
+    (dependencies.now ?? (() => new Date()))(),
+  );
+
+  try {
+    const result = await (dependencies.runBrainstorm ?? runBrainstorm)(
+      ctx,
+      pi as never,
+      description,
+      config,
+      brainstormRun.session,
+    );
+    notify(ctx, `Brainstorm complete: ${result.sessionName}`, "success");
+    notify(ctx, `Progress log: ${brainstormRun.progressFilePath}`, "info");
+    return result.context;
+  } finally {
+    brainstormRun.session.close();
+    brainstormRun.close();
+  }
+}
+
+async function reopenExistingPlan(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  existingPlanPath: string,
+  dependencies: IndexDependencies,
+): Promise<boolean> {
+  if (!existsSync(existingPlanPath)) {
+    throw new Error(`plan not found: ${existingPlanPath}`);
+  }
+
+  if (!ctx.hasUI) {
+    notify(ctx, `Plan ready: ${existingPlanPath}`, "info");
+    return true;
+  }
+
+  const action = await ctx.ui.select(
+    "Existing plan",
+    ["Execute now", "Exit and run later"],
+  );
+  if (action === "Execute now") {
+    await handleExecute(ctx, pi, existingPlanPath, dependencies);
+    return true;
+  }
+
+  notify(ctx, `Plan ready: ${existingPlanPath}`, "info");
+  return true;
+}
+
 async function handleBrainstorm(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
@@ -490,12 +486,13 @@ async function handleBrainstorm(
   }
 
   const config = loadRunConfig(ctx, dependencies);
+  let nextPlanContext: string | undefined;
+  let createPlanAfterBrainstorm = false;
   const phaseRun = await createPhaseRun(
     ctx,
     "brainstorm",
     defaultSessionName("brainstorm", (dependencies.now ?? (() => new Date()))(), description),
     (dependencies.now ?? (() => new Date()))(),
-    dependencies,
   );
 
   try {
@@ -508,34 +505,75 @@ async function handleBrainstorm(
     );
     notify(ctx, `Brainstorm complete: ${result.sessionName}`, "success");
     notify(ctx, `Progress log: ${phaseRun.progressFilePath}`, "info");
+    createPlanAfterBrainstorm = (await ctx.ui.confirm(
+      "Create a plan from this brainstorm now?",
+      description,
+    )) === true;
+    nextPlanContext = result.context;
   } finally {
     phaseRun.session.close();
     phaseRun.close();
+  }
+
+  if (createPlanAfterBrainstorm) {
+    await handlePlan(
+      ctx,
+      pi,
+      {
+        description,
+      },
+      dependencies,
+      {
+        brainstormContext: nextPlanContext,
+        skipBrainstormPrompt: true,
+      },
+    );
   }
 }
 
 async function handlePlan(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
-  description: string,
+  input: PlanCommandInput,
   dependencies: IndexDependencies,
+  options: HandlePlanOptions = {},
 ): Promise<void> {
   const config = loadRunConfig(ctx, dependencies);
+  const description = input.description.trim();
+  const existingPlanPath = input.existingPlanPath;
+
+  if (existingPlanPath !== undefined && description.length === 0) {
+    await reopenExistingPlan(ctx, pi, existingPlanPath, dependencies);
+    return;
+  }
+
+  let brainstormContext = options.brainstormContext;
+  if (brainstormContext === undefined && options.skipBrainstormPrompt !== true) {
+    brainstormContext = await maybeCollectBrainstormContext(ctx, pi, description, config, dependencies);
+  }
+
   const phaseRun = await createPhaseRun(
     ctx,
     "plan",
-    defaultSessionName("plan", (dependencies.now ?? (() => new Date()))(), description),
+    defaultSessionName("plan", (dependencies.now ?? (() => new Date()))(), description.length > 0 ? description : existingPlanPath),
     (dependencies.now ?? (() => new Date()))(),
-    dependencies,
   );
 
   try {
+    const existingDraft = existingPlanPath === undefined
+      ? undefined
+      : readFileSync(existingPlanPath, "utf8");
     const result = await (dependencies.runPlanCreation ?? runPlanCreation)(
       ctx,
       pi as never,
       description,
       config,
       phaseRun.session,
+      {
+        ...(brainstormContext === undefined ? {} : { brainstormContext }),
+        ...(existingDraft === undefined ? {} : { existingDraft }),
+        ...(existingPlanPath === undefined ? {} : { existingPlanPath }),
+      },
     );
     notify(ctx, `Plan saved: ${result.planPath}`, "success");
     notify(ctx, `Progress log: ${phaseRun.progressFilePath}`, "info");
@@ -577,7 +615,6 @@ async function handleExecute(
     "execute",
     slugify(basename(plan.path, extname(plan.path))),
     (dependencies.now ?? (() => new Date()))(),
-    dependencies,
   );
 
   try {
@@ -611,7 +648,6 @@ async function handleExecute(
       "review",
       `${slugify(basename(plan.path, extname(plan.path)))}-review`,
       (dependencies.now ?? (() => new Date()))(),
-      dependencies,
     );
     try {
       if (restored?.phase === "reviewing") {
@@ -625,6 +661,9 @@ async function handleExecute(
         plan,
         config,
         reviewRun.session,
+        {
+          progressFile: reviewRun.progressFilePath,
+        },
       );
     } catch (error) {
       persistState(ctx.cwd, planState(plan, "reviewing", reviewRun.progressFilePath));
@@ -659,7 +698,6 @@ async function handleReview(
     "review",
     defaultSessionName("review", (dependencies.now ?? (() => new Date()))(), branch),
     (dependencies.now ?? (() => new Date()))(),
-    dependencies,
   );
 
   try {
@@ -668,6 +706,9 @@ async function handleReview(
       pi as never,
       config,
       phaseRun.session,
+      {
+        progressFile: phaseRun.progressFilePath,
+      },
     );
     notify(ctx, `Progress log: ${phaseRun.progressFilePath}`, "info");
   } finally {
@@ -681,10 +722,31 @@ type ParsedCommand = { kind: "invalid" } |
   { kind: "review" } |
   { kind: "brainstorm"; description: string } |
   { kind: "brainstorm-usage" } |
-  { kind: "plan"; description: string } |
+  { kind: "plan"; description: string; existingPlanPath?: string } |
   { kind: "plan-usage" } |
   { kind: "execute"; planPath: string } |
   { kind: "execute-usage" };
+
+function splitFirstToken(value: string): { first: string; rest: string } {
+  const match = (/^\s*(\S+)(?:\s+([\S\s]*))?$/).exec(value);
+  return {
+    first: match?.[1] ?? "",
+    rest: match?.[2]?.trim() ?? "",
+  };
+}
+
+function looksLikePlanPath(rawArg: string): boolean {
+  return rawArg.startsWith("@") || rawArg.endsWith(".md");
+}
+
+function parsePlanCommandArgs(args: string, cwd: string): ParsedCommand {
+  if (args.length === 0) return { kind: "plan-usage" };
+  const { first, rest } = splitFirstToken(args);
+  if (looksLikePlanPath(first) && existsSync(normalizePlanPath(cwd, first))) {
+    return { kind: "plan", existingPlanPath: normalizePlanPath(cwd, first), description: rest };
+  }
+  return { kind: "plan", description: args };
+}
 
 function parseCommand(trimmed: string, cwd: string): ParsedCommand {
   if (trimmed.length === 0) return { kind: "invalid" };
@@ -697,8 +759,7 @@ function parseCommand(trimmed: string, cwd: string): ParsedCommand {
   }
   if (trimmed === "plan") return { kind: "plan-usage" };
   if (trimmed.startsWith("plan ")) {
-    const description = trimmed.slice("plan ".length).trim();
-    return description.length > 0 ? { kind: "plan", description } : { kind: "plan-usage" };
+    return parsePlanCommandArgs(trimmed.slice("plan ".length).trim(), cwd);
   }
   if (trimmed === "execute") return { kind: "execute-usage" };
   if (trimmed.startsWith("execute ")) {
@@ -742,7 +803,10 @@ export function createRalpixCommandHandler(
           return;
         }
         case "plan": {
-          await handlePlan(ctx, pi, command.description, dependencies);
+          await handlePlan(ctx, pi, {
+            description: command.description,
+            ...(command.existingPlanPath === undefined ? {} : { existingPlanPath: command.existingPlanPath }),
+          }, dependencies);
           return;
         }
         case "execute-usage": {

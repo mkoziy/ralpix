@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildLoggerAck,
@@ -83,6 +83,18 @@ describe("logger-protocol", () => {
       phase: "execute",
       taskId: "task-1",
     });
+  });
+
+  it("does not ack when the writer fails", () => {
+    const write = vi.fn(() => {
+      throw new Error("disk full");
+    });
+    const writer = {
+      write,
+    } as unknown as LogWriter;
+
+    expect(() => handleLoggerEnvelope(writer, makeEventEnvelope())).toThrow("disk full");
+    expect(write).toHaveBeenCalledOnce();
   });
 
   it("exits on phase_end events and explicit shutdown envelopes", () => {

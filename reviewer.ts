@@ -61,6 +61,8 @@ const EXTERNAL_REVIEW_MODEL_PHASE = "external-review";
 const EXTERNAL_EVAL_MODEL_PHASE = "external-eval";
 const EXTERNAL_REVIEW_STAGE: ReviewStageId = "external-review";
 const EXTERNAL_EVAL_STAGE: ReviewStageId = "external-eval";
+const FIRST_PASS_AGENTS = 5;
+const SECOND_PASS_AGENTS = 2;
 const ALL_REVIEW_STAGES: ReviewStageId[] = [
   "first-pass",
   EXTERNAL_REVIEW_STAGE,
@@ -198,13 +200,18 @@ export async function runStandaloneReview(
 }
 
 function resolveReviewerRuntime(dependencies: ReviewerDependencies): ReviewRuntime {
+  const progressFile = dependencies.progressFile?.trim() ?? "";
+  if (progressFile.length === 0) {
+    throw new Error("review progressFile is required");
+  }
+
   return {
     loadPrompt: dependencies.loadPrompt ?? loadPrompt,
     runSubprocess: dependencies.runSubprocess ?? runTaskReviewSubprocess,
     detectDefaultBranch: dependencies.detectDefaultBranch ?? detectDefaultBranch,
     getHeadHash: dependencies.getHeadHash ?? getHeadHash,
     getCurrentBranch: dependencies.getCurrentBranch ?? getCurrentBranch,
-    progressFile: dependencies.progressFile ?? "",
+    progressFile,
     diffCommands: dependencies.diffCommands,
     reviewOnly: dependencies.reviewOnly ?? false,
   };
@@ -226,7 +233,8 @@ async function runSinglePassStage(
   detail: string,
 ): Promise<boolean> {
   const stageState = startStage(session, stage, detail);
-  const result = await runPromptForStage(
+  const result = await runParallelStagePrompts(
+    FIRST_PASS_AGENTS,
     ctx,
     pi,
     promptName,
@@ -274,7 +282,8 @@ async function runSecondPassStage(
     }
 
     session.log("iteration_start", { stage, iteration });
-    const result = await runPromptForStage(
+    const result = await runParallelStagePrompts(
+      SECOND_PASS_AGENTS,
       ctx,
       pi,
       "review-second",
@@ -490,6 +499,67 @@ async function runPromptForStage(
     session,
     reviewPromptPhaseForModel(modelPhase),
   );
+}
+
+async function runParallelStagePrompts(
+  count: number,
+  ctx: ExtensionCommandContext,
+  pi: PiCommand,
+  promptName: string,
+  modelPhase: "review-first" | "review-second" | "external-review" | "external-eval",
+  plan: Plan,
+  config: RalpixConfig,
+  session: RunSession,
+  runtime: ReviewRuntime,
+  defaultBranch: string,
+  mode: ReviewMode,
+  extraVars: Record<string, string> = {},
+): Promise<TaskReviewSubprocessResult> {
+  const results = await Promise.all(
+    Array.from({ length: count }, async () => runPromptForStage(
+      ctx,
+      pi,
+      promptName,
+      modelPhase,
+      plan,
+      config,
+      session,
+      runtime,
+      defaultBranch,
+      mode,
+      extraVars,
+    )),
+  );
+
+  const combinedUsage = results.reduce<SubprocessUsage>((usage, result) => ({
+    input: usage.input + result.usage.input,
+    output: usage.output + result.usage.output,
+    cacheRead: usage.cacheRead + result.usage.cacheRead,
+    cacheWrite: usage.cacheWrite + result.usage.cacheWrite,
+    cost: usage.cost + result.usage.cost,
+  }), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+
+  const summaries = results
+    .map((result, index) => `agent ${String(index + 1)}: ${result.report.summary}`)
+    .filter((summary) => summary.trim().length > 0);
+
+  return {
+    status: results.every((result) => result.status === "success") ? "success" : "failure",
+    success: results.every((result) => result.success),
+    exitCode: results.some((result) => result.exitCode !== 0) ? 1 : 0,
+    signal: null,
+    stdout: results.map((result) => result.stdout).join("\n"),
+    stderr: results.map((result) => result.stderr).join("\n"),
+    message: results
+      .map((result) => result.message)
+      .filter((message): message is string => typeof message === "string" && message.length > 0)
+      .join("\n"),
+    usage: combinedUsage,
+    report: {
+      success: results.every((result) => result.report.success),
+      summary: summaries.join("\n"),
+    },
+  };
 }
 
 function buildStagePrompt(

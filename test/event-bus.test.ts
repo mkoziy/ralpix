@@ -71,9 +71,9 @@ describe("createEventBus — log()", () => {
     const { emitter, events } = makeEmitter();
     const session = createEventBus(ctx, "execute", [emitter]);
 
-    expect(() => session.log("phase_start", { unexpectedField: "x", round: "not-a-number" as unknown as number })).not.toThrow();
+    expect(() => session.log("phase_start", { unexpectedField: "x", round: "not-a-number" as unknown as number })).toThrow();
     expect(() => session.log("round_end", { round: "bad" as unknown as number, usage: null as unknown as object })).toThrow();
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(0);
   });
 
   it("emits data fields merged with base", () => {
