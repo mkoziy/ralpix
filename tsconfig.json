@@ -46,6 +46,7 @@
   },
   "include": [
     "*.ts",
+    "adapters/**/*.ts",
     "bundled/**/*.ts"
   ],
   "exclude": [

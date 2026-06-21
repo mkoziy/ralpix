@@ -263,8 +263,8 @@ Design determined by Task 14 spike. Sketch only:
 
 ### Task 16: adapters/logger-intercom.ts — TBD after Task 14
 
-- [ ] `AgentEventEmitter` that serialises and sends via intercom
-- [ ] Fallback strategy (direct write vs abort) determined by Task 14
+- [x] `AgentEventEmitter` that serialises and sends via intercom
+- [x] Fallback strategy (direct write vs abort) determined by Task 14
 
 ### Task 17: adapters/tui.ts + bootstrap — TBD after Task 14
 
