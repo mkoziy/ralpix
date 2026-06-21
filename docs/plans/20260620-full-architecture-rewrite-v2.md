@@ -256,10 +256,10 @@ No code — written decision only. Answers:
 
 Design determined by Task 14 spike. Sketch only:
 
-- [ ] Logger pi session prompt in `agents/logger/`
-- [ ] Accepts `AgentEvent` JSON payloads via `intercom send`
-- [ ] Writes to `.ralpix/progress/{phase}/{session}.jsonl` via `LogWriter.write()`
-- [ ] Exits on `phase_end` with `phase: "complete"` or explicit shutdown signal
+- [x] Logger pi session prompt in `agents/logger/`
+- [x] Accepts `AgentEvent` JSON payloads via `intercom send`
+- [x] Writes to `.ralpix/progress/{phase}/{session}.jsonl` via `LogWriter.write()`
+- [x] Exits on `phase_end` with `phase: "complete"` or explicit shutdown signal
 
 ### Task 16: adapters/logger-intercom.ts — TBD after Task 14
 
