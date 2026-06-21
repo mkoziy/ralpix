@@ -268,9 +268,9 @@ Design determined by Task 14 spike. Sketch only:
 
 ### Task 17: adapters/tui.ts + bootstrap — TBD after Task 14
 
-- [ ] Move TUI emitter from `tui.ts` to `adapters/tui.ts`
-- [ ] Bootstrap in `index.ts`: start logger session, wait for intercom-ready, signal shutdown on run end
-- [ ] Logger session name: `ralpix-logger-{timestamp}`
+- [x] Move TUI emitter from `tui.ts` to `adapters/tui.ts`
+- [x] Bootstrap in `index.ts`: start logger session, wait for intercom-ready, signal shutdown on run end
+- [x] Logger session name: `ralpix-logger-{timestamp}`
 
 ### Task 18: e2e tests — TBD after Task 14
 

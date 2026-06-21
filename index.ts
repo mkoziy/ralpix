@@ -11,18 +11,20 @@ import {
 } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
+import { createLoggerIntercomEmitter } from "./adapters/logger-intercom.js";
+import { createTuiEmitter } from "./adapters/tui.js";
 import { runBrainstorm } from "./brainstorm.js";
 import { initRalpixHome, loadConfig, resolvePiAgentDir } from "./config.js";
 import { createEventBus } from "./event-bus.js";
 import { executeAllTasks } from "./executor.js";
-import { createLogWriterEmitter, LogWriter, progressDirForPhase } from "./logger.js";
+import { handleLoggerEnvelope, parseLoggerEnvelope } from "./logger-protocol.js";
+import { LogWriter, progressDirForPhase } from "./logger.js";
 import { loadPlan } from "./parser.js";
 import { runPlanCreation } from "./planner.js";
 import { runReviewPipeline, runStandaloneReview } from "./reviewer.js";
-import { createTuiEmitter } from "./tui.js";
 
+import type { LoggerIntercomTransport } from "./adapters/logger-intercom.js";
 import type { RunSession } from "./event-bus.js";
-import type { AgentEventEmitter } from "./events.js";
 import type { Phase, Plan, RalpixConfig, RalpixState } from "./types.js";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
@@ -31,9 +33,17 @@ const LEGACY_PROGRESS_DIR = join(".ralpix", "progress");
 const MAIN_BRANCHES = new Set(["main", "master"]);
 
 export interface PhaseRun {
-  writer: LogWriter;
+  close: () => void;
+  progressFilePath: string;
   session: RunSession;
   sessionName: string;
+}
+
+export interface LoggerSessionController {
+  name: string;
+  shutdown: (reason?: string) => void;
+  transport: LoggerIntercomTransport;
+  waitUntilReady: () => Promise<void>;
 }
 
 export interface IndexDependencies {
@@ -49,6 +59,11 @@ export interface IndexDependencies {
   loadPlan?: typeof loadPlan;
   getCurrentBranch?: (cwd: string) => string | null;
   createBranch?: (cwd: string, branchName: string) => void;
+  startLoggerSession?: (
+    ctx: ExtensionCommandContext,
+    phase: Phase,
+    loggerSessionName: string,
+  ) => Promise<LoggerSessionController>;
 }
 
 function notify(
@@ -311,20 +326,96 @@ function defaultSessionName(phase: Phase, now: Date, detail?: string): string {
   return `${phase}-${timestamp(now)}-${base}`;
 }
 
-export function createPhaseRun(
+export function defaultLoggerSessionName(now: Date): string {
+  return `ralpix-logger-${timestamp(now)}`;
+}
+
+function progressFilePathFor(cwd: string, phase: Phase, sessionName: string): string {
+  return join(progressDirForPhase(cwd, phase), `${sessionName}.jsonl`);
+}
+
+export async function startLoggerSession(
+  ctx: ExtensionCommandContext,
+  phase: Phase,
+  loggerSessionName: string,
+): Promise<LoggerSessionController> {
+  let ready = false;
+  let closed = false;
+  const writers = new Map<string, LogWriter>();
+
+  function writerFor(targetPhase: Phase, sessionName: string): LogWriter {
+    const key = `${targetPhase}:${sessionName}`;
+    const existing = writers.get(key);
+    if (existing !== undefined) return existing;
+    const writer = new LogWriter(ctx.cwd, targetPhase, sessionName);
+    writers.set(key, writer);
+    return writer;
+  }
+
+  await Promise.resolve();
+
+  return {
+    name: loggerSessionName,
+    waitUntilReady: async () => {
+      ready = true;
+      await Promise.resolve();
+    },
+    shutdown: () => {
+      closed = true;
+    },
+    transport: {
+      send(payload: string): string {
+        if (!ready) {
+          throw new Error(`logger session ${loggerSessionName} is not ready`);
+        }
+        if (closed) {
+          throw new Error(`logger session ${loggerSessionName} is already shut down`);
+        }
+
+        const envelope = parseLoggerEnvelope(payload);
+        if (envelope.type === "shutdown") {
+          closed = true;
+          return "";
+        }
+
+        const result = handleLoggerEnvelope(writerFor(phase, envelope.target.sessionName), envelope);
+        if (result.exit) {
+          closed = true;
+        }
+        return JSON.stringify(result.ack);
+      },
+    },
+  };
+}
+
+export async function createPhaseRun(
   ctx: ExtensionCommandContext,
   phase: Phase,
   sessionName: string,
-): PhaseRun {
-  const writer = new LogWriter(ctx.cwd, phase, sessionName);
-  const emitters: AgentEventEmitter[] = [
-    createLogWriterEmitter(writer),
-    createTuiEmitter(ctx),
-  ];
+  now: Date,
+  dependencies: IndexDependencies = {},
+): Promise<PhaseRun> {
+  const loggerSession = await (dependencies.startLoggerSession ?? startLoggerSession)(
+    ctx,
+    phase,
+    defaultLoggerSessionName(now),
+  );
+  await loggerSession.waitUntilReady();
+
+  const emitter = createLoggerIntercomEmitter({
+    cwd: ctx.cwd,
+    runId: loggerSession.name,
+    target: { phase, sessionName },
+    transport: loggerSession.transport,
+  });
+
   return {
-    writer,
+    close: () => {
+      loggerSession.shutdown(`phase ${phase} complete`);
+    },
+    progressFilePath: progressFilePathFor(ctx.cwd, phase, sessionName),
     sessionName,
-    session: createEventBus(ctx, phase, emitters),
+    session: createEventBus(ctx, phase, [emitter, createTuiEmitter(ctx)]),
   };
 }
 
@@ -399,10 +490,12 @@ async function handleBrainstorm(
   }
 
   const config = loadRunConfig(ctx, dependencies);
-  const phaseRun = createPhaseRun(
+  const phaseRun = await createPhaseRun(
     ctx,
     "brainstorm",
     defaultSessionName("brainstorm", (dependencies.now ?? (() => new Date()))(), description),
+    (dependencies.now ?? (() => new Date()))(),
+    dependencies,
   );
 
   try {
@@ -414,9 +507,10 @@ async function handleBrainstorm(
       phaseRun.session,
     );
     notify(ctx, `Brainstorm complete: ${result.sessionName}`, "success");
-    notify(ctx, `Progress log: ${phaseRun.writer.filePath}`, "info");
+    notify(ctx, `Progress log: ${phaseRun.progressFilePath}`, "info");
   } finally {
     phaseRun.session.close();
+    phaseRun.close();
   }
 }
 
@@ -427,10 +521,12 @@ async function handlePlan(
   dependencies: IndexDependencies,
 ): Promise<void> {
   const config = loadRunConfig(ctx, dependencies);
-  const phaseRun = createPhaseRun(
+  const phaseRun = await createPhaseRun(
     ctx,
     "plan",
     defaultSessionName("plan", (dependencies.now ?? (() => new Date()))(), description),
+    (dependencies.now ?? (() => new Date()))(),
+    dependencies,
   );
 
   try {
@@ -442,9 +538,10 @@ async function handlePlan(
       phaseRun.session,
     );
     notify(ctx, `Plan saved: ${result.planPath}`, "success");
-    notify(ctx, `Progress log: ${phaseRun.writer.filePath}`, "info");
+    notify(ctx, `Progress log: ${phaseRun.progressFilePath}`, "info");
   } finally {
     phaseRun.session.close();
+    phaseRun.close();
   }
 }
 
@@ -475,14 +572,20 @@ async function handleExecute(
     }
   }
 
-  const executeRun = createPhaseRun(ctx, "execute", slugify(basename(plan.path, extname(plan.path))));
+  const executeRun = await createPhaseRun(
+    ctx,
+    "execute",
+    slugify(basename(plan.path, extname(plan.path))),
+    (dependencies.now ?? (() => new Date()))(),
+    dependencies,
+  );
 
   try {
     if (restored?.phase === "executing") {
       executeRun.session.milestone("resume", `Resumed execution for ${restored.planTitle}`);
     }
 
-    persistState(ctx.cwd, planState(plan, "executing", executeRun.writer.filePath));
+    persistState(ctx.cwd, planState(plan, "executing", executeRun.progressFilePath));
     await (dependencies.executeAllTasks ?? executeAllTasks)(
       ctx,
       pi as never,
@@ -495,20 +598,27 @@ async function handleExecute(
     ensureExecutionCompleted(plan);
   } catch (error) {
     const failedPlan = (dependencies.loadPlan ?? loadPlan)(planPath);
-    persistState(ctx.cwd, planState(failedPlan, "executing", executeRun.writer.filePath));
+    persistState(ctx.cwd, planState(failedPlan, "executing", executeRun.progressFilePath));
     throw error;
   } finally {
     executeRun.session.close();
+    executeRun.close();
   }
 
   if (config.reviewEnabled) {
-    const reviewRun = createPhaseRun(ctx, "review", `${slugify(basename(plan.path, extname(plan.path)))}-review`);
+    const reviewRun = await createPhaseRun(
+      ctx,
+      "review",
+      `${slugify(basename(plan.path, extname(plan.path)))}-review`,
+      (dependencies.now ?? (() => new Date()))(),
+      dependencies,
+    );
     try {
       if (restored?.phase === "reviewing") {
         reviewRun.session.milestone("resume", `Resumed review for ${restored.planTitle}`);
       }
 
-      persistState(ctx.cwd, planState(plan, "reviewing", reviewRun.writer.filePath));
+      persistState(ctx.cwd, planState(plan, "reviewing", reviewRun.progressFilePath));
       await (dependencies.runReviewPipeline ?? runReviewPipeline)(
         ctx,
         pi as never,
@@ -517,10 +627,11 @@ async function handleExecute(
         reviewRun.session,
       );
     } catch (error) {
-      persistState(ctx.cwd, planState(plan, "reviewing", reviewRun.writer.filePath));
+      persistState(ctx.cwd, planState(plan, "reviewing", reviewRun.progressFilePath));
       throw error;
     } finally {
       reviewRun.session.close();
+      reviewRun.close();
     }
   }
 
@@ -543,10 +654,12 @@ async function handleReview(
 
   const config = loadRunConfig(ctx, dependencies);
   const branch = (dependencies.getCurrentBranch ?? getCurrentBranch)(ctx.cwd) ?? "current";
-  const phaseRun = createPhaseRun(
+  const phaseRun = await createPhaseRun(
     ctx,
     "review",
     defaultSessionName("review", (dependencies.now ?? (() => new Date()))(), branch),
+    (dependencies.now ?? (() => new Date()))(),
+    dependencies,
   );
 
   try {
@@ -556,9 +669,10 @@ async function handleReview(
       config,
       phaseRun.session,
     );
-    notify(ctx, `Progress log: ${phaseRun.writer.filePath}`, "info");
+    notify(ctx, `Progress log: ${phaseRun.progressFilePath}`, "info");
   } finally {
     phaseRun.session.close();
+    phaseRun.close();
   }
 }
 

@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildStatusWidgetView,
+  createPhaseRun,
   createRalpixCommandHandler,
+  defaultLoggerSessionName,
   inferProgressLogPhase,
   migrateLegacyProgressLogs,
   persistState,
@@ -307,5 +309,61 @@ describe("buildStatusWidgetView", () => {
       "Failed: 0",
       "Progress log: /tmp/progress.jsonl",
     ]);
+  });
+});
+
+describe("logger bootstrap", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("uses the ralpix logger session naming convention", () => {
+    expect(defaultLoggerSessionName(new Date("2026-06-21T10:11:12.000Z"))).toBe("ralpix-logger-20260621-101112");
+  });
+
+  it("waits for logger readiness, writes through the intercom emitter, and shuts the logger down", async () => {
+    const { cwd } = makePlanFixture();
+    const ctx = makeCtx(cwd, false);
+    const waitUntilReady = vi.fn().mockResolvedValue();
+    const shutdown = vi.fn();
+    const send = vi.fn((payload: string) => {
+      const envelope = JSON.parse(payload) as { seq: number; target: { phase: string; sessionName: string } };
+      return JSON.stringify({
+        type: "ack",
+        runId: "ralpix-logger-20260621-101112",
+        seq: envelope.seq,
+        phase: envelope.target.phase,
+        sessionName: envelope.target.sessionName,
+      });
+    });
+
+    const run = await createPhaseRun(
+      ctx,
+      "execute",
+      "index-plan",
+      new Date("2026-06-21T10:11:12.000Z"),
+      {
+        startLoggerSession: vi.fn().mockResolvedValue({
+          name: "ralpix-logger-20260621-101112",
+          transport: { send },
+          waitUntilReady,
+          shutdown,
+        }),
+      },
+    );
+
+    run.session.log("task_start", {
+      taskId: "task-1",
+      taskNumber: 1,
+      taskTitle: "Bootstrap logger",
+      itemCount: 3,
+    });
+    run.session.close();
+    run.close();
+
+    expect(waitUntilReady).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledOnce();
+    expect(shutdown).toHaveBeenCalledWith("phase execute complete");
+    expect(run.progressFilePath).toBe(join(cwd, ".ralpix", "progress", "execute", "index-plan.jsonl"));
   });
 });
