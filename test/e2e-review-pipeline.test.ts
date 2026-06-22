@@ -37,6 +37,7 @@ const CONFIG: RalpixConfig = {
   brainstormEnabled: true,
   brainstormModel: "gpt-5.5",
   brainstormEffort: "medium",
+  finalizeEnabled: false,
   plansDir: "docs/plans",
   epistemicEnabled: false,
   trainingCutoff: null,
@@ -132,6 +133,9 @@ describe("review pipeline e2e", () => {
         runSubprocess.mockResolvedValueOnce(reviewResult(`first pass clean ${String(index + 1)}`, 0.001));
       }
       for (let index = 0; index < 2; index += 1) {
+        runSubprocess.mockResolvedValueOnce(reviewResult(`stabilize clean ${String(index + 1)}`, 0.002));
+      }
+      for (let index = 0; index < 2; index += 1) {
         runSubprocess.mockResolvedValueOnce(reviewResult(`second pass clean ${String(index + 1)}`, 0.002));
       }
 
@@ -157,19 +161,25 @@ describe("review pipeline e2e", () => {
     const events = readEvents(phaseRun.progressFilePath);
     expect(events.map((event) => event.type)).toEqual([
       "phase_start",
-      "stage_start",
-      "stage_finish",
-      "stage_finish",
-      "stage_finish",
-      "stage_start",
-      "iteration_start",
-      "iteration_end",
-      "stage_finish",
+      "stage_start",      // first-pass
+      "stage_finish",     // first-pass
+      "stage_start",      // first-pass-stabilize
+      "iteration_start",  // first-pass-stabilize iter 1
+      "iteration_end",    // first-pass-stabilize iter 1
+      "stage_finish",     // first-pass-stabilize
+      "stage_finish",     // external-review skipped
+      "stage_finish",     // external-eval skipped
+      "stage_start",      // second-pass
+      "iteration_start",  // second-pass iter 1
+      "iteration_end",    // second-pass iter 1
+      "stage_finish",     // second-pass
+      "milestone",        // finalize-skip
       "phase_end",
     ]);
     const stageFinishEvents = events.filter((event): event is Extract<AgentEvent, { type: "stage_finish" }> => event.type === "stage_finish");
     expect(stageFinishEvents.map((event) => `${event.stage}:${event.status}`)).toEqual([
       "first-pass:complete",
+      "first-pass-stabilize:complete",
       "external-review:skipped",
       "external-eval:skipped",
       "second-pass:complete",

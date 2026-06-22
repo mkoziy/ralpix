@@ -39,7 +39,7 @@ const eventUsageSchema = z.object({
   breakdown: z.array(usageBreakdownEntrySchema).optional(),
 }).strict();
 
-const reviewStageIdSchema = z.enum(["first-pass", "external-review", "external-eval", "second-pass"]);
+const reviewStageIdSchema = z.enum(["first-pass", "first-pass-stabilize", "external-review", "external-eval", "second-pass"]);
 const reviewStageStatusFinalSchema = z.enum(["complete", "failed", "skipped"]);
 
 export const agentEventSchema = z.discriminatedUnion("type", [

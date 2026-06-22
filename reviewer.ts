@@ -65,6 +65,7 @@ const FIRST_PASS_AGENTS = 5;
 const SECOND_PASS_AGENTS = 2;
 const ALL_REVIEW_STAGES: ReviewStageId[] = [
   "first-pass",
+  "first-pass-stabilize",
   EXTERNAL_REVIEW_STAGE,
   EXTERNAL_EVAL_STAGE,
   "second-pass",
@@ -110,6 +111,22 @@ export async function runReviewPipeline(
     "checking all completed tasks",
   );
   if (!firstPass) {
+    session.log("phase_end", { label: "failed" });
+    return;
+  }
+
+  const stabilized = await runFirstPassStabilizeStage(
+    ctx,
+    pi,
+    plan,
+    config,
+    session,
+    runtime,
+    totalUsage,
+    defaultBranch,
+    mode,
+  );
+  if (!stabilized) {
     session.log("phase_end", { label: "failed" });
     return;
   }
@@ -298,7 +315,9 @@ async function runSinglePassStage(
   return true;
 }
 
-async function runSecondPassStage(
+async function runIterativePassStage(
+  stage: ReviewStageId,
+  initialDetail: string,
   ctx: ExtensionCommandContext,
   pi: PiCommand,
   plan: Plan,
@@ -309,9 +328,8 @@ async function runSecondPassStage(
   defaultBranch: string,
   mode: ReviewMode,
 ): Promise<boolean> {
-  const stage: ReviewStageId = "second-pass";
   const maxIterations = normalizedIterations(config.reviewMaxIterations);
-  const stageState = startStage(session, stage, `quality review — iteration 1/${String(maxIterations)}`);
+  const stageState = startStage(session, stage, initialDetail);
 
   for (let iteration = 1; iteration <= maxIterations; iteration++) {
     const headBefore = runtime.getHeadHash(ctx.cwd);
@@ -374,6 +392,44 @@ async function runSecondPassStage(
     `max iterations reached (${String(maxIterations)})`,
   );
   return true;
+}
+
+async function runFirstPassStabilizeStage(
+  ctx: ExtensionCommandContext,
+  pi: PiCommand,
+  plan: Plan,
+  config: RalpixConfig,
+  session: RunSession,
+  runtime: ReviewRuntime,
+  totalUsage: UsageAccumulator,
+  defaultBranch: string,
+  mode: ReviewMode,
+): Promise<boolean> {
+  const maxIterations = normalizedIterations(config.reviewMaxIterations);
+  return runIterativePassStage(
+    "first-pass-stabilize",
+    `stabilizing — iteration 1/${String(maxIterations)}`,
+    ctx, pi, plan, config, session, runtime, totalUsage, defaultBranch, mode,
+  );
+}
+
+async function runSecondPassStage(
+  ctx: ExtensionCommandContext,
+  pi: PiCommand,
+  plan: Plan,
+  config: RalpixConfig,
+  session: RunSession,
+  runtime: ReviewRuntime,
+  totalUsage: UsageAccumulator,
+  defaultBranch: string,
+  mode: ReviewMode,
+): Promise<boolean> {
+  const maxIterations = normalizedIterations(config.reviewMaxIterations);
+  return runIterativePassStage(
+    "second-pass",
+    `quality review — iteration 1/${String(maxIterations)}`,
+    ctx, pi, plan, config, session, runtime, totalUsage, defaultBranch, mode,
+  );
 }
 
 async function runExternalReviewStages(

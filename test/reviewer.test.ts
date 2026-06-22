@@ -34,6 +34,7 @@ const CONFIG: RalpixConfig = {
   brainstormEnabled: true,
   brainstormModel: "gpt-5.5",
   brainstormEffort: "medium",
+  finalizeEnabled: false,
   plansDir: "docs/plans",
   epistemicEnabled: false,
   trainingCutoff: null,
@@ -109,6 +110,9 @@ describe("runReviewPipeline", () => {
       runSubprocess.mockResolvedValueOnce(reviewResult(`first pass clean ${String(index + 1)}`, 0.001));
     }
     for (let index = 0; index < 2; index += 1) {
+      runSubprocess.mockResolvedValueOnce(reviewResult(`stabilize clean ${String(index + 1)}`, 0.002));
+    }
+    for (let index = 0; index < 2; index += 1) {
       runSubprocess.mockResolvedValueOnce(reviewResult(`second pass clean ${String(index + 1)}`, 0.002));
     }
     const headHashes = ["head-1", "head-1"];
@@ -130,23 +134,32 @@ describe("runReviewPipeline", () => {
 
     expect(session.log.mock.calls.map(([type]) => type)).toEqual([
       "phase_start",
-      "stage_start",
-      "stage_finish",
-      "stage_finish",
-      "stage_finish",
-      "stage_start",
-      "iteration_start",
-      "iteration_end",
-      "stage_finish",
+      "stage_start",      // first-pass
+      "stage_finish",     // first-pass
+      "stage_start",      // first-pass-stabilize
+      "iteration_start",  // first-pass-stabilize iter 1
+      "iteration_end",    // first-pass-stabilize iter 1
+      "stage_finish",     // first-pass-stabilize
+      "stage_finish",     // external-review skipped
+      "stage_finish",     // external-eval skipped
+      "stage_start",      // second-pass
+      "iteration_start",  // second-pass iter 1
+      "iteration_end",    // second-pass iter 1
+      "stage_finish",     // second-pass
       "phase_end",
     ]);
 
+    const stabilizeStart = session.log.mock.calls.find(([type, data]) => type === "stage_start" && data?.stage === "first-pass-stabilize");
+    expect(stabilizeStart?.[1]).toMatchObject({
+      stage: "first-pass-stabilize",
+      detail: "stabilizing — iteration 1/2",
+    });
     const secondPassStart = session.log.mock.calls.find(([type, data]) => type === "stage_start" && data?.stage === "second-pass");
     expect(secondPassStart?.[1]).toMatchObject({
       stage: "second-pass",
       detail: "quality review — iteration 1/2",
     });
-    expect(runSubprocess).toHaveBeenCalledTimes(7);
+    expect(runSubprocess).toHaveBeenCalledTimes(9);
 
     for (const [type, data] of session.log.mock.calls) {
       const parsed = agentEventSchema.safeParse({
@@ -164,6 +177,9 @@ describe("runReviewPipeline", () => {
     const runSubprocess = vi.fn();
     for (let index = 0; index < 5; index += 1) {
       runSubprocess.mockResolvedValueOnce(reviewResult(`first pass clean ${String(index + 1)}`, 0.001));
+    }
+    for (let index = 0; index < 2; index += 1) {
+      runSubprocess.mockResolvedValueOnce(reviewResult(`stabilize clean ${String(index + 1)}`, 0.002));
     }
     for (let index = 0; index < 2; index += 1) {
       runSubprocess.mockResolvedValueOnce(reviewResult(`second pass clean ${String(index + 1)}`, 0.002));
@@ -188,6 +204,9 @@ describe("runReviewPipeline", () => {
       .filter(([type]) => type === "stage_finish")
       .map(([, data]) => data);
 
+    // first-pass: 5 agents × cost 0.001 = step cost 0.005, total cost 0.005
+    // stabilize:  2 agents × cost 0.002 = step cost 0.004, total cost 0.009
+    // second-pass: 2 agents × cost 0.002 = step cost 0.004, total cost 0.013
     expect(finishEvents).toEqual([
       expect.objectContaining({
         stage: "first-pass",
@@ -195,6 +214,14 @@ describe("runReviewPipeline", () => {
         usage: {
           step: { input: 50, output: 20, cacheRead: 10, cacheWrite: 5, cost: 0.005 },
           total: { input: 65, output: 20, cost: 0.005 },
+        },
+      }),
+      expect.objectContaining({
+        stage: "first-pass-stabilize",
+        status: "complete",
+        usage: {
+          step: { input: 20, output: 8, cacheRead: 4, cacheWrite: 2, cost: 0.004 },
+          total: { input: 91, output: 28, cost: 0.009000000000000001 },
         },
       }),
       expect.objectContaining({
@@ -210,7 +237,7 @@ describe("runReviewPipeline", () => {
         status: "complete",
         usage: {
           step: { input: 20, output: 8, cacheRead: 4, cacheWrite: 2, cost: 0.004 },
-          total: { input: 91, output: 28, cost: 0.009000000000000001 },
+          total: { input: 117, output: 36, cost: 0.013000000000000001 },
         },
       }),
     ]);

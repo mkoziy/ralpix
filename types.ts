@@ -85,7 +85,7 @@ export interface Plan {
   extraSections: Record<string, string>;
 }
 
-export type ReviewStageId = "first-pass" | "external-review" | "external-eval" | "second-pass";
+export type ReviewStageId = "first-pass" | "first-pass-stabilize" | "external-review" | "external-eval" | "second-pass";
 
 export type ReviewStageStatus = "pending" | "active" | "complete" | "failed" | "skipped";
 
