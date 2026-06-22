@@ -90,6 +90,7 @@ Every task must be detailed enough that an implementer can execute it without gu
 - Tests must be separate checklist items, not bundled with implementation
 - Use `- [ ]` for all items (pending — ralpix will mark them done during execution)
 - Tasks must be in dependency order (Task 2 can depend on Task 1, but not vice versa)
+- If a task depends on artifacts from a prior task (files, interfaces, types, schemas, constants), explicitly name them in that task's description — the executor sees only the current task and the plan overview, not other tasks
 - `## Success Criteria` should be concrete and testable, and should mention real verification commands when applicable (e.g., `npm test`, `go test ./...`)
 - Title should be concise but descriptive (6-10 words)
 - Do not wrap the plan in fenced code blocks

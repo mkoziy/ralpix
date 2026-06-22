@@ -6,3 +6,4 @@ dist/
 dist-test/
 test-widget.mjs
 test-widget-verify.mjs
+.smoke-home
