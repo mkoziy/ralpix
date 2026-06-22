@@ -141,6 +141,11 @@ export async function runReviewPipeline(
     defaultBranch,
     mode,
   );
+
+  if (secondPass) {
+    await runFinalize(ctx, pi, plan, config, session, runtime);
+  }
+
   session.log("phase_end", { label: secondPass ? "complete" : "failed" });
 }
 
@@ -197,6 +202,40 @@ export async function runStandaloneReview(
       diffCommands: buildDiffCommands(runtime.detectDefaultBranch(ctx.cwd), target),
     },
   );
+}
+
+async function runFinalize(
+  ctx: ExtensionCommandContext,
+  pi: PiCommand,
+  plan: Plan,
+  config: RalpixConfig,
+  session: RunSession,
+  runtime: ReviewRuntime,
+): Promise<void> {
+  if (!config.finalizeEnabled) {
+    session.milestone("finalize-skip", "finalize skipped");
+    return;
+  }
+
+  session.milestone("finalize-start", "Finalize started");
+  const prompt = expandPrompt(runtime.loadPrompt("finalize", ctx.cwd), {
+    GOAL: plan.title,
+  });
+
+  const result = await runtime.runSubprocess(
+    ctx,
+    pi,
+    prompt,
+    buildSubprocessConfig(config, "review-second", ctx.cwd),
+    session,
+    "second",
+  );
+
+  if (result.report.success) {
+    session.milestone("finalize-end", "Finalize complete");
+  } else {
+    session.milestone("ERR", `Finalize failed: ${result.report.summary}`);
+  }
 }
 
 function resolveReviewerRuntime(dependencies: ReviewerDependencies): ReviewRuntime {

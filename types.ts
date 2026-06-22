@@ -53,6 +53,7 @@ export interface RalpixConfig {
   brainstormEnabled: boolean;
   brainstormModel: string | null;
   brainstormEffort: ThinkingLevel | null;
+  finalizeEnabled: boolean;
   plansDir: string;
   epistemicEnabled: boolean;
   trainingCutoff: string | null;

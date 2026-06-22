@@ -23,6 +23,7 @@
   "planModel": "openai-codex/gpt-5.5",
   "planEffort": "medium",
   "brainstormEnabled": true,
+  "finalizeEnabled": true,
   "brainstormModel": "opencode-go/glm-5.1",
   "brainstormEffort": "medium",
   "plansDir": "docs/plans",

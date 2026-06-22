@@ -39,7 +39,7 @@ function levelForStageStatus(status: "complete" | "failed" | "skipped"): "error"
 function levelForMilestone(kind: string): "error" | "info" | "success" | "warning" {
   if (kind === "ERR") return "error";
   if (kind === "WARN") return "warning";
-  if (kind === "OK") return "success";
+  if (kind === "OK" || kind === "finalize-end") return "success";
   return "info";
 }
 
@@ -233,6 +233,7 @@ export function createTuiEmitter(ctx: ExtensionCommandContext): AgentEventEmitte
           break;
         }
         case "milestone": {
+          if (event.kind === "finalize-skip") break;
           const level = levelForMilestone(event.kind);
           notify(event.message, level);
           break;
