@@ -6,5 +6,5 @@
 - Phase modules (`brainstorm.ts`, `planner.ts`, `executor.ts`, `reviewer.ts`) should emit `AgentEvent` objects through `RunSession` and must not call UI helpers directly.
 - Progress logs live under `.ralpix/progress/{phase}/<session>.jsonl` and contain raw `AgentEvent` JSON lines.
 - Production logging currently uses the direct `LogWriter` path. The logger-intercom spool/protocol code is not the active runtime path until there is a real durable logger-session bootstrap.
-- Planner flow is `draft -> critic -> AI review -> human review`, with automatic regeneration when reviewer findings require changes.
+- Planner flow is `draft -> critic -> AI review -> human review`, with automatic regeneration when reviewer findings require changes. The auto-regeneration loop has no iteration cap; human review is only shown once both AI reviewers accept.
 - Review coverage must preserve the documented fan-out: first pass uses 5 parallel reviewers and second pass uses 2 parallel reviewers per iteration.
