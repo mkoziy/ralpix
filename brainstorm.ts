@@ -424,7 +424,6 @@ async function handleDesignRound(
 
   const accepted = await session.confirm(`Validate ${section.title}?`, {
     body: section.content,
-    historyLabel: section.title,
   });
 
   if (accepted) {

@@ -87,7 +87,6 @@ export interface InputPromptOptions {
 
 export interface ConfirmPromptOptions {
   body?: string;
-  historyLabel?: string;
 }
 
 export interface RunSession {
